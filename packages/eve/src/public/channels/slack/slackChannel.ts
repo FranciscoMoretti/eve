@@ -248,7 +248,6 @@ export interface SlackChannelState {
  * can attach extra span attributes.
  */
 export interface SlackInstrumentationMetadata extends Record<string, unknown> {
-  readonly audience: ChannelAudience;
   readonly channelId: string | null;
   readonly teamId: string | null;
   readonly threadTs: string | null;
@@ -897,7 +896,6 @@ export function slackChannel(config: SlackChannelConfig = {}): SlackChannel {
     kindHint: "slack",
     turnPolicy: config.turnPolicy,
     state: {
-      audience: "unknown",
       channelId: null as string | null,
       threadTs: null as string | null,
       teamId: null as string | null,
@@ -914,13 +912,13 @@ export function slackChannel(config: SlackChannelConfig = {}): SlackChannel {
     fetchFile: slackFetchFile,
     metadata(state): SlackInstrumentationMetadata {
       return {
-        audience: state.audience ?? "unknown",
         channelId: state.channelId,
         teamId: state.teamId,
         threadTs: state.threadTs,
         triggeringUserId: state.triggeringUserId ?? null,
       };
     },
+    audience: ({ state }) => state.audience ?? "unknown",
 
     context(state, session) {
       return rebuildSlackContext(state, session, config.credentials);
@@ -1311,7 +1309,6 @@ async function dispatchSlackMessage(input: {
   });
   const author = input.message.author;
   const channelState: SlackChannelState = {
-    audience: "unknown",
     channelId: input.message.channelId,
     installationTeamId: input.installationTeamId ?? null,
     teamId: input.message.teamId ?? null,
