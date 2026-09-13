@@ -10,10 +10,7 @@ function named(name: string, message: string, extra?: Record<string, unknown>): 
   return Object.assign(error, extra);
 }
 
-function gatewayUpstreamBillingError(
-  type: string | undefined,
-  message: string,
-): Error {
+function gatewayUpstreamBillingError(type: string | undefined, message: string): Error {
   const body = { error: { message, type } };
   const upstream = Object.assign(new Error("[object Object]"), {
     data: body,
