@@ -583,7 +583,6 @@ async function dispatchMessage(input: {
     username: input.message.from?.username,
   });
   const channelContext = result.context ?? [];
-
   const replyText = input.message.text || input.message.caption;
   const replyInputResponses =
     input.message.replyToMessage?.from?.isBot === true && replyText.trim().length > 0
@@ -599,26 +598,14 @@ async function dispatchMessage(input: {
     const source = input.from(
       telegramContinuationTokenFromState(state),
     ) as InternalChannelSource<TelegramChannelState>;
-    if (replyInputResponses === undefined) {
-      await source.send(turnMessage, {
-        auth: result.auth,
+    await source[INTERNAL_CHANNEL_DELIVER](
+      {
         context: [contextBlock, ...channelContext],
-        state,
-        title: result.title,
-      });
-    } else {
-      // A reply is only a structured answer when its prompt id is registered.
-      // Preserve the original text so option prompts, including approvals, can
-      // fall back to the harness's text-response resolution.
-      await source[INTERNAL_CHANNEL_DELIVER](
-        {
-          context: [contextBlock, ...channelContext],
-          inputResponses: replyInputResponses,
-          message: turnMessage,
-        },
-        { auth: result.auth },
-      );
-    }
+        inputResponses: replyInputResponses,
+        message: turnMessage,
+      },
+      { auth: result.auth, state, title: result.title },
+    );
   } catch (error) {
     log.error("message delivery failed", { error });
   }
