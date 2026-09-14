@@ -14,6 +14,7 @@ import {
   isFrameworkUserMessage,
   isUserModelMessage,
 } from "#harness/messages.js";
+import { appendMessagesPreservingTailApproval } from "#harness/current-messages.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { CompactionConfig, ToolLoopHarnessConfig } from "#harness/types.js";
@@ -365,7 +366,7 @@ function withResumptionGuard(
       !alreadyKept &&
       estimateTokens([replay]) <= threshold
     ) {
-      return [...messages, replay];
+      return appendMessagesPreservingTailApproval(messages, [replay]);
     }
     return messages;
   }

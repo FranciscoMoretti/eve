@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { createCurrentMessages } from "#harness/current-messages.js";
+import {
+  appendMessagesPreservingTailApproval,
+  createCurrentMessages,
+} from "#harness/current-messages.js";
 
 describe("createCurrentMessages", () => {
   it("partitions existing history by role", () => {
@@ -198,5 +201,91 @@ describe("createCurrentMessages", () => {
       { role: "system", content: "two" },
     ]);
     expect(current.nonSystemMessages).toEqual([]);
+  });
+});
+
+describe("appendMessagesPreservingTailApproval", () => {
+  it("inserts additions before the approval exchange", () => {
+    const assistant = {
+      role: "assistant" as const,
+      content: [
+        { type: "tool-call" as const, toolCallId: "call-1", toolName: "bash", input: {} },
+        {
+          type: "tool-approval-request" as const,
+          approvalId: "approval-1",
+          toolCallId: "call-1",
+        },
+      ],
+    };
+    const response = {
+      role: "tool" as const,
+      content: [
+        {
+          type: "tool-approval-response" as const,
+          approvalId: "approval-1",
+          approved: true,
+        },
+      ],
+    };
+    const addition = { role: "user" as const, content: "Run pwd." };
+
+    expect(
+      appendMessagesPreservingTailApproval(
+        [{ role: "user", content: "summary" }, assistant, response],
+        [addition],
+      ),
+    ).toEqual([{ role: "user", content: "summary" }, addition, assistant, response]);
+  });
+
+  it("appends normally after a completed tool result", () => {
+    const result = {
+      role: "tool" as const,
+      content: [
+        {
+          type: "tool-result" as const,
+          toolCallId: "call-1",
+          toolName: "bash",
+          output: { type: "text" as const, value: "/workspace" },
+        },
+      ],
+    };
+    const addition = { role: "user" as const, content: "Run pwd." };
+
+    expect(appendMessagesPreservingTailApproval([result], [addition])).toEqual([result, addition]);
+  });
+
+  it("appends normally after a declined approval with a terminal result", () => {
+    const assistant = {
+      role: "assistant" as const,
+      content: [
+        { type: "tool-call" as const, toolCallId: "call-1", toolName: "bash", input: {} },
+        {
+          type: "tool-approval-request" as const,
+          approvalId: "approval-1",
+          toolCallId: "call-1",
+        },
+      ],
+    };
+    const terminalResponse = {
+      role: "tool" as const,
+      content: [
+        {
+          type: "tool-approval-response" as const,
+          approvalId: "approval-1",
+          approved: false,
+        },
+        {
+          type: "tool-result" as const,
+          toolCallId: "call-1",
+          toolName: "bash",
+          output: { type: "execution-denied" as const, reason: "Tool execution was denied." },
+        },
+      ],
+    };
+    const addition = { role: "user" as const, content: "Continue." };
+
+    expect(appendMessagesPreservingTailApproval([assistant, terminalResponse], [addition])).toEqual(
+      [assistant, terminalResponse, addition],
+    );
   });
 });

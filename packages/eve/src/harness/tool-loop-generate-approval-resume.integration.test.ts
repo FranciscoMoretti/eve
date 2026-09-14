@@ -948,6 +948,72 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     },
   );
 
+  // Regression: compaction replayed the original task after the restored
+  // approval response. Post-compaction state re-injection could do the same.
+  // Either user message displaced the approval from the absolute history tail,
+  // so the AI SDK skipped local execution and sent a dangling tool call.
+  it.each(
+    ["structured", "text"].flatMap((response) =>
+      [false, true].map((reinjectState) => ({ reinjectState, response })),
+    ),
+  )(
+    "executes a $response approval through compaction (state re-injection: $reinjectState)",
+    async ({ reinjectState, response }) => {
+      const execute = vi.fn(async () => "/workspace");
+      const model = createModel();
+      const runStep = createToolLoopHarness({
+        ...createConfig(model, execute),
+        onCompaction: reinjectState
+          ? () => [
+              {
+                content: '[Task state]\\n{"tasks":[{"name":"analysis","status":"pending"}]}',
+                kind: "context.state",
+                role: "user",
+              },
+            ]
+          : undefined,
+      });
+      const session: HarnessSession = {
+        ...createPendingApprovalSession([
+          {
+            content: `Old context that should be compacted. ${"padding ".repeat(3_000)}`,
+            kind: "user",
+            role: "user",
+          },
+          { content: "Run pwd.", kind: "user", role: "user" },
+        ]),
+        compaction: { recentWindowSize: 2, threshold: 2_048 },
+      };
+
+      const result = await runStep(
+        session,
+        response === "text"
+          ? { message: "approve" }
+          : {
+              inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }],
+            },
+      );
+
+      expect(model.doGenerateCalls.length).toBeGreaterThanOrEqual(2);
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        toolCall.input,
+        expect.objectContaining({ toolCallId: toolCall.toolCallId }),
+      );
+
+      const providerPrompt = model.doGenerateCalls.at(-1)?.prompt ?? [];
+      expect(findPart(providerPrompt, "tool-result")).toMatchObject({
+        output: { type: "text", value: "canonical:/workspace" },
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+      });
+      expect(providerPrompt.at(-1)?.role).toBe("tool");
+      expect(result.session.history.at(-1)).toMatchObject({
+        content: [{ text: "The command returned /workspace.", type: "text" }],
+        role: "assistant",
+      });
+    },
+  );
+
   // Acceptance gate for the HITL non-blocking plan (research/hitl-request-lifecycle.md):
   // once messages run as normal turns while an approval is open, the approval batch is
   // restored *after* that intervening exchange. This proves the AI SDK accepts the

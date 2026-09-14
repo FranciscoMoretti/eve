@@ -23,6 +23,61 @@ const ANNOUNCEMENT_KINDS = {
   taskState: "context.state",
 } as const satisfies Record<keyof HistoryState, FrameworkMessageKind>;
 
+/**
+ * Appends messages without moving a pending approval response away from the
+ * absolute history tail. When possible, additions are placed before the
+ * assistant message that opened the approval exchange so the tool-call and
+ * approval messages remain contiguous.
+ */
+export function appendMessagesPreservingTailApproval(
+  messages: readonly ModelMessage[],
+  additions: readonly ModelMessage[],
+): ModelMessage[] {
+  if (additions.length === 0) {
+    return [...messages];
+  }
+
+  const tail = messages.at(-1);
+  if (tail?.role !== "tool") {
+    return [...messages, ...additions];
+  }
+
+  const approvalIds = new Set(
+    tail.content
+      .filter((part) => part.type === "tool-approval-response")
+      .map((part) => part.approvalId),
+  );
+  if (approvalIds.size === 0) {
+    return [...messages, ...additions];
+  }
+  const completedToolCallIds = new Set(
+    tail.content.filter((part) => part.type === "tool-result").map((part) => part.toolCallId),
+  );
+
+  let insertionIndex: number | undefined;
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.role === "assistant" &&
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-approval-request" &&
+          approvalIds.has(part.approvalId) &&
+          !completedToolCallIds.has(part.toolCallId),
+      )
+    ) {
+      insertionIndex = index;
+    }
+  }
+
+  if (insertionIndex === undefined) {
+    return [...messages, ...additions];
+  }
+
+  return [...messages.slice(0, insertionIndex), ...additions, ...messages.slice(insertionIndex)];
+}
+
 /** Builds the model view and durable history for one step. */
 export function createCurrentMessages(
   history: readonly HarnessModelMessage[],
