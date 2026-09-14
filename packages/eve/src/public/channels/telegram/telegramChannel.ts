@@ -1,6 +1,11 @@
 import type { TelegramInstrumentationMetadata } from "#public/channels/telegram/index.js";
 import { defaultDeliverResult, type ChannelAdapterContext } from "#channel/adapter.js";
-import type { ChannelFrom, ChannelResolveSession } from "#channel/channel-operations.js";
+import {
+  INTERNAL_CHANNEL_DELIVER,
+  type ChannelFrom,
+  type ChannelResolveSession,
+  type InternalChannelSource,
+} from "#channel/channel-operations.js";
 import type { SessionHandle } from "#channel/session.js";
 import type { DeliverPayload, SessionAuthContext, TurnPolicy } from "#channel/types.js";
 import type { SessionContext } from "#public/definitions/callback-context.js";
@@ -591,7 +596,9 @@ async function dispatchMessage(input: {
       : undefined;
 
   try {
-    const source = input.from(telegramContinuationTokenFromState(state));
+    const source = input.from(
+      telegramContinuationTokenFromState(state),
+    ) as InternalChannelSource<TelegramChannelState>;
     if (replyInputResponses === undefined) {
       await source.send(turnMessage, {
         auth: result.auth,
@@ -600,10 +607,17 @@ async function dispatchMessage(input: {
         title: result.title,
       });
     } else {
-      await source.respond(replyInputResponses, {
-        auth: result.auth,
-        context: [contextBlock, ...channelContext],
-      });
+      // A reply is only a structured answer when its prompt id is registered.
+      // Preserve the original text so option prompts, including approvals, can
+      // fall back to the harness's text-response resolution.
+      await source[INTERNAL_CHANNEL_DELIVER](
+        {
+          context: [contextBlock, ...channelContext],
+          inputResponses: replyInputResponses,
+          message: turnMessage,
+        },
+        { auth: result.auth },
+      );
     }
   } catch (error) {
     log.error("message delivery failed", { error });

@@ -98,10 +98,7 @@ import {
   resolveCompactionModel,
   shouldCompact,
 } from "#harness/compaction.js";
-import {
-  appendMessagesPreservingTailApproval,
-  createCurrentMessages,
-} from "#harness/current-messages.js";
+import { createCurrentMessages } from "#harness/current-messages.js";
 import {
   accumulateTurnUsage,
   getTurnUsageState,
@@ -3284,9 +3281,9 @@ async function maybeCompact(input: {
   messages = validateHarnessModelMessages([...canonical.memory, ...compactedOrdinary]);
 
   if (input.onCompaction) {
-    messages = validateHarnessModelMessages(
-      appendMessagesPreservingTailApproval(messages, input.onCompaction()),
-    );
+    for (const msg of input.onCompaction()) {
+      messages.push(msg);
+    }
   }
 
   if (emit) {
