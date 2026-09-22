@@ -12,6 +12,7 @@ import type {
   CreateSessionOptions,
   SendTurnInput,
   SendTurnOptions,
+  RespondTurnOptions,
 } from "#client/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
@@ -308,11 +309,11 @@ export interface EveEvalSessionDriver {
   /** Require exactly one pending input request matching `filter`, or abort dependent control flow. */
   requireInputRequest(filter?: EveEvalInputRequestMatchOptions): InputRequest;
   /** Resolve specific pending requests and run the resumed turn. */
-  respond(responses: readonly InputResponse[], options?: SendTurnOptions): Promise<EveEvalTurn>;
+  respond(responses: readonly InputResponse[], options?: RespondTurnOptions): Promise<EveEvalTurn>;
   /** Start a response turn without waiting for its boundary. */
   startRespond(
     responses: readonly InputResponse[],
-    options?: SendTurnOptions,
+    options?: RespondTurnOptions,
   ): Promise<EveEvalLiveTurn>;
   /** Resolve every pending request with the same option id. */
   respondAll(optionId: string): Promise<EveEvalTurn>;

@@ -57,6 +57,7 @@ export interface Session {
     turnId?: string;
   }): Promise<CancelTurnResult>;
   /** Queues compaction on this exact session ID. */
+  checkpoint?(input: { checkpointId: string; beforeTurnId: string }): Promise<CompactSessionResult>;
   compact(): Promise<CompactSessionResult>;
   /** Queues a context clear on this exact session ID. */
   clear(): Promise<ClearSessionResult>;
@@ -80,6 +81,7 @@ export type SessionSendOptions = SessionDeliveryOptions & {
   /** Initial workflow title for a prewarmed session. */
   readonly title?: string;
   readonly turnPolicy?: TurnPolicy;
+  readonly messageMetadata?: JsonObject;
 };
 
 /** Options for answering pending input requests through a fixed session handle. */
@@ -115,8 +117,10 @@ export function createSession(
       const payload = attachClientContext<{
         context?: readonly string[];
         message: string | UserContent | undefined;
+        messageMetadata?: JsonObject;
         outputSchema?: JsonObject;
       }>({ message: serializeUrlFilePartsInMessage(message) }, readClientContext(options));
+      if (options.messageMetadata !== undefined) payload.messageMetadata = options.messageMetadata;
       if (options.context !== undefined) payload.context = options.context;
       if (options.outputSchema !== undefined) payload.outputSchema = options.outputSchema;
       const commandWithoutCaller = {
@@ -167,6 +171,12 @@ export function createSession(
       if (options?.tasks !== undefined) command.tasks = options.tasks;
       if (options?.turnId !== undefined) command.turnId = options.turnId;
       return await runtime.dispatchSession({ command, sessionId: id });
+    },
+    async checkpoint(input) {
+      return await runtime.dispatchSession({
+        command: { kind: "checkpoint", ...input },
+        sessionId: id,
+      });
     },
     async compact() {
       return await runtime.dispatchSession({ command: { kind: "compact" }, sessionId: id });

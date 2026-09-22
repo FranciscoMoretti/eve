@@ -1,3 +1,4 @@
+import type { CheckpointSessionHookPayload } from "#channel/types.js";
 import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { jsonValuesEqual } from "#shared/json.js";
@@ -29,7 +30,8 @@ interface QueuedAuthorization {
   readonly sequence: number;
 }
 
-type QueuedSessionInput = QueuedDelivery | QueuedControl | QueuedAuthorization;
+type QueuedCheckpoint = CheckpointSessionHookPayload & { readonly sequence: number };
+type QueuedSessionInput = QueuedDelivery | QueuedControl | QueuedAuthorization | QueuedCheckpoint;
 
 export interface TurnSelection {
   readonly delivery: DeliverHookPayload;
@@ -45,6 +47,7 @@ export interface TurnSelection {
 }
 
 export type SessionInputSelection =
+  | CheckpointSessionHookPayload
   | TurnSelection
   | { readonly control: SessionControl; readonly kind: "control" }
   | { readonly kind: "authorization-resume"; readonly payloads: readonly DeliverPayload[] };
@@ -87,6 +90,10 @@ export class SessionInputQueue {
 
   isTaskCancelled(taskId: string): boolean {
     return this.cancelledTaskIds.has(taskId);
+  }
+
+  enqueueCheckpoint(request: CheckpointSessionHookPayload): void {
+    this.entries.push({ ...request, sequence: this.nextSequence++ });
   }
 
   enqueueControl(control: SessionControl): void {
@@ -216,7 +223,7 @@ export class SessionInputQueue {
       }
     }
     return this.entries.findIndex((entry) => {
-      if (entry.kind === "control") return true;
+      if (entry.kind === "control" || entry.kind === "checkpoint") return true;
       if (entry.kind === "authorization" || deferDeliveries) return false;
       const cohort = completionCohort(entry.delivery, cohorts);
       return cohort === undefined || !pendingCohorts.has(cohort);
@@ -231,6 +238,7 @@ export class SessionInputQueue {
     const selected = this.entries[index]!;
     if (selected.kind !== "delivery") {
       this.entries.splice(index, 1);
+      if (selected.kind === "checkpoint") return selected;
       if (selected.kind === "control") return { control: selected.control, kind: "control" };
       return { kind: "authorization-resume", payloads: [selected.payload] };
     }

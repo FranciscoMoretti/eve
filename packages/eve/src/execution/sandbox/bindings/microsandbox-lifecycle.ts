@@ -1,6 +1,7 @@
+import { withMicrosandboxMutation } from "#execution/sandbox/bindings/microsandbox-mutations.js";
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import {
   createFileBackedInternalSandboxSession,
@@ -15,6 +16,7 @@ import {
   resolveMicrosandboxMetadataPath,
   writeTemplateMetadata,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
+import { loadMicrosandboxModule } from "#execution/sandbox/bindings/microsandbox-module.js";
 import type { ResolvedMicrosandboxOptions } from "#execution/sandbox/bindings/microsandbox-options.js";
 import {
   connectMicrosandbox,
@@ -22,8 +24,8 @@ import {
   createProviderName,
   doesPathExist,
   isMicrosandboxNotFoundError,
-  loadMicrosandboxModule,
   type MicrosandboxVm,
+  recordMicrosandboxResource,
   removeSnapshotIfExists,
   sandboxExists,
   snapshotExists,
@@ -32,8 +34,8 @@ import {
   resolveMicrosandboxSessionRootPath,
   resolveMicrosandboxTemplateRootPath,
 } from "#execution/sandbox/bindings/microsandbox-templates.js";
-import { createLoggingSandboxSession } from "#execution/sandbox/logging-session.js";
 import { withDevelopmentSandboxMetadataPathTag } from "#execution/sandbox/development-run.js";
+import { createLoggingSandboxSession } from "#execution/sandbox/logging-session.js";
 import { buildSandboxSession } from "#execution/sandbox/session.js";
 import { resolveSandboxCacheDirectory } from "#internal/application/paths.js";
 import type {
@@ -170,112 +172,157 @@ export async function createMicrosandboxHandle(input: {
   readonly options: ResolvedMicrosandboxOptions;
   readonly optionsHash: string;
 }): Promise<SandboxBackendHandle<MicrosandboxSessionUseOptions>> {
-  const module = await loadMicrosandboxModule({
-    appRoot: input.createInput.runtimeContext.appRoot,
-    options: input.options,
-  });
-  const cacheDirectory = resolveSandboxCacheDirectory(input.createInput.runtimeContext.appRoot);
-  const sessionRootPath = resolveMicrosandboxSessionRootPath(
-    cacheDirectory,
-    input.createInput.sessionKey,
+  const mutationMetadataPath = resolveMicrosandboxMetadataPath(
+    resolveMicrosandboxSessionRootPath(
+      resolveSandboxCacheDirectory(input.createInput.runtimeContext.appRoot),
+      input.createInput.sessionKey,
+    ),
   );
-  const activeSessionKey = createActiveMicrosandboxSessionKey(sessionRootPath, input.optionsHash);
-  const activeHandle = activeMicrosandboxSessionHandles.get(activeSessionKey);
-  if (activeHandle !== undefined) {
-    return activeHandle;
-  }
-
-  const metadataPath = resolveMicrosandboxMetadataPath(sessionRootPath);
-  const existingMetadata =
-    readSessionMetadataRecord(input.createInput.existingMetadata) ??
-    (await readSessionMetadata(metadataPath));
-  const sessionTags = withDevelopmentSandboxMetadataPathTag(input.createInput.tags, metadataPath);
-
-  if (
-    existingMetadata?.optionsHash === input.optionsHash &&
-    ((await sandboxExists(module, existingMetadata.sandboxName)) ||
-      (existingMetadata.stateSnapshotName !== undefined &&
-        (await snapshotExists(module, existingMetadata.stateSnapshotName))))
-  ) {
-    const sandbox = await connectMicrosandbox({
-      metadata: existingMetadata,
-      metadataPath,
-      module,
+  return await withMicrosandboxMutation(mutationMetadataPath, async () => {
+    const module = await loadMicrosandboxModule({
+      appRoot: input.createInput.runtimeContext.appRoot,
       options: input.options,
-      sessionKey: input.createInput.sessionKey,
-      tags: sessionTags,
     });
-    if (sandbox !== null) {
-      return cacheHandle(
-        activeSessionKey,
-        createHandle(sandbox, input.backendName, input.optionsHash, () => {
-          activeMicrosandboxSessionHandles.delete(activeSessionKey);
-        }),
-      );
-    }
-  }
-
-  let snapshotName: string | null = null;
-  if (input.createInput.templateKey !== null) {
-    const templateRootPath = resolveMicrosandboxTemplateRootPath(
+    const cacheDirectory = resolveSandboxCacheDirectory(input.createInput.runtimeContext.appRoot);
+    const sessionRootPath = resolveMicrosandboxSessionRootPath(
       cacheDirectory,
-      input.createInput.templateKey,
+      input.createInput.sessionKey,
     );
-    const templateMetadata = await readTemplateMetadata(
-      resolveMicrosandboxMetadataPath(templateRootPath),
-    );
+    const activeSessionKey = createActiveMicrosandboxSessionKey(sessionRootPath, input.optionsHash);
+    const activeHandle = activeMicrosandboxSessionHandles.get(activeSessionKey);
+
+    const metadataPath = resolveMicrosandboxMetadataPath(sessionRootPath);
+    const existingMetadata =
+      readSessionMetadataRecord(input.createInput.existingMetadata) ??
+      (await readSessionMetadata(metadataPath));
+    const forkCheckpoint = input.createInput.forkCheckpoint;
+    let forkSnapshotName: string | undefined;
+    if (forkCheckpoint !== undefined) {
+      if (
+        forkCheckpoint.version !== 1 ||
+        forkCheckpoint.optionsHash !== input.optionsHash ||
+        typeof forkCheckpoint.snapshotName !== "string" ||
+        !/^eve-sbx-fork-[a-f0-9]{32}$/.test(forkCheckpoint.snapshotName)
+      ) {
+        throw new Error("Invalid microsandbox fork checkpoint or changed sandbox configuration.");
+      }
+      forkSnapshotName = forkCheckpoint.snapshotName;
+      const marker = join(sessionRootPath, "fork-checkpoint.json");
+      let previous: string | undefined;
+      try {
+        previous = await readFile(marker, "utf8");
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      }
+      const identity = JSON.stringify([forkSnapshotName, input.optionsHash]);
+      if (previous !== undefined) {
+        if (previous !== identity)
+          throw new Error("Sandbox session already has a different fork checkpoint.");
+      } else {
+        if (activeHandle !== undefined || existingMetadata !== null)
+          throw new Error("Existing sandbox has no matching fork checkpoint.");
+        await mkdir(sessionRootPath, { recursive: true });
+        try {
+          await writeFile(marker, identity, { flag: "wx" });
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+          if ((await readFile(marker, "utf8")) !== identity)
+            throw new Error("Sandbox session already has a different fork checkpoint.");
+        }
+      }
+    }
+    if (activeHandle !== undefined) return activeHandle;
+    const sessionTags = withDevelopmentSandboxMetadataPathTag(input.createInput.tags, metadataPath);
 
     if (
-      templateMetadata === null ||
-      templateMetadata.optionsHash !== input.optionsHash ||
-      !(await snapshotExists(module, templateMetadata.snapshotName))
+      existingMetadata?.optionsHash === input.optionsHash &&
+      ((await sandboxExists(module, existingMetadata.sandboxName)) ||
+        (existingMetadata.stateSnapshotName !== undefined &&
+          (await snapshotExists(module, existingMetadata.stateSnapshotName))))
     ) {
-      throw new SandboxTemplateNotProvisionedError({
-        backendName: input.backendName,
-        templateKey: input.createInput.templateKey,
+      const sandbox = await connectMicrosandbox({
+        metadata: existingMetadata,
+        metadataPath,
+        module,
+        options: input.options,
+        sessionKey: input.createInput.sessionKey,
+        tags: sessionTags,
       });
+      if (sandbox !== null) {
+        return cacheHandle(
+          activeSessionKey,
+          createHandle(sandbox, input.backendName, input.optionsHash, () => {
+            activeMicrosandboxSessionHandles.delete(activeSessionKey);
+          }),
+        );
+      }
     }
 
-    snapshotName = templateMetadata.snapshotName;
-  }
+    let snapshotName: string | null = null;
+    if (forkCheckpoint !== undefined) {
+      snapshotName = forkSnapshotName!;
+    } else if (input.createInput.templateKey !== null) {
+      const templateRootPath = resolveMicrosandboxTemplateRootPath(
+        cacheDirectory,
+        input.createInput.templateKey,
+      );
+      const templateMetadata = await readTemplateMetadata(
+        resolveMicrosandboxMetadataPath(templateRootPath),
+      );
 
-  const sandboxName = createProviderName(
-    "eve-sbx-ses",
-    `${input.createInput.sessionKey}:${randomUUID()}`,
-  );
-  let sandbox: MicrosandboxVm;
-  try {
-    sandbox = await createPreparedMicrosandbox({
-      fromSnapshot: snapshotName ?? undefined,
-      module,
-      name: sandboxName,
-      networkPolicy: input.options.networkPolicy,
-      options: input.options,
-      sessionKey: input.createInput.sessionKey,
-      setupBaseRuntime: snapshotName === null,
-      tags: sessionTags,
-    });
-  } catch (error) {
-    if (
-      snapshotName !== null &&
-      input.createInput.templateKey !== null &&
-      isMicrosandboxNotFoundError(error)
-    ) {
-      throw new SandboxTemplateNotProvisionedError({
-        backendName: input.backendName,
-        templateKey: input.createInput.templateKey,
-      });
+      if (
+        templateMetadata === null ||
+        templateMetadata.optionsHash !== input.optionsHash ||
+        !(await snapshotExists(module, templateMetadata.snapshotName))
+      ) {
+        throw new SandboxTemplateNotProvisionedError({
+          backendName: input.backendName,
+          templateKey: input.createInput.templateKey,
+        });
+      }
+
+      snapshotName = templateMetadata.snapshotName;
     }
-    throw error;
-  }
 
-  await sandbox.writeMetadata(metadataPath, input.optionsHash);
-  return cacheHandle(
-    activeSessionKey,
-    createHandle(sandbox, input.backendName, input.optionsHash, () => {
-      activeMicrosandboxSessionHandles.delete(activeSessionKey);
-    }),
-  );
+    const sandboxName = createProviderName(
+      "eve-sbx-ses",
+      `${input.createInput.sessionKey}:${randomUUID()}`,
+    );
+    await recordMicrosandboxResource(metadataPath, "sandbox", sandboxName);
+    let sandbox: MicrosandboxVm;
+    try {
+      sandbox = await createPreparedMicrosandbox({
+        fromSnapshot: snapshotName ?? undefined,
+        module,
+        name: sandboxName,
+        networkPolicy: input.options.networkPolicy,
+        options: input.options,
+        sessionKey: input.createInput.sessionKey,
+        setupBaseRuntime: snapshotName === null,
+        tags: sessionTags,
+      });
+    } catch (error) {
+      if (
+        snapshotName !== null &&
+        input.createInput.templateKey !== null &&
+        isMicrosandboxNotFoundError(error)
+      ) {
+        throw new SandboxTemplateNotProvisionedError({
+          backendName: input.backendName,
+          templateKey: input.createInput.templateKey,
+        });
+      }
+      throw error;
+    }
+
+    await sandbox.writeMetadata(metadataPath, input.optionsHash);
+    return cacheHandle(
+      activeSessionKey,
+      createHandle(sandbox, input.backendName, input.optionsHash, () => {
+        activeMicrosandboxSessionHandles.delete(activeSessionKey);
+      }),
+    );
+  });
 }
 
 function createHandle(
@@ -299,6 +346,9 @@ function createHandle(
       return buildSandboxSession(createMicrosandboxInternalSession(sandbox), async (policy) => {
         await sandbox.setNetworkPolicy(policy);
       });
+    },
+    async captureForkCheckpoint(checkpointKey) {
+      return await sandbox.captureForkCheckpoint(checkpointKey, optionsHash);
     },
     async captureState() {
       const metadata = await sandbox.captureState(optionsHash);

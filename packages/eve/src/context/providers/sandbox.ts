@@ -35,6 +35,7 @@ export const sandboxProvider: FrameworkContextProvider<SandboxAccess> = {
         compiledArtifactsSource: bundle.compiledArtifactsSource,
         nodeId: node.nodeId,
         ownsSandbox: !sharesSandbox,
+        localSandboxIdentity: session.localSandboxIdentity,
         registry,
         runOnSession: async (callback) => await contextStorage.run(ctx, callback),
         sessionId: sandboxSessionId,

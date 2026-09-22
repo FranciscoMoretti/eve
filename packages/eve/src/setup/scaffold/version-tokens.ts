@@ -63,7 +63,8 @@ function findEvePackageRoot(): string | undefined {
     const packageJsonPath = join(directory, "package.json");
     if (existsSync(packageJsonPath)) {
       const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-      if (packageJson.name === EVE_PACKAGE_NAME) return directory;
+      if (packageJson.name === EVE_PACKAGE_NAME || packageJson.name === "@chat-js/eve")
+        return directory;
     }
     const parent = dirname(directory);
     if (parent === directory) return undefined;

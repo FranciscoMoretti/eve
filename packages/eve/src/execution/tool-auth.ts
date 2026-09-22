@@ -1,4 +1,5 @@
 import { buildBaseToolContext } from "#context/build-base-tool-context.js";
+import { getToolApprovalReceipt } from "#context/tool-approval-receipts.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import type { ApprovalResponseAuth } from "#approval/definition.js";
 import type { ToolAuthOptions, ToolContext, ToolExecuteOptions } from "#tools/definition.js";
@@ -25,6 +26,7 @@ export function createToolExecuteWithAuth<TInput>(input: ToolExecuteWithAuthInpu
     const auth = createAuthorizationContext({ scope: input.scope });
     const ctx: ToolContext = {
       ...buildBaseToolContext({ options, toolName: input.scope }),
+      approval: getToolApprovalReceipt(options.toolCallId, input.scope, toolInput),
       getToken: auth.getToken,
       requireAuth: auth.requireAuth,
     };

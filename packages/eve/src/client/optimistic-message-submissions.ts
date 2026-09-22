@@ -32,12 +32,18 @@ export class OptimisticMessageSubmissions<TData> {
       eventStartIndex,
       id: createSubmissionId(),
       message: summarizeUserContent(input.message),
+      metadata: input.messageMetadata,
       requiresDeliveryId: true,
     };
     this.#pending = [...this.#pending, pending];
     if (this.#optimistic) {
       this.#projection.append({
-        data: { createdAt: pending.createdAt, message: pending.message, submissionId: pending.id },
+        data: {
+          createdAt: pending.createdAt,
+          message: pending.message,
+          metadata: pending.metadata,
+          submissionId: pending.id,
+        },
         type: "client.message.submitted",
       });
     }
@@ -101,6 +107,7 @@ export class OptimisticMessageSubmissions<TData> {
           createdAt: pending.createdAt,
           error: { message: error.message },
           message: pending.message,
+          metadata: pending.metadata,
           submissionId: pending.id,
         },
         type: "client.message.failed",

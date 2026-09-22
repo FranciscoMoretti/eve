@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { STABLE_WORKFLOW_NAMES } from "#execution/stable-workflow-names.js";
-import { EVE_PACKAGE_NAME } from "#internal/package-name.js";
+import {
+  EVE_PACKAGE_NAME,
+  isEvePackageName,
+  normalizeEveRuntimeIdentity,
+} from "#internal/package-name.js";
 import { SUBAGENT_TOOL_EXECUTE_WORKFLOW_NAME } from "#runtime/subagents/workflow-reference.js";
 import { prepareAuthoredWorkflowDirectives } from "#internal/workflow-bundle/authored-workflow-directives.js";
 import {
@@ -146,7 +150,7 @@ export function isAuthoredApplicationRoot(appRoot: string): boolean {
   if (!existsSync(packageJsonPath)) return false;
   try {
     const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-    return parsed.name !== EVE_PACKAGE_NAME;
+    return !isEvePackageName(parsed.name);
   } catch {
     return false;
   }
@@ -283,8 +287,7 @@ function findPackageJson(filePath: string): PackageInfo | null {
             exports: parsed.exports,
             main: parsed.main,
             module: parsed.module,
-            name: parsed.name,
-            version: parsed.version,
+            ...normalizeEveRuntimeIdentity({ name: parsed.name, version: parsed.version }),
           };
           packageJsonCache.set(dir, result);
           for (const visitedDir of visitedDirs) {

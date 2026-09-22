@@ -1,0 +1,16 @@
+{
+  "kind": "eve-extension-capability-contract",
+  "capability": "connection",
+  "epoch": 24,
+  "sha256": "87d356135678c804ab0e1fd9700ba52825abbcd504284018fb458c3227cee725",
+  "exports": [
+    "ConnectionAuthorizationFailedError",
+    "ConnectionAuthorizationRequiredError",
+    "defineDynamic",
+    "defineInteractiveAuthorization",
+    "defineMcpClientConnection",
+    "defineOpenAPIConnection",
+    "isConnectionAuthorizationFailedError",
+    "isConnectionAuthorizationRequiredError"
+  ]
+}

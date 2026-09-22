@@ -6,6 +6,7 @@ const COALESCED_DELIVER_FIELDS = [
   "context",
   "inputResponses",
   "message",
+  "messageMetadata",
   "outputSchema",
   "task",
 ] as const;

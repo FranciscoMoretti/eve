@@ -1,3 +1,7 @@
+import {
+  captureLocalForkCheckpoint,
+  restoreLocalForkCheckpoint,
+} from "#execution/sandbox/bindings/local-fork-checkpoint.js";
 import { randomUUID } from "node:crypto";
 import { type Dirent } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
@@ -139,6 +143,22 @@ export function createJustBashSandboxBackend(
         getLocalRootPath(createInput.existingMetadata) ??
         resolveSessionRootPath(cacheDirectory, createInput.sessionKey);
 
+      const checkpointsRoot = join(
+        cacheDirectory,
+        JUST_BASH_CACHE_DIRECTORY_NAME,
+        "fork-checkpoints",
+      );
+      if (createInput.forkCheckpoint) {
+        if (filesystem !== undefined)
+          throw new Error(
+            "Custom sandbox filesystems require their own fork checkpoint implementation.",
+          );
+        await restoreLocalForkCheckpoint({
+          checkpointsRoot,
+          targetRoot: sessionRootPath,
+          checkpoint: createInput.forkCheckpoint,
+        });
+      }
       if (!(await pathExists(sessionRootPath))) {
         if (createInput.templateKey === null) {
           await mkdir(sessionRootPath, { recursive: true });
@@ -165,7 +185,21 @@ export function createJustBashSandboxBackend(
         sessionKey: createInput.sessionKey,
       });
 
-      return createJustBashHandle(sandbox, JUST_BASH_BACKEND_NAME);
+      const handle = createJustBashHandle(sandbox, JUST_BASH_BACKEND_NAME);
+      return {
+        ...handle,
+        ...(filesystem === undefined
+          ? {
+              captureForkCheckpoint: (checkpointKey: string) =>
+                captureLocalForkCheckpoint({
+                  checkpointsRoot,
+                  filesystemRoot: join(sessionRootPath, "fs"),
+                  sessionKey: createInput.sessionKey,
+                  checkpointKey,
+                }),
+            }
+          : {}),
+      };
     },
   };
 }

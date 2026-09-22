@@ -197,6 +197,7 @@ export function defaultDeliverResult(payload: DeliverPayload): StepInput | undef
       {
         inputResponses: payload.inputResponses,
         message: payload.message,
+        messageMetadata: payload.messageMetadata,
         context: payload.context,
         outputSchema: payload.outputSchema,
       },

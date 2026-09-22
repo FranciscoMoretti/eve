@@ -21,6 +21,7 @@ const EVE_NEXT_PRODUCTION_ORIGIN_ENV = "EVE_NEXT_PRODUCTION_ORIGIN";
 const EVE_NEXT_PRODUCTION_PORT_ENV = "EVE_NEXT_PRODUCTION_PORT";
 const DEFAULT_EVE_NEXT_PRODUCTION_PORT = 4274;
 const EVE_NAMED_AGENT_ROUTE_PREFIX = "/eve";
+const NEXT_PHASE_PRODUCTION_SERVER = "phase-production-server";
 
 type ArrayElement<T> = T extends readonly (infer TElement)[] ? TElement : never;
 type NextRewrites = Awaited<ReturnType<NonNullable<NextConfig["rewrites"]>>>;
@@ -470,6 +471,21 @@ export function withEve<TConfig extends EveNextConfig>(
         productionDestination,
       };
     });
+    const productionServerDestinations =
+      phase === NEXT_PHASE_PRODUCTION_SERVER
+        ? await Promise.all(
+            agentsWithDestinations.map((agent) =>
+              resolveEveDestinationPrefix({
+                appRoot: agent.appRoot,
+                devServerTimeoutMs,
+                logLabel: agent.name,
+                phase,
+                productionDestinationPrefix: agent.productionDestination.destinationPrefix,
+                productionServerOrigin: agent.productionDestination.localServerOrigin,
+              }),
+            ),
+          )
+        : undefined;
 
     return {
       ...nextConfig,
@@ -477,15 +493,17 @@ export function withEve<TConfig extends EveNextConfig>(
         const [existing, eveRules] = await Promise.all([
           resolveExistingRewrites(existingRewrites),
           Promise.all(
-            agentsWithDestinations.map(async (agent) => {
-              const destinationPrefix = await resolveEveDestinationPrefix({
-                appRoot: agent.appRoot,
-                devServerTimeoutMs,
-                logLabel: agent.name,
-                phase,
-                productionDestinationPrefix: agent.productionDestination.destinationPrefix,
-                productionServerOrigin: agent.productionDestination.localServerOrigin,
-              });
+            agentsWithDestinations.map(async (agent, index) => {
+              const destinationPrefix =
+                productionServerDestinations?.[index] ??
+                (await resolveEveDestinationPrefix({
+                  appRoot: agent.appRoot,
+                  devServerTimeoutMs,
+                  logLabel: agent.name,
+                  phase,
+                  productionDestinationPrefix: agent.productionDestination.destinationPrefix,
+                  productionServerOrigin: agent.productionDestination.localServerOrigin,
+                }));
 
               return createEveRewriteRule({
                 destinationPrefix,

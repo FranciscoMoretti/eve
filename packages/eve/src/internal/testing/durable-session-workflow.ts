@@ -1,3 +1,12 @@
+import { getWritable } from "#compiled/@workflow/core/index.js";
+import { SessionCheckpointWriterKey } from "#context/keys.js";
+import { deserializeContext, serializeContext } from "#context/serialize.js";
+import { writeSessionCheckpoint } from "#execution/session-checkpoint.js";
+import {
+  SESSION_CHECKPOINT_NAMESPACE,
+  SESSION_CHECKPOINT_WRITER_KEY,
+  type SessionCheckpoint,
+} from "#execution/session-checkpoint-contract.js";
 /**
  * Test fixture exercising the `createDurableSessionState` /
  * `readDurableSession` round-trip from inside a real workflow runtime.
@@ -207,4 +216,37 @@ export async function durableSessionRetryFixtureWorkflow(): Promise<DurableSessi
     sessionId,
     writeAttempt,
   };
+}
+
+export async function sessionCheckpointFixtureStep(input: {
+  readonly sessionId: string;
+  readonly serializedContext: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+  "use step";
+  const ctx = await deserializeContext(input.serializedContext);
+  const session = buildSyntheticSession({
+    sessionId: input.sessionId,
+    marker: "checkpoint",
+    historyDepth: 1,
+  });
+  session.history.push({
+    role: "user",
+    kind: "user",
+    content: [{ type: "file", mediaType: "application/pdf", data: new Uint8Array([1, 2, 3]) }],
+  });
+  await writeSessionCheckpoint({
+    session,
+    delivery: { message: "next" },
+    target: ctx.get(SessionCheckpointWriterKey),
+  });
+  return serializeContext(ctx);
+}
+
+export async function sessionCheckpointFixtureWorkflow(): Promise<void> {
+  "use workflow";
+  const { workflowRunId: sessionId } = getWorkflowMetadata();
+  const writable = getWritable<SessionCheckpoint>({ namespace: SESSION_CHECKPOINT_NAMESPACE });
+  const serializedContext = { [SESSION_CHECKPOINT_WRITER_KEY]: { sessionId, writable } };
+  const restored = await sessionCheckpointFixtureStep({ sessionId, serializedContext });
+  await sessionCheckpointFixtureStep({ sessionId, serializedContext: restored });
 }

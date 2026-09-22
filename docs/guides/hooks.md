@@ -26,7 +26,7 @@ The slug is the path-relative basename. `agent/hooks/audit.ts` becomes `"audit"`
 
 `defineHook`, `HookDefinition`, and `HookContext` live on `eve/hooks`.
 
-A hook file declares stream-event subscribers under the `events` map, keyed by event type, with `*` matching every event. Subscribe to any event in the runtime stream vocabulary documented in [Sessions, runs and streaming](../concepts/sessions-runs-and-streaming), including the lifecycle events `session.started`, `turn.completed`, `message.completed`, `action.partial`, and `action.result`. Handlers are observe-only. They cannot inject model context. To contribute runtime model messages, use `defineDynamic` and `defineInstructions` in `agent/instructions/`.
+A hook file declares stream-event subscribers under the `events` map, keyed by event type, with `*` matching every event. Subscribe to any event in the runtime stream vocabulary documented in [Sessions, runs and streaming](../concepts/sessions-runs-and-streaming), including the lifecycle events `session.started`, `turn.completed`, `message.completed`, `action.partial`, and `action.result`. Only `turn.completed` handlers may return durable response annotations and auxiliary model usage. Handlers cannot inject model context. To contribute runtime model messages, use `defineDynamic` and `defineInstructions` in `agent/instructions/`.
 
 ## Scope side effects to a channel
 
@@ -169,7 +169,7 @@ See [the event envelope](../concepts/sessions-runs-and-streaming#the-event-envel
 When a stream event fires, three things happen in order:
 
 1. Emit. The channel adapter handler runs, the event is stamped with its `meta` envelope, then it is written to the durable stream.
-2. Hooks. Stream-event hooks fire (typed handlers first, then the `*` wildcard). Return values are ignored.
+2. Hooks. Stream-event hooks fire (typed handlers first, then the `*` wildcard). A `turn.completed` result emits `hook.result` through the same durable pipeline before the session becomes idle. Other events must return void.
 3. Dynamic tool resolvers. Resolvers subscribed to the event type run and update the tool set.
 
 Hooks always run after the event is durably recorded, so if a hook throws, the stream stays consistent. The persisted event and every hook observe the same `meta.id`.
@@ -191,7 +191,7 @@ Subagents may carry their own `agent/hooks/` directory. Subagent hooks fire only
 | Make a value available across the entire step     | a context provider                             |
 | Subscribe to platform-specific events             | a channel adapter handler                      |
 
-Stream-event hooks and channel adapter event handlers are structurally identical. Choose the channel adapter handler when you are authoring adapter-specific behavior, and choose `events.*` when you are authoring agent-level behavior that should fire across every channel. Both fire when both are registered.
+Completion results are specific to authored hooks; channel adapter return contracts are unchanged. Choose the channel adapter handler when you are authoring adapter-specific behavior, and choose `events.*` when you are authoring agent-level behavior that should fire across every channel. Both fire when both are registered.
 
 ## What to read next
 
@@ -199,3 +199,31 @@ Stream-event hooks and channel adapter event handlers are structurally identical
 - [Context control](../concepts/context-control)
 - [Session context](../reference/typescript-api)
 - [Sessions, runs and streaming](../concepts/sessions-runs-and-streaming)
+
+## Completion results
+
+A completion hook may return `TurnCompletedHookResult` from `eve/hooks`. This is useful for suggestions generated with a separate model after the main answer:
+
+```ts title="agent/hooks/suggestions.ts"
+import { defineHook } from "eve/hooks";
+
+export default defineHook({
+  events: {
+    "turn.completed"() {
+      return { responseMetadata: { suggestions: ["Explain the next step"] } };
+    },
+  },
+});
+```
+
+The durable `hook.result` event contains the hook's path-relative `hookId`, the completed `turnId`, and its `responseMetadata`. The default reducer stores this object at the matching assistant message's `metadata.annotations[hookId]`. Each hook owns its namespace; a later result replaces that namespace while retaining other hooks' annotations. Annotations are separate from `metadata.custom`, lifecycle fields, authentication, and model history. A usage-only result never creates an assistant message.
+
+Return `modelCalls` to record auxiliary model attempts alongside optional display metadata. Each entry accepts `modelId`, optional `usage` (`LanguageModelUsage`), optional `providerMetadata`, and optional `failed: true` when a request failed before completing. eve publishes sanitized token counts, gateway cost and generation ID; unrelated provider metadata is discarded. The list is limited to 100 attempts per result. Unknown usage stays unknown, including failed requests; it is never invented as zero.
+
+Capture completed model attempts before validating their output. If validation fails, return the captured `modelCalls` without `responseMetadata`. If the request failed before completion, record an entry with `failed: true`. Catch optional annotation-generation errors inside the hook so an absent suggestion does not fail the main answer. eve does not infer model attempts from thrown errors. Usage observers can subscribe to `hook.result`; deduplicate re-reading by event ID and attempt index, without collapsing separately billed retries into one turn charge.
+
+Completion hooks may return void as before. Returning a result for another event is rejected, including from a wildcard handler. A wildcard can return a result only after narrowing its event to `turn.completed`. Emitting `hook.result` does not re-invoke completion handlers. Result processing is awaited before `session.waiting` or terminal completion, and stream version 28 advertises the event.
+
+Annotations survive replay and native history forks. Inherited display prefixes omit auxiliary usage evidence so a fork does not bill old attempts again. Trusted transcript seeds may carry `annotations` as a map of hook IDs to JSON objects; prefix forks preserve that map without inserting it into model prompts. Applications exporting public copies should explicitly allowlist which annotations they publish. There is no client annotation-write endpoint.
+
+Invalid display metadata is omitted independently of valid model-call evidence. Malformed call entries or unknown result fields still reject the authored result.

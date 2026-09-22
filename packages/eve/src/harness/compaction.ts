@@ -1,3 +1,4 @@
+import { modelUsageEvidence } from "#harness/model-usage.js";
 import { generateText, type LanguageModel, type ModelMessage, type TelemetryOptions } from "ai";
 
 import {
@@ -205,6 +206,7 @@ export async function compactMessages(
   abortSignal?: AbortSignal,
   forceSummary = false,
   historyInputTokenCount?: number,
+  onUsage?: (evidence: ReturnType<typeof modelUsageEvidence>) => Promise<void>,
 ): Promise<ModelMessage[]> {
   const { conversation, previousCheckpoint } = extractPreviousCheckpoint(messages);
   const recentConfig = forceSummary ? { ...config, recentWindowSize: 1 } : config;
@@ -257,6 +259,9 @@ export async function compactMessages(
       telemetry: telemetry ? { ...telemetry, functionId: "eve.compaction" } : undefined,
       temperature: 0,
     });
+
+    // A paid attempt remains billable even when its summary is unusable.
+    await onUsage?.(modelUsageEvidence(result));
 
     if (result.text.trim().length === 0) {
       throw new Error(

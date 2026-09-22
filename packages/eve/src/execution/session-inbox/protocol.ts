@@ -7,7 +7,10 @@ import type {
 export type DecodedSessionInbox =
   | DeliverHookPayload
   | SessionTimeoutHookPayload
-  | Extract<SessionCommand, { readonly kind: "cancel" | "clear" | "compact" | "reset" }>;
+  | Extract<
+      SessionCommand,
+      { readonly kind: "cancel" | "clear" | "compact" | "reset" | "checkpoint" }
+    >;
 
 /** Invalid current-generation inbox payload. Historical wire shapes are not accepted. */
 export class SessionInboxPayloadError extends Error {
@@ -48,6 +51,18 @@ export function decodeSessionInboxPayload(value: unknown): DecodedSessionInbox {
       }
       return value as DeliverHookPayload;
     }
+    case "checkpoint":
+      if (
+        payload.version !== undefined ||
+        typeof payload.checkpointId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          payload.checkpointId,
+        ) ||
+        typeof payload.beforeTurnId !== "string" ||
+        !/^turn_(0|[1-9][0-9]*)$/.test(payload.beforeTurnId)
+      )
+        throw new SessionInboxPayloadError("Invalid checkpoint request.");
+      return value as DecodedSessionInbox;
     case "cancel":
     case "clear":
     case "compact":

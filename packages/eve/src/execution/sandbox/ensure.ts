@@ -1,3 +1,8 @@
+import { assertLocalSessionSandboxIdentity } from "#execution/sandbox/local-session-identity.js";
+import type { HarnessSession } from "#harness/types.js";
+import { randomUUID } from "node:crypto";
+import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { SandboxSession } from "#public/definitions/sandbox.js";
 import type {
   SandboxBackend,
@@ -29,6 +34,7 @@ export interface EnsureSandboxAccessInput {
   readonly nodeId: string;
   /** Whether this durable session owns the sandbox lifecycle. */
   readonly ownsSandbox?: boolean;
+  readonly localSandboxIdentity?: HarnessSession["localSandboxIdentity"];
   readonly registry: RuntimeSandboxRegistry;
   readonly sessionId: string;
   readonly runOnSession?: (callback: () => Promise<void>) => Promise<void>;
@@ -73,6 +79,10 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
     const inheritance = registered.inheritance;
     const definition = inheritance?.definition ?? registered.definition;
     const backend = definition.backend;
+    await assertLocalSessionSandboxIdentity(input.localSandboxIdentity, {
+      appRoot,
+      backendName: backend.name,
+    });
     const templatePlan = createRuntimeSandboxTemplatePlan({
       definition,
       workspaceResourceRoot: inheritance?.workspaceResourceRoot ?? registered.workspaceResourceRoot,
@@ -118,17 +128,27 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       persistedSession.sessionKey === keys.sessionKey
         ? persistedSession
         : null;
+    const forkCheckpoint = reattachSession === null ? input.state?.forkCheckpoint : undefined;
     if (reattachSession === null) {
-      initialized = false;
+      // A fork inherits the already-initialized filesystem, not source process
+      // state. Running the initializer again would overwrite checkpoint files.
+      initialized = forkCheckpoint !== undefined;
     }
-
+    if (forkCheckpoint && forkCheckpoint.backendName !== backend.name) {
+      throw new Error("Sandbox fork checkpoint belongs to a different backend.");
+    }
     const createInput: SandboxBackendCreateInput = {
       existingMetadata: reattachSession?.metadata,
+      forkCheckpoint: forkCheckpoint?.metadata,
       runtimeContext: { appRoot },
       sessionKey: keys.sessionKey,
       tags: input.tags,
       templateKey: keys.templateKey,
     };
+
+    if (backend.name === "microsandbox") {
+      await recordLocalSandboxOwner(appRoot, keys.sessionKey, input.sessionId);
+    }
 
     const handle = await withDevelopmentSandboxProgress(
       `eve: opening sandbox session "${formatNodeLabel(input.nodeId)}" on backend "${backend.name}"...`,
@@ -169,6 +189,15 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
   }
 
   return {
+    async captureForkCheckpoint(checkpointKey) {
+      if (input.ownsSandbox === false) return undefined;
+      const handle = await getHandle();
+      if (!handle?.captureForkCheckpoint || !registered) return undefined;
+      const metadata = await handle.captureForkCheckpoint(checkpointKey);
+      return metadata === undefined
+        ? undefined
+        : { backendName: registered.definition.backend.name, metadata };
+    },
     async captureState() {
       if (handlePromise !== undefined) {
         const handle = await handlePromise;
@@ -180,6 +209,9 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       return {
         initialized,
         session: persistedSession,
+        ...(persistedSession === null && input.state?.forkCheckpoint
+          ? { forkCheckpoint: input.state.forkCheckpoint }
+          : {}),
       };
     },
     async delete(options) {
@@ -277,4 +309,42 @@ async function withDevelopmentSandboxProgress<T>(
 
 function formatNodeLabel(nodeId: string): string {
   return nodeId === "__root__" ? "root" : nodeId;
+}
+
+/** Persist the unsanitized owner before a local backend can create any resources. */
+async function recordLocalSandboxOwner(appRoot: string, sessionKey: string, sessionId: string) {
+  const directory = join(appRoot, ".eve", "sandbox-cache", "microsandbox", "sessions", sessionKey);
+  const createdDirectory = await mkdir(directory, { recursive: true });
+  const path = join(directory, "owner.json");
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  // Only a new directory proves resource recording was enabled from its inception.
+  // Never upgrade a preexisting cache whose older provider resources may be unrecorded.
+  const identity = JSON.stringify({
+    version: 1,
+    backendName: "microsandbox",
+    sessionKey,
+    sessionId,
+    writeAheadResources: createdDirectory !== undefined ? true : undefined,
+  });
+  try {
+    await writeFile(temporary, identity, { mode: 0o600 });
+    try {
+      // Publish a complete record without ever replacing a different owner.
+      await link(temporary, path);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      const owner = JSON.parse(await readFile(path, "utf8"));
+      if (
+        owner.version !== 1 ||
+        owner.backendName !== "microsandbox" ||
+        owner.sessionKey !== sessionKey ||
+        owner.sessionId !== sessionId ||
+        (owner.writeAheadResources !== undefined && owner.writeAheadResources !== true)
+      ) {
+        throw new Error("Sandbox session already belongs to a different owner.");
+      }
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }

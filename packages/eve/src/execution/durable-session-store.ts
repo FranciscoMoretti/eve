@@ -59,6 +59,7 @@ export interface DurableSession {
   readonly outputSchema?: JsonObject;
   readonly state?: SessionStateMap;
   readonly sandboxState?: SandboxState;
+  readonly localSandboxIdentity?: HarnessSession["localSandboxIdentity"];
   readonly taskId?: string;
   readonly agent: {
     readonly system: string;

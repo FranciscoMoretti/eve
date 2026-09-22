@@ -1,3 +1,4 @@
+import type { JsonObject } from "#shared/json.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { AuthorizationOutcome } from "#protocol/message.js";
 
@@ -29,6 +30,12 @@ export interface EveMessage {
  * once the turn finalizes.
  */
 export interface EveMessageMetadata {
+  /** Durable application data, separate from framework lifecycle and authorization. */
+  readonly custom?: JsonObject;
+  /** Framework-owned result namespaces keyed by authored hook slug. */
+  readonly annotations?: Readonly<Record<string, JsonObject>>;
+  /** Informational provider/model reference retained by imported assistant history. */
+  readonly modelId?: string;
   readonly optimistic?: true;
   readonly result?: unknown;
   readonly status?: "complete" | "failed" | "streaming" | "submitted";
@@ -186,6 +193,8 @@ export type EveDynamicToolPart = {
       readonly errorText?: never;
       readonly input: unknown;
       readonly output: unknown;
+      /** Imported model tool output is text rather than JSON when specified. */
+      readonly outputType?: "text";
       readonly partial?: true;
       readonly state: "output-available";
     }

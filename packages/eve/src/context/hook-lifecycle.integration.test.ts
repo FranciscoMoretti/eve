@@ -181,3 +181,52 @@ describe("dispatchStreamEventHooks", () => {
     expect(deletions).toBe(1);
   });
 });
+
+it("emits completion results through the durable callback and lets observers see them without completion recursion", async () => {
+  const calls: string[] = [];
+  const registry = createRuntimeHookRegistry([
+    hook("suggestions", {
+      events: {
+        "turn.completed": () => {
+          calls.push("completed");
+          return { responseMetadata: { suggestions: ["Next?"] } };
+        },
+      },
+    }),
+    hook("billing", {
+      events: {
+        "*": (event) => {
+          calls.push(event.type);
+        },
+      },
+    }),
+  ]);
+  const ctx = buildCtx();
+  await contextStorage.run(ctx, () =>
+    dispatchStreamEventHooks({
+      ctx,
+      registry,
+      event: stampTestEvent({ type: "turn.completed", data: { turnId: "turn_0", sequence: 0 } }),
+      emitResult: async (event) => {
+        expect(event.data.hookId).toBe("suggestions");
+        await dispatchStreamEventHooks({ ctx, registry, event: stampTestEvent(event) });
+      },
+    }),
+  );
+  expect(calls).toEqual(["completed", "hook.result", "turn.completed"]);
+});
+it("rejects values returned on noncompletion events", async () => {
+  const registry = createRuntimeHookRegistry([
+    hook("wrong", { events: { "*": () => ({ responseMetadata: {} }) } }),
+  ]);
+  const ctx = buildCtx();
+  await expect(
+    contextStorage.run(ctx, () =>
+      dispatchStreamEventHooks({
+        ctx,
+        registry,
+        event: stampTestEvent({ type: "session.completed" }),
+      }),
+    ),
+  ).rejects.toThrow("only for turn.completed");
+});

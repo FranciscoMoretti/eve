@@ -24,7 +24,7 @@ The cancellation result is discriminated by `status`: only `accepted` includes
 
 Cancellation does not replace stream consumption. Continue reading the response to observe its terminal `turn.cancelled` and `session.waiting` boundary and to advance the client session cursor normally. Use `session.cancel({ turnId })` instead when you have only a fixed session handle and an observed turn ID.
 
-Between turns, `session.compact()` queues context compaction without sending model input. An accepted request reports the session id; consume the durable stream through the following `session.waiting` boundary before sending the next turn. `compaction.completed` confirms that summarization succeeded; without it, eve preserves the previous history, including when the model returns an empty summary. A never-started session returns `no_active_session` as a successful no-op.
+Between turns, `session.compact()` queues context compaction without sending model input. An accepted request reports the session id; consume the durable stream through the following `session.waiting` boundary before sending the next turn. `compaction.completed` confirms that summarization succeeded; without it, eve preserves the previous history, including when the model returns an empty summary. A never-started session returns `no_active_session` as a successful no-op. Each returned compaction model call also emits `compaction.usage` with available token/cost usage and the gateway generation reference, before the summary is validated. Multiple attempts produce separate usage events, including attempts whose summaries are rejected. Subscribe through the durable stream or authored hooks; missing cost remains unknown rather than zero.
 
 ```ts
 const compaction = await session.compact();
@@ -269,3 +269,37 @@ Once a response is aborted, create a new send for the next turn. Don't reuse the
 - [Messages](./messages): the send APIs that create streams
 - [Continuations](./continuations): how stream cursors are persisted
 - [Output schema](./output-schema): consume `result.completed`
+
+## Durable message metadata
+
+Attach application-owned JSON data to a user message when UI choices must survive reloads:
+
+```ts
+const { session } = await client.sessions.create({
+  message: "Draft a document.",
+  messageMetadata: { editor: { selectedTool: "canvas" } },
+});
+await session.send("Continue normally.", {
+  messageMetadata: { editor: { selectedTool: null } },
+});
+```
+
+The HTTP create and message routes accept the same `messageMetadata` object.
+`message.received.data.metadata` contains it, and the default message reducer exposes
+it as `EveMessage.metadata.custom`. Each message owns its metadata: omitting the
+field on a later message does not inherit an earlier value. JSON null values are
+preserved. Response-only requests cannot carry message metadata.
+
+Metadata is durable display/application data. eve never includes it in model
+prompts, treats it as authentication, or lets its keys override framework fields
+such as `turnId` and `status`. Validate your application's namespace before using
+it. Do not store secrets in metadata: users who can read the transcript can read it.
+
+Server-authorized transcript seeds accept `metadata?: JsonObject` on each user or
+assistant message. Copy `message.metadata.custom` into that seed field to preserve
+original UI choices; imported-prefix forks preserve it too. When a channel
+coalesces multiple deliveries into one user message, the last message's metadata
+wins, even when omitted; control-only deliveries do not overwrite it.
+
+Metadata requires inbox wire v8 and appears in stream v27. A metadata-bearing send
+to an older inbox consumer fails explicitly instead of silently dropping data.

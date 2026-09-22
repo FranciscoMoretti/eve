@@ -444,6 +444,7 @@ function createMessageBody(
 ): Record<string, unknown> | null {
   const body: Record<string, unknown> = {};
   if (input.message !== undefined) body.message = input.message;
+  if (input.messageMetadata !== undefined) body.messageMetadata = input.messageMetadata;
   if (input.inputResponses !== undefined && input.inputResponses.length > 0) {
     body.inputResponses = input.inputResponses;
   }

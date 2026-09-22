@@ -84,6 +84,7 @@ function createBackend(options?: { readonly delete?: () => Promise<void> }): San
 async function ensure(input: {
   readonly compiledArtifactsSource?: RuntimeCompiledArtifactsSource;
   readonly ownsSandbox?: boolean;
+  readonly localSandboxIdentity?: import("#harness/types.js").HarnessSession["localSandboxIdentity"];
   readonly runOnSession?: (callback: () => Promise<void>) => Promise<void>;
   readonly registry: RuntimeSandboxRegistry;
   readonly state?: SandboxState;
@@ -94,6 +95,7 @@ async function ensure(input: {
       input.compiledArtifactsSource ?? createBundledRuntimeCompiledArtifactsSource(),
     nodeId: "__root__",
     ownsSandbox: input.ownsSandbox,
+    localSandboxIdentity: input.localSandboxIdentity,
     registry: input.registry,
     runOnSession: input.runOnSession,
     sessionId: "session_1",
@@ -127,6 +129,24 @@ describe("ensureSandboxAccess", () => {
     mocks.waitForSandboxTemplatePrewarmLock.mockResolvedValue(undefined);
     mocks.waitForDevelopmentSandboxPrewarm.mockReset();
     mocks.waitForDevelopmentSandboxPrewarm.mockResolvedValue(undefined);
+  });
+
+  it("rejects a changed birth provider before prewarm or allocation", async () => {
+    const backend = createBackend();
+    const access = await ensure({
+      registry: createTestRegistry({ bootstrap: vi.fn() }, backend),
+      localSandboxIdentity: {
+        version: 1,
+        sessionId: "session_1",
+        backendName: "other",
+        appRoot: process.cwd(),
+      },
+    });
+    await expect(access.get()).rejects.toThrow("provider or worker root changed");
+    await expect(access.get()).rejects.toThrow("provider or worker root changed");
+    expect(mocks.waitForDevelopmentSandboxPrewarm).not.toHaveBeenCalled();
+    expect(mocks.prewarmAppSandboxes).not.toHaveBeenCalled();
+    expect(backend.create).not.toHaveBeenCalled();
   });
 
   it("waits for background dev prewarm before creating a templated sandbox", async () => {
@@ -273,6 +293,25 @@ describe("ensureSandboxAccess", () => {
       }),
       use: expect.any(Function),
     });
+  });
+
+  it("restores an initialized fork without rerunning filesystem initialization", async () => {
+    const onSession = vi.fn();
+    const backend = createBackend();
+    const seed = { backendName: "test", metadata: { id: "immutable" } };
+    const access = await ensure({
+      registry: createTestRegistry({ onSession }, backend),
+      state: { initialized: false, session: null, forkCheckpoint: seed },
+    });
+    await access.get();
+    expect(onSession).not.toHaveBeenCalled();
+    expect(backend.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forkCheckpoint: seed.metadata,
+        existingMetadata: undefined,
+      }),
+    );
+    expect(await access.captureState()).toMatchObject({ initialized: true });
   });
 
   it("reattaches with persisted metadata and skips onSession when the session key matches", async () => {

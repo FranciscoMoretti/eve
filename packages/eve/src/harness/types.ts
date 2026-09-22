@@ -94,6 +94,13 @@ export interface HarnessSession {
   readonly rootSessionId?: string;
   readonly sessionId: string;
   readonly sandboxState?: SandboxState;
+  /** Session-birth identity for local workers; absent on historical/hosted sessions. */
+  readonly localSandboxIdentity?: {
+    readonly version: 1;
+    readonly sessionId: string;
+    readonly backendName: string;
+    readonly appRoot: string;
+  };
   readonly state?: SessionStateMap;
   /** Framework task that owns this durable session, when present. */
   readonly taskId?: string;
@@ -151,6 +158,7 @@ export interface StepInput {
   readonly attributedInputResponses?: readonly AttributedInputResponse[];
   readonly inputResponses?: readonly InputResponse[];
   readonly message?: string | UserContent;
+  readonly messageMetadata?: JsonObject;
   /** Internal actor attribution for `message`. */
   readonly messageAuth?: SessionAuthContext | null;
   /**

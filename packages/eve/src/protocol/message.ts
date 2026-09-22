@@ -1,3 +1,4 @@
+import type { EveMessage } from "#client/message-reducer-types.js";
 import type { FileUIPart, ProviderMetadata, TextUIPart, UserContent } from "ai";
 
 import {
@@ -27,7 +28,7 @@ export const EVE_STREAM_TAIL_INDEX_HEADER = "x-eve-stream-tail-index";
 export const EVE_STREAM_VERSION_HEADER = "x-eve-stream-version";
 export const EVE_MESSAGE_STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 export const EVE_MESSAGE_STREAM_FORMAT = "ndjson";
-export const EVE_MESSAGE_STREAM_VERSION = "25";
+export const EVE_MESSAGE_STREAM_VERSION = "28";
 
 /** Version of transport control records understood by this eve release. */
 export const EVE_STREAM_CONTROL_VERSION = "1";
@@ -159,12 +160,14 @@ export type HandleMessageRequestBody =
   | {
       readonly inputResponses?: never;
       readonly message: string | UserContent;
+      readonly messageMetadata?: JsonObject;
       readonly clientContext?: string | readonly string[] | JsonObject;
       readonly outputSchema?: JsonObject;
     }
   | {
       readonly inputResponses: readonly InputResponse[];
       readonly message?: never;
+      readonly messageMetadata?: never;
       readonly clientContext?: string | readonly string[] | JsonObject;
       readonly outputSchema?: JsonObject;
     };
@@ -204,6 +207,7 @@ export interface MessageReceivedStreamEvent {
   data: {
     /** Present when eve, rather than a channel participant, authored the input. */
     kind?: "execution.background_task";
+    metadata?: JsonObject;
     message: string;
     parts?: readonly MessageReceivedPart[];
     sequence: number;
@@ -639,6 +643,17 @@ export interface CompactionRequestedStreamEvent {
   type: "compaction.requested";
 }
 
+/** Usage returned by one compaction model call, including rejected summary attempts. */
+export interface CompactionUsageStreamEvent {
+  data: Pick<StepCompletedStreamEvent["data"], "usage" | "providerMetadata"> & {
+    modelId: string;
+    sequence: number;
+    sessionId: string;
+    turnId: string;
+  };
+  type: "compaction.usage";
+}
+
 /**
  * Stream event emitted after one compaction checkpoint message has been
  * appended to the durable session history.
@@ -721,6 +736,8 @@ export interface SessionWaitingStreamEvent {
   data: {
     /** Channel-local continuation token, or the immutable session ID for an ID-only session. */
     continuationToken: string;
+    /** Server-requested immutable idle capture; emitted before its receipt commits. */
+    checkpoint?: { checkpointId: string; beforeTurnId: string };
     wait: "next-user-message";
   };
   type: "session.waiting";
@@ -746,6 +763,60 @@ export interface SessionCompletedStreamEvent {
   type: "session.completed";
 }
 
+/** Historical display events, excluding session controls, usage, and authorization capabilities. */
+export interface HookResultStreamEvent {
+  readonly type: "hook.result";
+  readonly data: {
+    readonly hookId: string;
+    readonly turnId: string;
+    readonly responseMetadata?: JsonObject;
+    readonly modelCalls?: readonly {
+      readonly failed?: boolean;
+      readonly modelId: string;
+      readonly usage?: StepCompletedStreamEvent["data"]["usage"];
+      readonly providerMetadata?: StepCompletedProviderMetadata;
+    }[];
+  };
+}
+
+export interface HistorySeededStreamEvent {
+  readonly type: "history.seeded";
+  readonly data: { readonly messages: readonly EveMessage[] };
+}
+
+export type HistoryProjectionEvent = (
+  | HistorySeededStreamEvent
+  | HookResultStreamEvent
+  | MessageReceivedStreamEvent
+  | StepStartedStreamEvent
+  | MessageAppendedStreamEvent
+  | MessageCompletedStreamEvent
+  | ReasoningAppendedStreamEvent
+  | ReasoningCompletedStreamEvent
+  | ActionInputAppendedStreamEvent
+  | ActionsRequestedStreamEvent
+  | ActionPartialStreamEvent
+  | ActionResultStreamEvent
+  | InputRequestedStreamEvent
+  | InputResolvedStreamEvent
+  | ApprovalCandidateStreamEvent
+  | ApprovalSettledStreamEvent
+  | ResultCompletedStreamEvent
+  | TurnCompletedStreamEvent
+  | TurnCancelledStreamEvent
+  | TurnFailedStreamEvent
+) & { readonly meta: MessageStreamEventMeta };
+
+/** A fork's inherited display prefix. It is not new execution or billable usage. */
+export interface HistoryRestoredStreamEvent {
+  readonly type: "history.restored";
+  readonly data: {
+    readonly sourceSessionId: string;
+    readonly beforeTurnId: string;
+    readonly events: readonly HistoryProjectionEvent[];
+  };
+}
+
 /**
  * Serializable event before eve stamps the durable stream envelope.
  *
@@ -753,11 +824,15 @@ export interface SessionCompletedStreamEvent {
  * consumers receive {@link MessageStreamEvent}.
  */
 export type UnstampedMessageStreamEvent =
+  | HistorySeededStreamEvent
+  | HookResultStreamEvent
+  | HistoryRestoredStreamEvent
   | ActionInputAppendedStreamEvent
   | ApprovalCandidateStreamEvent
   | ApprovalSettledStreamEvent
   | ContextClearedStreamEvent
   | CompactionCompletedStreamEvent
+  | CompactionUsageStreamEvent
   | CompactionRequestedStreamEvent
   | AuthorizationCompletedStreamEvent
   | AuthorizationRequiredStreamEvent
@@ -901,6 +976,7 @@ export function createTurnStartedEvent(input: {
 export function createMessageReceivedEvent(input: {
   /** Present when eve, rather than a channel participant, authored the input. */
   readonly kind?: "execution.background_task";
+  readonly metadata?: JsonObject;
   readonly message: string | UserContent;
   readonly sequence: number;
   readonly turnId: string;
@@ -909,6 +985,7 @@ export function createMessageReceivedEvent(input: {
     data: {
       kind: input.kind,
       message: summarizeUserContent(input.message),
+      metadata: input.metadata,
       parts: projectUserContentParts(input.message),
       sequence: input.sequence,
       turnId: input.turnId,
@@ -1730,10 +1807,10 @@ export function createSessionCompletedEvent(): SessionCompletedStreamEvent {
  * One stamping seam is what makes the persisted stream and authored hooks
  * observe the same `meta.id`.
  */
-export function stampMessageStreamEvent(
-  event: UnstampedMessageStreamEvent,
+export function stampMessageStreamEvent<T extends UnstampedMessageStreamEvent>(
+  event: T,
   deliveryIds?: readonly string[],
-): MessageStreamEvent {
+): T & { readonly meta: MessageStreamEventMeta } {
   const meta: { at: string; id: string; deliveryIds?: readonly string[] } = {
     at: new Date().toISOString(),
     id: createEventId(),
@@ -1845,4 +1922,11 @@ function formatActionResultOutput(output: unknown): string {
   }
 
   return "Action failed.";
+}
+
+/** Creates durable usage evidence for one completed compaction model call. */
+export function createCompactionUsageEvent(
+  data: CompactionUsageStreamEvent["data"],
+): CompactionUsageStreamEvent {
+  return { type: "compaction.usage", data };
 }

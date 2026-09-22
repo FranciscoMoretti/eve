@@ -65,6 +65,7 @@ export interface EveAgentStoreInit<TData> {
 }
 
 export interface PendingMessageSubmission {
+  readonly metadata?: import("#shared/json.js").JsonObject;
   readonly createdAt: number;
   readonly eventStartIndex: number;
   readonly id: string;

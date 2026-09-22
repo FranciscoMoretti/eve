@@ -1,5 +1,7 @@
+import type { SessionForkReference } from "#execution/session-checkpoint-contract.js";
 import type { FilePart, TextPart, UserContent } from "ai";
 
+import { parseSessionCallback } from "#channel/session-callback.js";
 import type {
   ActivityObserverConfig,
   SessionAuthContext,
@@ -7,25 +9,12 @@ import type {
   SessionCapabilities,
   TurnPolicy,
 } from "#channel/types.js";
-import type { Session } from "#channel/session.js";
-import { parseSessionCallback } from "#channel/session-callback.js";
 import {
   parseActivityObserverField,
   validateActivityObserverBinding,
 } from "#eve-channel/activity-observer-request.js";
+import { validateMessageFreeCreate, type ParsedCreateBody } from "#eve-channel/create-request.js";
 import { hasInternalRefScheme } from "#internal/attachments/url-refs.js";
-import {
-  EVE_MESSAGE_STREAM_CONTENT_TYPE,
-  EVE_MESSAGE_STREAM_FORMAT,
-  EVE_MESSAGE_STREAM_VERSION,
-  EVE_SESSION_ID_HEADER,
-  EVE_STREAM_CONTROL_VERSION,
-  EVE_STREAM_CONTROL_VERSION_QUERY,
-  EVE_STREAM_FORMAT_HEADER,
-  EVE_STREAM_LEASE_ENDED_CONTROL,
-  EVE_STREAM_TAIL_INDEX_HEADER,
-  EVE_STREAM_VERSION_HEADER,
-} from "#protocol/message.js";
 import {
   collectUploadPolicyViolations,
   formatUploadPolicyViolation,
@@ -34,18 +23,15 @@ import {
 import { isInputResponse, type ValidatedInputResponse } from "#shared/input.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import type { RunMode } from "#shared/run-mode.js";
-import { type ParsedCreateBody, validateMessageFreeCreate } from "#eve-channel/create-request.js";
-
-const SESSION_STREAM_HEARTBEAT_MS = 10_000;
-const SESSION_STREAM_LEASE_MS = 60_000;
 
 /** Replay-stable identity for one authenticated create operation. */
 export async function deriveOperationContinuationToken(input: {
   readonly auth: SessionAuthContext;
   readonly operationId: string;
+  readonly kind?: "seed";
 }): Promise<string> {
   const identity = JSON.stringify([
-    "eve:create-session:v1",
+    input.kind === "seed" ? "eve:seed-session:v1" : "eve:create-session:v1",
     input.auth.authenticator,
     input.auth.issuer ?? null,
     input.auth.principalType,
@@ -60,6 +46,21 @@ export async function deriveOperationContinuationToken(input: {
 }
 
 export function parseCreateBody(payload: Record<string, unknown>): ParsedCreateBody | Response {
+  if (payload.seed !== undefined) {
+    if (
+      payload.seed !== true ||
+      typeof payload.operationId !== "string" ||
+      !payload.operationId.length ||
+      payload.operationId.length > 256 ||
+      Object.keys(payload).some((key) => !["seed", "operationId"].includes(key))
+    ) {
+      return Response.json(
+        { error: "A seed request accepts only seed: true and an operationId.", ok: false },
+        { status: 400 },
+      );
+    }
+    return { seed: true, operationId: payload.operationId, mode: "conversation" };
+  }
   if (payload.inputResponses !== undefined) {
     return Response.json(
       { error: "'inputResponses' is only accepted for an existing session.", ok: false },
@@ -68,6 +69,14 @@ export function parseCreateBody(payload: Record<string, unknown>): ParsedCreateB
   }
   const message = parseMessageField(payload.message);
   if (message instanceof Response) return message;
+  const messageMetadata = parseMessageMetadataField(payload.messageMetadata);
+  if (messageMetadata instanceof Response) return messageMetadata;
+  if (messageMetadata !== undefined && message === undefined) {
+    return Response.json(
+      { error: "'messageMetadata' requires a message.", ok: false },
+      { status: 400 },
+    );
+  }
 
   const context = parseClientContextField(payload.clientContext);
   if (context instanceof Response) return context;
@@ -110,7 +119,57 @@ export function parseCreateBody(payload: Record<string, unknown>): ParsedCreateB
     );
   }
 
+  let fork: SessionForkReference | undefined;
+  if (payload.fork !== undefined) {
+    const value = payload.fork;
+    const invalid = () =>
+      Response.json({ error: "Invalid session fork reference.", ok: false }, { status: 400 });
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !("sessionId" in value) ||
+      typeof value.sessionId !== "string" ||
+      !value.sessionId.length ||
+      value.sessionId.length > 256
+    )
+      return invalid();
+    if ("beforeMessageId" in value) {
+      if (
+        typeof value.beforeMessageId !== "string" ||
+        !/^seed_message_(0|[1-9][0-9]{0,3})$/.test(value.beforeMessageId) ||
+        Object.keys(value).some((key) => key !== "sessionId" && key !== "beforeMessageId")
+      )
+        return invalid();
+      fork = { sessionId: value.sessionId, beforeMessageId: value.beforeMessageId };
+    } else {
+      if (
+        !("beforeTurnId" in value) ||
+        typeof value.beforeTurnId !== "string" ||
+        value.beforeTurnId.length > 64 ||
+        !/^turn_(0|[1-9][0-9]*)$/.test(value.beforeTurnId) ||
+        Object.keys(value).some(
+          (key) => key !== "sessionId" && key !== "beforeTurnId" && key !== "checkpointId",
+        )
+      )
+        return invalid();
+      const checkpointId = "checkpointId" in value ? value.checkpointId : undefined;
+      if (
+        checkpointId !== undefined &&
+        (typeof checkpointId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(checkpointId))
+      )
+        return invalid();
+      fork = {
+        sessionId: value.sessionId,
+        beforeTurnId: value.beforeTurnId,
+        checkpointId,
+      };
+    }
+  }
+
   const result: ParsedCreateBody = {
+    fork,
     activityObserver,
     callback,
     capabilities,
@@ -119,6 +178,7 @@ export function parseCreateBody(payload: Record<string, unknown>): ParsedCreateB
     outputSchema,
   };
   if (message !== undefined) result.message = message;
+  if (messageMetadata !== undefined) result.messageMetadata = messageMetadata;
   if (typeof rawOperationId === "string") result.operationId = rawOperationId;
   return result;
 }
@@ -127,6 +187,7 @@ interface ParsedSessionMessageBody {
   activityObserver?: ActivityObserverConfig;
   callback?: SessionCallback;
   message?: string | UserContent;
+  messageMetadata?: JsonObject;
   inputResponses?: readonly ValidatedInputResponse[];
   context?: readonly string[];
   outputSchema?: JsonObject;
@@ -141,6 +202,14 @@ export function parseSessionMessageBody(
 
   const message = parseMessageField(payload.message);
   if (message instanceof Response) return message;
+  const messageMetadata = parseMessageMetadataField(payload.messageMetadata);
+  if (messageMetadata instanceof Response) return messageMetadata;
+  if (messageMetadata !== undefined && message === undefined) {
+    return Response.json(
+      { error: "'messageMetadata' requires a message.", ok: false },
+      { status: 400 },
+    );
+  }
   const callback = parseCallbackField(payload.callback);
   if (callback instanceof Response) return callback;
   const activityObserver = parseActivityObserverField(payload.activityObserver);
@@ -179,6 +248,7 @@ export function parseSessionMessageBody(
     activityObserver,
     callback,
     message,
+    messageMetadata,
     inputResponses,
     context,
     outputSchema,
@@ -301,44 +371,15 @@ export function requireSessionId(params: Readonly<Record<string, string>>): stri
   return sessionId || Response.json({ error: "Missing session id.", ok: false }, { status: 400 });
 }
 
-export async function createSessionStreamResponse(
-  request: Request,
-  session: Session,
-): Promise<Response> {
-  const startIndex = parseStartIndex(request);
-  if (startIndex instanceof Response) return startIndex;
-  const includeTailIndex = parseIncludeTailIndex(request);
-
+function parseMessageMetadataField(value: unknown): JsonObject | Response | undefined {
+  if (value === undefined) return undefined;
   try {
-    const tailIndex = includeTailIndex ? await session.getStreamTailIndex() : undefined;
-    const events = await session.getEventStream({ startIndex });
-    const controlVersion =
-      new URL(request.url).searchParams.get(EVE_STREAM_CONTROL_VERSION_QUERY) ===
-      EVE_STREAM_CONTROL_VERSION
-        ? EVE_STREAM_CONTROL_VERSION
-        : undefined;
-    const headers = new Headers({
-      "cache-control": "no-store, no-transform",
-      "content-type": EVE_MESSAGE_STREAM_CONTENT_TYPE,
-      "x-accel-buffering": "no",
-      [EVE_SESSION_ID_HEADER]: session.id,
-      [EVE_STREAM_FORMAT_HEADER]: EVE_MESSAGE_STREAM_FORMAT,
-      [EVE_STREAM_VERSION_HEADER]: EVE_MESSAGE_STREAM_VERSION,
-    });
-    if (tailIndex !== undefined) {
-      headers.set(EVE_STREAM_TAIL_INDEX_HEADER, String(tailIndex));
-    }
-    return new Response(
-      serializeAsNdjson(
-        events,
-        request.signal,
-        streamEventLimit(startIndex, tailIndex),
-        controlVersion !== undefined,
-      ),
-      { headers },
-    );
+    return parseJsonObject(value);
   } catch {
-    return Response.json({ error: "Session not found.", ok: false }, { status: 404 });
+    return Response.json(
+      { error: "Expected 'messageMetadata' to be a JSON-serializable object.", ok: false },
+      { status: 400 },
+    );
   }
 }
 
@@ -589,107 +630,4 @@ function parseClientContextField(value: unknown): string[] | Response | undefine
 
 function toClientContextMessage(content: string): string {
   return `${CLIENT_CONTEXT_PREFIX}${content}`;
-}
-
-export function parseIncludeTailIndex(request: Request): boolean {
-  const raw = new URL(request.url).searchParams.get("includeTailIndex");
-  return raw === "1" || raw === "true";
-}
-
-export function parseStartIndex(request: Request): number | undefined | Response {
-  const raw = new URL(request.url).searchParams.get("startIndex");
-  if (raw === null) return undefined;
-  const parsed = Number(raw);
-  if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(parsed)) {
-    return Response.json(
-      { error: "Expected startIndex to be an integer.", ok: false },
-      { status: 400 },
-    );
-  }
-  return parsed;
-}
-
-function streamEventLimit(
-  startIndex: number | undefined,
-  tailIndex: number | undefined,
-): number | undefined {
-  if (tailIndex === undefined) return undefined;
-  const resolvedStartIndex =
-    startIndex === undefined
-      ? 0
-      : startIndex < 0
-        ? Math.max(0, tailIndex + 1 + startIndex)
-        : startIndex;
-  return Math.max(0, tailIndex - resolvedStartIndex + 1);
-}
-
-function serializeAsNdjson(
-  events: ReadableStream<unknown>,
-  signal: AbortSignal,
-  eventLimit?: number,
-  leased = false,
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let eventCount = 0;
-  let heartbeat: ReturnType<typeof setTimeout> | undefined;
-  let lease: ReturnType<typeof setTimeout> | undefined;
-
-  const clearTimers = () => {
-    clearTimeout(heartbeat);
-    clearTimeout(lease);
-    heartbeat = undefined;
-    lease = undefined;
-  };
-  const scheduleHeartbeat = (controller: TransformStreamDefaultController<Uint8Array>) => {
-    clearTimeout(heartbeat);
-    heartbeat = setTimeout(() => {
-      try {
-        controller.enqueue(encoder.encode("\n"));
-        scheduleHeartbeat(controller);
-      } catch {
-        clearTimers();
-      }
-    }, SESSION_STREAM_HEARTBEAT_MS);
-  };
-  const startLease = (controller: TransformStreamDefaultController<Uint8Array>) => {
-    scheduleHeartbeat(controller);
-    lease = setTimeout(() => {
-      clearTimers();
-      try {
-        controller.enqueue(encoder.encode(`${JSON.stringify(EVE_STREAM_LEASE_ENDED_CONTROL)}\n`));
-        controller.terminate();
-      } catch {
-        // The response was cancelled while the lease callback was already queued.
-      }
-    }, SESSION_STREAM_LEASE_MS);
-  };
-
-  const transform = new TransformStream<unknown, Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode("\n"));
-      if (eventLimit === 0) {
-        controller.terminate();
-      } else if (leased) {
-        startLease(controller);
-      }
-    },
-    transform(event, controller) {
-      controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
-      eventCount += 1;
-      if (eventCount === eventLimit) {
-        clearTimers();
-        controller.terminate();
-      } else if (leased) {
-        scheduleHeartbeat(controller);
-      }
-    },
-    flush() {
-      clearTimers();
-    },
-  });
-  void events
-    .pipeTo(transform.writable, { signal })
-    .catch(() => {})
-    .finally(clearTimers);
-  return transform.readable;
 }

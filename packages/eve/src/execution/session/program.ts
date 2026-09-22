@@ -271,6 +271,9 @@ async function runSessionLoop(
         case "reset":
         case "closed":
           return { kind: "terminal", outcome: { kind: "expired" } };
+        case "checkpoint":
+          await runTurn({ checkpoint: next });
+          continue;
         case "clear":
         case "compact":
           continue;
@@ -341,6 +344,9 @@ async function runSessionLoop(
         case "reset":
         case "closed":
           return { kind: "terminal", outcome: { kind: "expired" } };
+        case "checkpoint":
+          await runTurn({ checkpoint: next });
+          continue;
         case "clear":
         case "compact":
           action = await runTurn({ control: next.kind });

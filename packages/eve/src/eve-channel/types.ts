@@ -90,6 +90,35 @@ export function defaultEveAuth(ctx: EveMessageContext): SessionAuthContext | nul
  * `uploadPolicy`, `onMessage`, and `events` refine the default HTTP behavior.
  */
 export interface EveChannelInput {
+  /** Resolve owned attachment URLs through the standard sandbox staging pipeline. */
+  readonly fetchFile?: import("#shared/channel-definition.js").FetchFileFunction;
+  /**
+   * Authorizes an immutable copy operation for this principal and supplies its completed
+   * public transcript. Omit to deny seed creation; return null to deny an operation.
+   * The caller must bind operationId to one source revision/projection and destination-owned
+   * resources before returning. No browser-provided history or checkpoint is accepted.
+   * Runs only when the operation has no durable session yet. Accepted retries recover
+   * that session without consulting the source. Seed requests do not invoke onMessage.
+   * Uses the directly authenticated principal; forwardedPrincipal is not accepted.
+   */
+  readonly resolveSeed?: (input: {
+    readonly auth: SessionAuthContext;
+    readonly operationId: string;
+  }) =>
+    | import("#execution/session-transcript-seed.js").SessionTranscriptSeed
+    | null
+    | Promise<import("#execution/session-transcript-seed.js").SessionTranscriptSeed | null>;
+
+  /**
+   * Explicit source-session access policy for native forks. Omit to deny forks.
+   * Runs before operation lookup and again if onMessage replaces the principal.
+   * Authentication alone never grants access to another session's history.
+   */
+  readonly authorizeFork?: (input: {
+    readonly auth: SessionAuthContext;
+    readonly sourceSessionId: string;
+  }) => boolean | Promise<boolean>;
+
   /**
    * Route auth policy: a single {@link AuthFn} or an ordered array walked by {@link routeAuth}.
    * The first entry returning a {@link SessionAuthContext} wins; `null` / `undefined` skips to

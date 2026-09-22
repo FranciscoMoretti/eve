@@ -1,3 +1,6 @@
+import { captureIdleSessionCheckpoint } from "#execution/capture-idle-session-checkpoint.js";
+import { writeSessionCheckpoint } from "#execution/session-checkpoint.js";
+import { SandboxKey, SessionCheckpointWriterKey } from "#context/keys.js";
 import { deriveSessionTitle } from "#execution/eve-workflow-attributes.js";
 import { setEveAttributes } from "#runtime/attributes/emit.js";
 import { defaultDeliverResult } from "#channel/adapter.js";
@@ -545,6 +548,34 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
               }
             }
 
+            if (input.input?.checkpoint) {
+              const request = input.input.checkpoint;
+              await captureIdleSessionCheckpoint({
+                request,
+                session: schemaSession,
+                sandbox: ctx.get(SandboxKey),
+                target: ctx.get(SessionCheckpointWriterKey),
+                prepare: () =>
+                  handleEvent({
+                    type: "session.waiting",
+                    data: {
+                      continuationToken: schemaSession.continuationToken,
+                      wait: "next-user-message",
+                      checkpoint: {
+                        checkpointId: request.checkpointId,
+                        beforeTurnId: request.beforeTurnId,
+                      },
+                    },
+                  }),
+              });
+              return { next: null, session: schemaSession };
+            }
+            await writeSessionCheckpoint({
+              session: schemaSession,
+              delivery: stepInput,
+              sandbox: ctx.get(SandboxKey),
+              target: ctx.get(SessionCheckpointWriterKey),
+            });
             return runHarnessStep(schemaSession, stepInput);
           });
           // The waiting boundary may reach the client before this step returns.

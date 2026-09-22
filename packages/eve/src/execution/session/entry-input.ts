@@ -9,6 +9,8 @@ import type { AgentWorkflowRetentionDefinition } from "#shared/agent-definition.
  * and deserialized at each `"use step"` boundary.
  */
 export interface InitialWorkflowEntryInput {
+  readonly fork?: RunInput["fork"];
+  readonly seed?: RunInput["seed"];
   readonly activityCollectorRunId?: string;
   readonly continuationConflictCommand?: Extract<SessionCommand, { readonly kind: "send" }>;
   readonly input: RunInput["input"];

@@ -1391,3 +1391,73 @@ function findToolPart(
     .flatMap((message) => message.parts)
     .find((part) => part.type === "dynamic-tool" && part.toolCallId === toolCallId);
 }
+
+it("replays per-message custom metadata without inheriting it into later turns or overriding framework fields", () => {
+  const metadata = { chatjs: { selectedTool: null }, turnId: "spoofed", status: "failed" };
+  const events = [
+    createMessageReceivedEvent({ message: "first", metadata, sequence: 0, turnId: "turn_0" }),
+    createMessageReceivedEvent({ message: "second", sequence: 1, turnId: "turn_1" }),
+  ];
+  const reducer = defaultMessageReducer();
+  const projected = reduceServerEvents(reducer, reducer.initial(), events);
+  const reloaded = reduceServerEvents(
+    reducer,
+    reducer.initial(),
+    JSON.parse(JSON.stringify(events)),
+  );
+  expect(reloaded).toEqual(projected);
+  expect(reloaded.messages[0]?.metadata).toEqual({
+    custom: metadata,
+    status: "complete",
+    turnId: "turn_0",
+  });
+  expect(reloaded.messages[1]?.metadata).toEqual({ status: "complete", turnId: "turn_1" });
+});
+
+it("merges hook namespaces only into the matching assistant turn and replays deterministically", () => {
+  const reducer = defaultMessageReducer();
+  const events: UnstampedMessageStreamEvent[] = [
+    createMessageCompletedEvent({
+      message: "first",
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_0",
+      finishReason: "stop",
+    }),
+    createMessageCompletedEvent({
+      message: "second",
+      sequence: 1,
+      stepIndex: 0,
+      turnId: "turn_1",
+      finishReason: "stop",
+    }),
+    {
+      type: "hook.result",
+      data: { hookId: "suggestions", turnId: "turn_0", responseMetadata: { items: ["Next?"] } },
+    },
+    {
+      type: "hook.result",
+      data: { hookId: "audit", turnId: "turn_0", responseMetadata: { checked: true } },
+    },
+    {
+      type: "hook.result",
+      data: {
+        hookId: "usage",
+        turnId: "turn_missing",
+        modelCalls: [{ modelId: "a", failed: true }],
+      },
+    },
+  ];
+  const result = reduceServerEvents(reducer, reducer.initial(), events);
+  expect(result.messages).toHaveLength(2);
+  expect(result.messages[0]?.metadata?.annotations).toEqual({
+    suggestions: { items: ["Next?"] },
+    audit: { checked: true },
+  });
+  expect(result.messages[1]?.metadata?.annotations).toBeUndefined();
+  expect(result.messages[0]?.metadata?.custom).toBeUndefined();
+  expect(
+    reduceServerEvents(reducer, reducer.initial(), JSON.parse(JSON.stringify(events))),
+  ).toEqual(result);
+  expect(reduceServerEvents(reducer, result, events.slice(2))).toEqual(result);
+});

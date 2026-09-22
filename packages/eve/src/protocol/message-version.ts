@@ -52,10 +52,13 @@ interface MessageStreamAppendEventsByVersion {
     | MessageAppendedStreamEventV24
     | ReasoningAppendedStreamEventV24;
   "25": ActionInputAppendedStreamEvent | MessageAppendedStreamEvent | ReasoningAppendedStreamEvent;
+  "26": ActionInputAppendedStreamEvent | MessageAppendedStreamEvent | ReasoningAppendedStreamEvent;
+  "27": ActionInputAppendedStreamEvent | MessageAppendedStreamEvent | ReasoningAppendedStreamEvent;
+  "28": ActionInputAppendedStreamEvent | MessageAppendedStreamEvent | ReasoningAppendedStreamEvent;
 }
 
 export type MessageStreamVersion = keyof MessageStreamAppendEventsByVersion;
-type LegacyMessageStreamVersion = Exclude<MessageStreamVersion, "25">;
+type LegacyMessageStreamVersion = Exclude<MessageStreamVersion, "25" | "26" | "27" | "28">;
 
 type VersionIndependentMessageStreamEvent = Exclude<
   UnstampedMessageStreamEvent,
@@ -93,6 +96,9 @@ export function normalizeMessageStreamEvent(
         version,
         event as MessageStreamEventForVersion<LegacyMessageStreamVersion>,
       );
+    case "28":
+    case "27":
+    case "26":
     case "25":
       return validateCurrentMessageStreamEvent(event as MessageStreamEventForVersion<"25">);
     default:

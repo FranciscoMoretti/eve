@@ -1,6 +1,7 @@
+import type { HarnessModelMessage } from "#harness/messages.js";
+import type { FilePart, ModelMessage, TextPart, UserContent } from "ai";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
-import type { FilePart, ModelMessage, TextPart, UserContent } from "ai";
 
 import { buildAdapterContext } from "#channel/adapter-context.js";
 import type { ChannelAdapterContext, FetchFileResult } from "#channel/adapter.js";
@@ -8,18 +9,18 @@ import { getAdapterKind } from "#channel/adapter.js";
 import { buildSessionHandle } from "#channel/session.js";
 import { loadContext } from "#context/container.js";
 import { SandboxKey } from "#context/keys.js";
-import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { fileDataToBytes } from "#internal/attachments/data.js";
 import { EveAttachmentError } from "#internal/attachments/errors.js";
-import { createLogger } from "#internal/logging.js";
-import { deserializeUrlFilePart, isSerializedUrlFilePart } from "#internal/attachments/url-refs.js";
 import {
   decodeSandboxRef,
   encodeSandboxRef,
   isSandboxRefUrl,
   type SandboxRef,
 } from "#internal/attachments/sandbox-refs.js";
+import { deserializeUrlFilePart, isSerializedUrlFilePart } from "#internal/attachments/url-refs.js";
+import { createLogger } from "#internal/logging.js";
 import type { SandboxSession } from "#public/definitions/sandbox.js";
+import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 
 /**
  * Sandbox directory where inbound file attachments are staged before the
@@ -166,6 +167,51 @@ export async function hydrateSandboxAttachments(
   );
 }
 
+/** Stage only destination seed files; unlike ordinary uploads, never discard failed history. */
+export async function stageSeedHistoryAttachments(
+  messages: readonly HarnessModelMessage[],
+): Promise<HarnessModelMessage[]> {
+  const hasFiles = messages.some(
+    (message) =>
+      Array.isArray(message.content) && message.content.some((part) => part.type === "file"),
+  );
+  if (!hasFiles) return [...messages];
+  const container = loadContext();
+  const sandbox = await container.get(SandboxKey)?.get();
+  if (!sandbox) throw new Error("Seeded attachments require an active sandbox.");
+  const adapter = container.get(ChannelKey);
+  const context: ChannelAdapterContext = adapter
+    ? buildAdapterContext(adapter, container)
+    : {
+        ctx: container,
+        state: {},
+        session: buildSessionHandle(container),
+      };
+  const staged: HarnessModelMessage[] = [];
+  for (const message of messages) {
+    if (message.role === "user" && Array.isArray(message.content)) {
+      staged.push({
+        ...message,
+        content: await Promise.all(
+          message.content.map((part) =>
+            part.type === "file" ? stageFilePart(part, sandbox, context, true) : part,
+          ),
+        ),
+      });
+    } else if (message.role === "assistant" && Array.isArray(message.content)) {
+      staged.push({
+        ...message,
+        content: await Promise.all(
+          message.content.map((part) =>
+            part.type === "file" ? stageFilePart(part, sandbox, context, true) : part,
+          ),
+        ),
+      });
+    } else staged.push(message);
+  }
+  return staged;
+}
+
 function hasFileParts(content: Exclude<UserContent, string>): boolean {
   for (const part of content) {
     if (part.type === "file") {
@@ -289,6 +335,7 @@ async function stageFilePart(
   part: FilePart,
   sandbox: SandboxSession,
   adapterCtx: ChannelAdapterContext,
+  strict = false,
 ): Promise<FilePart | TextPart> {
   if (isSandboxRefUrl(part.data)) {
     return part;
@@ -300,7 +347,7 @@ async function stageFilePart(
     try {
       resolved = await tryFetchFile(part.data.href, adapterCtx);
     } catch (error) {
-      if (!(error instanceof EveAttachmentError)) throw error;
+      if (strict || !(error instanceof EveAttachmentError)) throw error;
       const filename = part.filename?.trim() || "file";
       log.warn("attachment resolver failed — degrading to text part", {
         adapterKind: error.adapterKind,
@@ -314,6 +361,7 @@ async function stageFilePart(
       };
     }
     if (resolved === null) {
+      if (strict) throw new Error("The channel did not resolve a seeded attachment.");
       return part;
     }
     return stageResolvedBytes(part, resolved, sandbox);
@@ -408,4 +456,26 @@ function safeFilename(provided: string | undefined, sha: string): string {
   }
   const base = basename(provided).replace(UNSAFE_FILENAME_CHARS, "_");
   return base.length > 0 ? base : `file-${sha}`;
+}
+
+import type { HarnessSession } from "#harness/types.js";
+const PENDING_SEED_FILES = "eve.pending-seed-files";
+
+export function hasPendingSeedAttachments(session: Pick<HarnessSession, "state">): boolean {
+  return session.state?.[PENDING_SEED_FILES] === true;
+}
+
+export function markSeedAttachmentsPending(session: HarnessSession): HarnessSession {
+  return { ...session, state: { ...session.state, [PENDING_SEED_FILES]: true } };
+}
+
+/** Keep the pending marker on failure so retries cannot silently lose attachment history. */
+export async function stagePendingSeedAttachments(
+  session: HarnessSession,
+): Promise<HarnessSession> {
+  if (!hasPendingSeedAttachments(session)) return session;
+  const history = await stageSeedHistoryAttachments(session.history);
+  const state = { ...session.state };
+  delete state[PENDING_SEED_FILES];
+  return { ...session, history, state };
 }

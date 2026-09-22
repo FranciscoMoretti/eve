@@ -1,3 +1,12 @@
+import {
+  SESSION_CHECKPOINT_NAMESPACE,
+  SESSION_CHECKPOINT_WRITER_KEY,
+  type SessionCheckpoint,
+} from "#execution/session-checkpoint-contract.js";
+import {
+  SESSION_SANDBOX_IDENTITY_NAMESPACE,
+  type SessionSandboxIdentityReceipt,
+} from "#execution/session-sandbox-identity-contract.js";
 import { failSession, runPreparedSession, type SessionBoot } from "#execution/session/program.js";
 import { getWorkflowMetadata, getWritable } from "#compiled/@workflow/core/index.js";
 
@@ -7,7 +16,11 @@ import type { RunMode } from "#shared/run-mode.js";
 import type { DurableCompiledArtifactsSource } from "#runtime/durable-compiled-artifacts-source.js";
 import { resolveInitialTurnCallerStep } from "#subagents/parent-notification.js";
 import { normalizeSerializableError } from "#execution/workflow-errors.js";
-import { createSessionStep } from "#execution/create-session-step.js";
+import {
+  restoreSessionHistoryStep,
+  emitSessionTranscriptSeedStep,
+  createSessionStep,
+} from "#execution/create-session-step.js";
 import { isHookConflictError } from "#execution/hook-ownership.js";
 import { createSessionInbox, type SessionInboxHandle } from "#execution/session-inbox/inbox.js";
 import { sessionHookTokens } from "#execution/session/hook-tokens.js";
@@ -90,11 +103,30 @@ async function bootInitialOwner(
     nodeId?: string;
   };
   try {
+    if (
+      (input.seed || (input.fork && "beforeMessageId" in input.fork)) &&
+      (mode !== "conversation" ||
+        input.taskId ||
+        serializedBundle.nodeId ||
+        hasDelegatedCallerContext(serializedContext))
+    )
+      throw new Error("History initialization requires a fresh root conversation.");
+    if (input.seed && (input.input.message !== undefined || input.fork))
+      throw new Error("Transcript seeds require idle initialization.");
     if (input.input.message === undefined && mode !== "conversation") {
       throw new Error("A message-free session must use conversation mode.");
     }
+    serializedContext[SESSION_CHECKPOINT_WRITER_KEY] = {
+      sessionId,
+      writable: getWritable<SessionCheckpoint>({ namespace: SESSION_CHECKPOINT_NAMESPACE }),
+    };
     const [sessionCreation, stableClaim, aliasClaim] = await Promise.allSettled([
       createSessionStep({
+        identityWritable: getWritable<SessionSandboxIdentityReceipt>({
+          namespace: SESSION_SANDBOX_IDENTITY_NAMESPACE,
+        }),
+        fork: input.fork,
+        seed: input.seed,
         compiledArtifactsSource: serializedBundle.source,
         continuationToken,
         dynamicSubagentAgentConfig: serializedContext["eve.dynamicSubagentAgentConfig"] as
@@ -127,6 +159,14 @@ async function bootInitialOwner(
       await inbox.dispose();
       return undefined;
     }
+    if (input.fork)
+      await restoreSessionHistoryStep({ fork: input.fork, writable: sessionWritable });
+    if (input.seed)
+      await emitSessionTranscriptSeedStep({
+        seed: input.seed,
+        continuationToken,
+        writable: sessionWritable,
+      });
     return {
       inbox,
       session: {
@@ -237,6 +277,7 @@ function createInitialDelivery(
       attachClientContext(
         {
           message: input.input.message,
+          messageMetadata: input.input.messageMetadata,
           context: input.input.context,
           outputSchema: input.input.outputSchema,
         },

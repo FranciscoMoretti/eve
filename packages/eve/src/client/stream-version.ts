@@ -7,6 +7,9 @@ const supportedMessageStreamVersions = {
   "23": true,
   "24": true,
   "25": true,
+  "26": true,
+  "27": true,
+  "28": true,
 } as const satisfies Record<MessageStreamVersion, true>;
 
 /** Reads and validates the schema version declared by a message stream response. */

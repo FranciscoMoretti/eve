@@ -25,6 +25,8 @@ export interface FetchFileResult {
 
 /** Runtime context supplied while resolving a channel-owned file URL. */
 export interface FetchFileContext {
+  /** Authenticated session performing staging; absent for standalone resolver calls. */
+  readonly session?: Pick<SessionHandle, "auth">;
   readonly state: Readonly<Record<string, unknown>>;
 }
 

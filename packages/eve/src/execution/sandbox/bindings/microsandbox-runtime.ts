@@ -1,9 +1,15 @@
+import { withProgressHeartbeat } from "#execution/sandbox/bindings/microsandbox-module.js";
+import { withMicrosandboxMutation } from "#execution/sandbox/bindings/microsandbox-mutations.js";
 import { createHash, randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
-import { posix } from "node:path";
+import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, posix } from "node:path";
 
-import { shellQuote } from "#execution/sandbox/shell-quote.js";
 import { createMicrosandboxWithProgress } from "#execution/sandbox/bindings/microsandbox-create.js";
+import {
+  MICROSANDBOX_METADATA_VERSION,
+  type MicrosandboxSessionMetadata,
+  writeSessionMetadata,
+} from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
   applyMicrosandboxNetwork,
   createMicrosandboxNetworkPlan,
@@ -13,22 +19,18 @@ import {
   MICROSANDBOX_USER,
   type ResolvedMicrosandboxOptions,
 } from "#execution/sandbox/bindings/microsandbox-options.js";
-import {
-  MICROSANDBOX_METADATA_VERSION,
-  type MicrosandboxSessionMetadata,
-  writeSessionMetadata,
-} from "#execution/sandbox/bindings/microsandbox-metadata.js";
-import {
-  assertMicrosandboxPlatformCandidate,
-  ensureMicrosandboxBaseRuntime,
-} from "#execution/sandbox/bindings/microsandbox-platform.js";
+import { ensureMicrosandboxBaseRuntime } from "#execution/sandbox/bindings/microsandbox-platform.js";
 import { adaptMicrosandboxExecToSandboxProcess } from "#execution/sandbox/bindings/microsandbox-process.js";
 import {
-  importInstalledEnginePackage,
-  isEveDevEnvironment,
-  loadOptionalEnginePackage,
-} from "#internal/application/optional-package-install.js";
+  isMicrosandboxNotFoundError,
+  isMicrosandboxSnapshotSourceRunningError,
+  isMicrosandboxStillRunningError,
+  removeSnapshotIfExists,
+  snapshotExists,
+} from "#execution/sandbox/bindings/microsandbox-provider-state.js";
 import { withDevelopmentSandboxTags } from "#execution/sandbox/development-run.js";
+import { shellQuote } from "#execution/sandbox/shell-quote.js";
+import { isEveDevEnvironment } from "#internal/application/optional-package-install.js";
 import type { SandboxBackendTags } from "#public/definitions/sandbox-backend.js";
 import { WORKSPACE_ROOT } from "#runtime/workspace/types.js";
 import type { SandboxNetworkPolicy } from "#shared/sandbox-network-policy.js";
@@ -37,13 +39,6 @@ import type {
   SandboxRemovePathOptions,
   SandboxSpawnOptions,
 } from "#shared/sandbox-session.js";
-import {
-  isMicrosandboxNotFoundError,
-  isMicrosandboxSnapshotSourceRunningError,
-  isMicrosandboxStillRunningError,
-  removeSnapshotIfExists,
-  snapshotExists,
-} from "#execution/sandbox/bindings/microsandbox-provider-state.js";
 import type { Sandbox as MicrosandboxSandbox } from "microsandbox";
 
 export {
@@ -55,7 +50,6 @@ export {
 
 export type MicrosandboxModule = typeof import("microsandbox");
 
-const MICROSANDBOX_PACKAGE_NAME = "microsandbox";
 const MICROSANDBOX_CONNECT_TIMEOUT_MS = 10_000;
 const MICROSANDBOX_STOP_TIMEOUT_MS = 10_000;
 
@@ -100,42 +94,103 @@ export class MicrosandboxVm {
     return this.#input.sessionKey;
   }
 
+  async captureForkCheckpoint(
+    checkpointKey: string,
+    optionsHash: string,
+  ): Promise<Record<string, unknown>> {
+    return await withMicrosandboxMutation(this.#metadataPath, async () => {
+      const snapshotName = createProviderName(
+        "eve-sbx-fork",
+        JSON.stringify([this.id, checkpointKey]),
+        optionsHash,
+      );
+      if (this.#metadataPath === undefined) {
+        throw new Error("Persist sandbox metadata before capturing a fork checkpoint.");
+      }
+      // Keep one immutable identity record per checkpoint before provider I/O.
+      // A failed capture may leave a record for an absent snapshot; removal is
+      // idempotent. Never discard these records during ordinary VM shutdown.
+      const manifestDirectory = join(dirname(this.#metadataPath), "fork-checkpoints");
+      await mkdir(manifestDirectory, { recursive: true });
+      const manifestPath = join(manifestDirectory, `${snapshotName}.json`);
+      const temporaryPath = `${manifestPath}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(
+          temporaryPath,
+          `${JSON.stringify({
+            version: 1,
+            sessionKey: this.id,
+            snapshotName,
+            optionsHash,
+          })}\n`,
+          { mode: 0o600 },
+        );
+        await rename(temporaryPath, manifestPath);
+      } finally {
+        await rm(temporaryPath, { force: true });
+      }
+      let captured = false;
+      try {
+        await this.#input.module.Snapshot.get(snapshotName);
+        captured = true;
+      } catch (error) {
+        if (!isMicrosandboxNotFoundError(error)) throw error;
+      }
+      if (!captured) {
+        try {
+          await this.stopAndSnapshot(snapshotName);
+        } finally {
+          // Capturing must not leave the source stopped before its next user turn.
+          const handle = await this.#input.module.Sandbox.get(this.#sandboxName);
+          this.#sandbox =
+            handle.status === "running" || handle.status === "draining"
+              ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
+              : await handle.startDetached();
+        }
+      }
+      return { version: 1, snapshotName, optionsHash };
+    });
+  }
+
   async captureState(optionsHash: string): Promise<MicrosandboxSessionMetadata> {
-    this.#optionsHash = optionsHash;
-    if (isEveDevEnvironment()) {
+    return await withMicrosandboxMutation(this.#metadataPath, async () => {
+      this.#optionsHash = optionsHash;
+      if (isEveDevEnvironment()) {
+        if (this.#metadataPath !== undefined) {
+          await this.writeMetadata(this.#metadataPath, optionsHash);
+        }
+        return {
+          networkPolicy: this.#networkPolicy,
+          optionsHash,
+          sandboxName: this.#sandboxName,
+          stateSnapshotName: this.#stateSnapshotName,
+          version: MICROSANDBOX_METADATA_VERSION,
+        };
+      }
+
+      const previousStateSnapshotName = this.#stateSnapshotName;
+      const stateSnapshotName = createProviderName(
+        "eve-sbx-state",
+        `${this.#input.sessionKey}:${randomUUID()}`,
+      );
+
+      await recordMicrosandboxResource(this.#metadataPath, "snapshot", stateSnapshotName);
+      await this.stopAndSnapshot(stateSnapshotName);
+      this.#stateSnapshotName = stateSnapshotName;
       if (this.#metadataPath !== undefined) {
         await this.writeMetadata(this.#metadataPath, optionsHash);
+      }
+      if (previousStateSnapshotName !== undefined) {
+        await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
       }
       return {
         networkPolicy: this.#networkPolicy,
         optionsHash,
         sandboxName: this.#sandboxName,
-        stateSnapshotName: this.#stateSnapshotName,
+        stateSnapshotName,
         version: MICROSANDBOX_METADATA_VERSION,
       };
-    }
-
-    const previousStateSnapshotName = this.#stateSnapshotName;
-    const stateSnapshotName = createProviderName(
-      "eve-sbx-state",
-      `${this.#input.sessionKey}:${randomUUID()}`,
-    );
-
-    await this.stopAndSnapshot(stateSnapshotName);
-    this.#stateSnapshotName = stateSnapshotName;
-    if (this.#metadataPath !== undefined) {
-      await this.writeMetadata(this.#metadataPath, optionsHash);
-    }
-    if (previousStateSnapshotName !== undefined) {
-      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
-    }
-    return {
-      networkPolicy: this.#networkPolicy,
-      optionsHash,
-      sandboxName: this.#sandboxName,
-      stateSnapshotName,
-      version: MICROSANDBOX_METADATA_VERSION,
-    };
+    });
   }
 
   async detach(): Promise<void> {
@@ -190,40 +245,44 @@ export class MicrosandboxVm {
   }
 
   async setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void> {
-    const previousStateSnapshotName = this.#stateSnapshotName;
-    const stateSnapshotName = createProviderName(
-      "eve-sbx-state",
-      `${this.#input.sessionKey}:${randomUUID()}`,
-    );
-    const previousSandboxName = this.#sandboxName;
+    return await withMicrosandboxMutation(this.#metadataPath, async () => {
+      const previousStateSnapshotName = this.#stateSnapshotName;
+      const stateSnapshotName = createProviderName(
+        "eve-sbx-state",
+        `${this.#input.sessionKey}:${randomUUID()}`,
+      );
+      const previousSandboxName = this.#sandboxName;
 
-    await this.stopAndSnapshot(stateSnapshotName);
-    await removeSandboxIfExists(this.#input.module, previousSandboxName);
+      await recordMicrosandboxResource(this.#metadataPath, "snapshot", stateSnapshotName);
+      await this.stopAndSnapshot(stateSnapshotName);
+      await removeSandboxIfExists(this.#input.module, previousSandboxName);
 
-    const nextSandboxName = createProviderName(
-      "eve-sbx-ses",
-      `${this.#input.sessionKey}:${randomUUID()}`,
-    );
-    this.#sandbox = await createMicrosandbox({
-      fromSnapshot: stateSnapshotName,
-      module: this.#input.module,
-      name: nextSandboxName,
-      networkPolicy: policy,
-      options: this.#input.options,
-      tags: this.#input.tags,
-      user: MICROSANDBOX_USER,
-      workdir: WORKSPACE_ROOT,
+      const nextSandboxName = createProviderName(
+        "eve-sbx-ses",
+        `${this.#input.sessionKey}:${randomUUID()}`,
+      );
+      await recordMicrosandboxResource(this.#metadataPath, "sandbox", nextSandboxName);
+      this.#sandbox = await createMicrosandbox({
+        fromSnapshot: stateSnapshotName,
+        module: this.#input.module,
+        name: nextSandboxName,
+        networkPolicy: policy,
+        options: this.#input.options,
+        tags: this.#input.tags,
+        user: MICROSANDBOX_USER,
+        workdir: WORKSPACE_ROOT,
+      });
+      this.#sandboxName = nextSandboxName;
+      this.#networkPolicy = policy;
+      this.#stateSnapshotName = undefined;
+      if (this.#metadataPath !== undefined && this.#optionsHash !== undefined) {
+        await this.writeMetadata(this.#metadataPath, this.#optionsHash);
+      }
+      await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
+      if (previousStateSnapshotName !== undefined) {
+        await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
+      }
     });
-    this.#sandboxName = nextSandboxName;
-    this.#networkPolicy = policy;
-    this.#stateSnapshotName = undefined;
-    if (this.#metadataPath !== undefined && this.#optionsHash !== undefined) {
-      await this.writeMetadata(this.#metadataPath, this.#optionsHash);
-    }
-    await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
-    if (previousStateSnapshotName !== undefined) {
-      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
-    }
   }
 
   async spawn(options: SandboxSpawnOptions): Promise<SandboxProcess> {
@@ -427,6 +486,7 @@ async function restoreMicrosandboxSessionSnapshot(input: {
   }
 
   const sandboxName = createProviderName("eve-sbx-ses", `${input.sessionKey}:${randomUUID()}`);
+  await recordMicrosandboxResource(input.metadataPath, "sandbox", sandboxName);
   const sandbox = await createMicrosandbox({
     fromSnapshot: input.metadata.stateSnapshotName,
     module: input.module,
@@ -455,98 +515,6 @@ async function restoreMicrosandboxSessionSnapshot(input: {
   );
   await vm.writeMetadata(input.metadataPath, input.metadata.optionsHash);
   return vm;
-}
-
-const MICROSANDBOX_MISSING_PACKAGE_MESSAGE =
-  "The microsandbox sandbox backend requires the `microsandbox` package, which is not bundled " +
-  "with eve. Install it in your application (for example `pnpm add -D microsandbox`), or use " +
-  "docker() / vercel() instead.";
-
-/**
- * Loads the microsandbox npm package and ensures its VM runtime is
- * installed. During `eve dev`, both are installed automatically when
- * missing (unless `setup.autoInstall: false`): the package with the
- * project's package manager, the runtime via microsandbox's installer.
- * Production processes never install — they fail with actionable
- * errors instead.
- */
-export async function loadMicrosandboxModule(input: {
-  readonly appRoot: string;
-  readonly log?: (message: string) => void;
-  readonly options: ResolvedMicrosandboxOptions;
-}): Promise<MicrosandboxModule> {
-  input.log?.("checking microsandbox platform support");
-  await assertMicrosandboxPlatformCandidate();
-
-  const module = await withProgressHeartbeat("loading microsandbox npm package", input.log, () =>
-    loadOptionalEnginePackage<MicrosandboxModule>({
-      appRoot: input.appRoot,
-      autoInstall: input.options.setup.autoInstall,
-      importModule: async () => await import("microsandbox"),
-      missingMessage: MICROSANDBOX_MISSING_PACKAGE_MESSAGE,
-      packageName: MICROSANDBOX_PACKAGE_NAME,
-    }),
-  );
-
-  input.log?.("checking microsandbox VM runtime");
-  if (!module.isInstalled()) {
-    if (!input.options.setup.autoInstall || !isEveDevEnvironment()) {
-      throw new Error(
-        "The microsandbox VM runtime is not installed. Run `npx microsandbox install`, set " +
-          "MSB_PATH for a custom install, or let `eve dev` install it automatically with " +
-          "microsandbox({ setup: { autoInstall: true } }).",
-      );
-    }
-
-    await withProgressHeartbeat("installing microsandbox VM runtime", input.log, async () => {
-      await module.setup().skipVerify(input.options.setup.skipVerify).install();
-    });
-  }
-
-  input.log?.("microsandbox runtime ready");
-  return module;
-}
-
-async function withProgressHeartbeat<T>(
-  message: string,
-  log: ((message: string) => void) | undefined,
-  callback: () => Promise<T>,
-): Promise<T> {
-  log?.(message);
-  if (log === undefined) {
-    return await callback();
-  }
-
-  const startedAt = Date.now();
-  const timer = setInterval(() => {
-    const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-    log(`${message} (${elapsedSeconds}s elapsed)`);
-  }, 10_000);
-  timer.unref?.();
-
-  try {
-    return await callback();
-  } finally {
-    clearInterval(timer);
-  }
-}
-
-/**
- * Loads microsandbox only when its package and runtime are already
- * present — used by cleanup paths that must never trigger installs.
- */
-export async function loadMicrosandboxWithoutInstall(
-  appRoot: string,
-): Promise<MicrosandboxModule | null> {
-  try {
-    const module = await importInstalledEnginePackage<MicrosandboxModule>({
-      appRoot,
-      packageName: MICROSANDBOX_PACKAGE_NAME,
-    });
-    return module.isInstalled() ? module : null;
-  } catch {
-    return null;
-  }
 }
 
 export async function stopAndSnapshotMicrosandboxSandbox(
@@ -665,4 +633,33 @@ function resolveMicrosandboxLabels(tags: SandboxBackendTags | undefined): Record
     "eve.backend": "microsandbox",
     ...withDevelopmentSandboxTags(tags),
   };
+}
+
+/** Retain identities before provider I/O; undefined paths are temporary bootstrap VMs. */
+export async function recordMicrosandboxResource(
+  metadataPath: string | undefined,
+  kind: "sandbox" | "snapshot",
+  name: string,
+): Promise<void> {
+  if (metadataPath === undefined) return;
+  const sessionDirectory = dirname(metadataPath);
+  const directory = join(sessionDirectory, "resources");
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, `${name}.json`);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(
+      temporary,
+      `${JSON.stringify({
+        version: 1,
+        sessionKey: basename(sessionDirectory),
+        kind,
+        name,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }

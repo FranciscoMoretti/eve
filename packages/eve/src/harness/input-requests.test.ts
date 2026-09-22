@@ -1349,7 +1349,10 @@ describe("resolvePendingInput with a session-limit continuation batch", () => {
   it("keeps the prompt pending and queues a plain follow-up message", () => {
     const result = resolvePendingInput({
       session: createLimitBatchSession(),
-      stepInput: { message: "also do this other thing" },
+      stepInput: {
+        message: "also do this other thing",
+        messageMetadata: { selectedTool: "canvas" },
+      },
     });
 
     expect(result.outcome).toBe("unresolved");
@@ -1358,7 +1361,10 @@ describe("resolvePendingInput with a session-limit continuation batch", () => {
     expect(hasDeferredStepInput(result.session)).toBe(true);
 
     const deferred = consumeDeferredStepInput({ session: result.session });
-    expect(deferred.input).toEqual({ message: "also do this other thing" });
+    expect(deferred.input).toEqual({
+      message: "also do this other thing",
+      messageMetadata: { selectedTool: "canvas" },
+    });
   });
 
   it("matches text against the limit batch while an approval batch is also open", () => {

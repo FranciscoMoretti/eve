@@ -18,11 +18,16 @@ const runtimeMocks = vi.hoisted(() => ({
   doesPathExist: vi.fn(async () => false),
   loadMicrosandboxModule: vi.fn(async () => ({}) as never),
   removeSnapshotIfExists: vi.fn(async () => {}),
+  recordMicrosandboxResource: vi.fn(async () => {}),
   sandboxExists: vi.fn(async () => false),
   snapshotExists: vi.fn(async () => true),
 }));
 
 const fsMocks = vi.hoisted(() => ({
+  readFile: vi.fn(async (): Promise<string> => {
+    throw Object.assign(new Error("missing"), { code: "ENOENT" });
+  }),
+  writeFile: vi.fn(async () => {}),
   mkdir: vi.fn(async (_path: string, _options?: unknown) => {}),
   rename: vi.fn(async (_oldPath: string, _newPath: string) => {}),
   rm: vi.fn(async (_path: string, _options?: unknown) => {}),
@@ -41,6 +46,10 @@ const metadataMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("node:fs/promises", () => fsMocks);
+
+vi.mock("#execution/sandbox/bindings/microsandbox-module.js", () => ({
+  loadMicrosandboxModule: runtimeMocks.loadMicrosandboxModule,
+}));
 
 vi.mock("#execution/sandbox/bindings/microsandbox-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("#execution/sandbox/bindings/microsandbox-runtime.js")>()),
@@ -69,6 +78,86 @@ describe("createMicrosandboxHandle", () => {
       snapshotName: "template-snapshot",
       version: 2,
     });
+  });
+
+  it("creates a fresh VM from the fork snapshot using target configuration", async () => {
+    const vm = createFakeMicrosandboxVm("branch-key");
+    runtimeMocks.createPreparedMicrosandbox.mockResolvedValue(vm);
+    const snapshotName = `eve-sbx-fork-${"a".repeat(32)}`;
+    const getSnapshot = vi.fn(async () => ({}));
+    runtimeMocks.loadMicrosandboxModule.mockResolvedValue({
+      Snapshot: { get: getSnapshot },
+    } as never);
+    const options = resolveMicrosandboxOptions({ image: MICROSANDBOX_DEFAULT_IMAGE });
+    await createMicrosandboxHandle({
+      backendName: "microsandbox",
+      options,
+      optionsHash: "options-hash",
+      createInput: {
+        runtimeContext: { appRoot: "/tmp/eve-app" },
+        sessionKey: "branch-key",
+        templateKey: "template-key",
+        forkCheckpoint: { version: 1, optionsHash: "options-hash", snapshotName },
+      },
+    });
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      expect.stringContaining("fork-checkpoint.json"),
+      JSON.stringify([snapshotName, "options-hash"]),
+      { flag: "wx" },
+    );
+    expect(runtimeMocks.createPreparedMicrosandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromSnapshot: snapshotName,
+        sessionKey: "branch-key",
+        options,
+        setupBaseRuntime: false,
+      }),
+    );
+    expect(metadataMocks.readTemplateMetadata).not.toHaveBeenCalled();
+    const retry = {
+      backendName: "microsandbox",
+      options,
+      optionsHash: "options-hash",
+      createInput: {
+        runtimeContext: { appRoot: "/tmp/eve-app" },
+        sessionKey: "branch-key",
+        templateKey: "template-key",
+        forkCheckpoint: { version: 1, optionsHash: "options-hash", snapshotName },
+      },
+    };
+    fsMocks.readFile.mockResolvedValueOnce(JSON.stringify([snapshotName, "options-hash"]));
+    await createMicrosandboxHandle(retry);
+    expect(runtimeMocks.createPreparedMicrosandbox).toHaveBeenCalledTimes(1);
+    fsMocks.readFile.mockResolvedValueOnce(JSON.stringify([snapshotName, "options-hash"]));
+    await expect(
+      createMicrosandboxHandle({
+        ...retry,
+        createInput: {
+          ...retry.createInput,
+          forkCheckpoint: {
+            ...retry.createInput.forkCheckpoint,
+            snapshotName: `eve-sbx-fork-${"b".repeat(32)}`,
+          },
+        },
+      }),
+    ).rejects.toThrow("different fork checkpoint");
+  });
+
+  it("refuses provider creation when its resource record cannot be persisted", async () => {
+    runtimeMocks.recordMicrosandboxResource.mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      createMicrosandboxHandle({
+        backendName: "microsandbox",
+        options: resolveMicrosandboxOptions({}),
+        optionsHash: "options",
+        createInput: {
+          runtimeContext: { appRoot: "/tmp/eve-app" },
+          sessionKey: "record-failure",
+          templateKey: null,
+        },
+      }),
+    ).rejects.toThrow("disk full");
+    expect(runtimeMocks.createPreparedMicrosandbox).not.toHaveBeenCalled();
   });
 
   it("reuses the active same-process session instead of reopening from the template", async () => {
@@ -377,3 +466,8 @@ function createFakeMicrosandboxVm(sessionKey: string) {
     async writeMetadata() {},
   };
 }
+
+vi.mock("#execution/sandbox/bindings/microsandbox-mutations.js", () => ({
+  withMicrosandboxMutation: async (_path: unknown, callback: () => Promise<unknown>) =>
+    await callback(),
+}));

@@ -249,3 +249,54 @@ For scripts, server-to-server calls, evals, tests, and custom clients, use the [
 - [Client SDK](../guides/client/overview): call the eve channel from TypeScript
 - [Auth & route protection](../guides/auth-and-route-protection): the route auth policy
 - [Sessions, runs & streaming](../concepts/sessions-runs-and-streaming): the routes this channel exposes
+
+## Fork imported history
+
+A saved transcript has imported message IDs such as `seed_message_2`, separate from execution turn IDs. To replace an imported user message, create a new conversation with a first message and this fork reference:
+
+```json
+{
+  "message": "Replacement question",
+  "operationId": "replacement-operation",
+  "fork": {
+    "sessionId": "owned-source-session",
+    "beforeMessageId": "seed_message_2"
+  }
+}
+```
+
+The channel must grant source access through `authorizeFork`; anonymous callers cannot fork. `beforeMessageId` selects an existing imported user message and excludes it and everything after it. Do not combine it with `beforeTurnId` or `checkpointId`. Forking the first imported user message starts with empty history.
+
+The new session retains its own authentication, instructions, limits, and execution identity. eve derives model and display history from the same durable imported prefix. Completed tool results remain historical content; tools are not replayed. Imported attachments are resolved through the destination channel on the first turn. A later source sandbox is not inherited. Application-owned documents must be restored separately to the selected boundary. Imported messages retained in the prefix remain addressable in descendant forks.
+
+Imported assistant seed messages may include an optional `modelId` (1–512 characters), using the same provider/model reference as `step.started`. It is preserved in display metadata across imported forks. This informational value does not select a model or change executable history; the application chooses the model for a new turn. User seed messages and arbitrary metadata remain rejected.
+
+## Importing selected settled history
+
+The experimental `createSessionHistorySeed` export from `eve/transcript` converts
+selected structured model messages into the existing server-resolved transcript
+seed. It returns `seed`, one destination `messageIds` entry per input message, and
+a `toolCallIds` map. Assistant calls and their adjacent tool-result batch share a
+display-message identity. IDs are local to the new session.
+
+Capture immutable history in a memory provider's `turn.completed` callback, select
+the desired settled prefix, and call `createSessionHistorySeed(history)` on the
+server. Bind its seed to an authorized, immutable operation and return it through
+the channel's existing `resolveSeed` callback. The browser sends the operation ID;
+it must not choose arbitrary raw history. Empty history supports replacing the
+first user message. Initial seeding emits history and waits without model or tool
+replay; a later send begins fresh execution.
+
+The helper preserves text, unsigned reasoning, URL attachments, and paired tool
+results of type JSON, text, or error-text. It rejects unsupported provider data,
+system messages, binary attachments, incomplete tools, pending approvals, and
+oversized input. Text results remain text when copied again. Attachment URLs must
+already be authorized for the destination. Keep model selection, UI annotations,
+resource manifests, retention, and retry receipts in the application.
+
+This is normalized conversation import, not exact execution restoration. It does
+not export historical checkpoints, define compaction boundary mapping, copy
+sandbox resources, or establish a writer fence. Memory-capture failures are
+logged by the runtime; the application must require its own persisted receipt
+before declaring a branch ready. Approval/authentication pauses are not settled
+captures.

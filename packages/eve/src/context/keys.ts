@@ -4,6 +4,10 @@
  * `#runtime/sessions/runtime-context-keys.ts`.
  */
 
+import {
+  SESSION_CHECKPOINT_WRITER_KEY,
+  type SessionCheckpoint,
+} from "#execution/session-checkpoint-contract.js";
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 
 import type {
@@ -72,6 +76,11 @@ export interface Session {
 // ---------------------------------------------------------------------------
 // Seed keys — serializable values carried across workflow step boundaries.
 // ---------------------------------------------------------------------------
+
+export const SessionCheckpointWriterKey = new ContextKey<{
+  readonly sessionId: string;
+  readonly writable: WritableStream<SessionCheckpoint>;
+}>(SESSION_CHECKPOINT_WRITER_KEY);
 
 export const AuthKey = new ContextKey<SessionAuthContext | null>("eve.auth");
 export const InitiatorAuthKey = new ContextKey<SessionAuthContext | null>("eve.initiatorAuth");

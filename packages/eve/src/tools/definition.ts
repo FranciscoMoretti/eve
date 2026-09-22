@@ -6,6 +6,7 @@ import type {
 
 import type { Approval } from "#approval/definition.js";
 import type { SessionContext } from "#context/session-context.js";
+import type { ToolApprovalReceipt } from "#context/tool-approval-receipts.js";
 import { stampDefinitionKey } from "#internal/authored-definition/source-identity.js";
 import type { JsonObject } from "#shared/json.js";
 import type { TokenResult } from "#shared/connection-types.js";
@@ -169,6 +170,8 @@ export type ToolContext = SessionContext & {
    * the tool's {@link ApprovalContext}.
    */
   readonly toolName: string;
+  /** Approval evidence for this exact harness invocation and tool call. */
+  readonly approval?: ToolApprovalReceipt;
   /**
    * Resolves the bearer token for an inline provider. This accepts the same
    * auth shapes as a connection's `auth` field, including `connect("...")`

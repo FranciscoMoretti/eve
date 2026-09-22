@@ -22,9 +22,10 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 51,
+    current: 52,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 28, 29, 30, 31, 32, 34, 35, 44, 45, 46, 49, 50, 51,
+      52,
     ],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
@@ -55,10 +56,10 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
     },
   },
   dynamicTool: {
-    current: 50,
+    current: 51,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 28, 29, 30, 31, 32,
-      33, 41, 48, 49, 50,
+      33, 41, 48, 49, 50, 51,
     ],
     dropped: {
       21: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -83,8 +84,8 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
     },
   },
   channel: {
-    current: 26,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 23, 24, 25, 26],
+    current: 27,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 23, 24, 25, 26, 27],
     dropped: {
       12: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
       19: "Continuation rekey was removed; channel extensions must use additive continuation.alias instead.",
@@ -94,15 +95,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
     },
   },
   schedule: {
-    current: 14,
-    supported: [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    current: 15,
+    supported: [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     dropped: {
       5: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
     },
   },
   subagent: {
-    current: 18,
-    supported: [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+    current: 19,
+    supported: [3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
     dropped: {
       1: "Persistent subagent sessions are now the default and the experimental opt-in was removed",
       2: "Persistent subagent sessions are now the default and the experimental opt-in was removed",
@@ -110,16 +111,16 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
     },
   },
   connection: {
-    current: 23,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    current: 24,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
     dropped: {
       9: "Dynamic connection resolvers no longer receive conversation or channel continuation data",
       10: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
     },
   },
   hook: {
-    current: 24,
-    supported: [10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24],
+    current: 25,
+    supported: [10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25],
     dropped: {
       1: "Model identity moved from session.started runtime metadata to step.started call attribution.",
       2: "Model identity moved from session.started runtime metadata to step.started call attribution.",
@@ -135,16 +136,16 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
   },
   skill: { current: 1, supported: [1], dropped: {} },
   dynamicSkill: {
-    current: 21,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21],
+    current: 22,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22],
     dropped: {
       13: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
     },
   },
   instructions: { current: 2, supported: [1, 2], dropped: {} },
   dynamicInstructions: {
-    current: 22,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22],
+    current: 23,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23],
     dropped: {
       14: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
     },

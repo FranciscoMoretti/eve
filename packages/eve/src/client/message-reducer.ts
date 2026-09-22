@@ -1,16 +1,7 @@
-import type { EveAgentReducer, EveAgentReducerEvent } from "#client/reducer.js";
 import {
   createAuthorizationCompletedPart,
   createAuthorizationRequiredPart,
 } from "#client/authorization-message-parts.js";
-import type {
-  EveAuthorizationPart,
-  EveMessageData,
-  EveDynamicToolPart,
-  EveMessage,
-  EveMessageMetadata,
-  EveMessagePart,
-} from "#client/message-reducer-types.js";
 import {
   approvedApproval,
   createToolMetadata,
@@ -27,39 +18,35 @@ import {
   removeStreamingToolPartsForTurn,
   upsertMessage,
 } from "#client/message-reducer-primitives.js";
+import type {
+  EveAuthorizationPart,
+  EveDynamicToolPart,
+  EveMessage,
+  EveMessageData,
+  EveMessageMetadata,
+  EveMessagePart,
+} from "#client/message-reducer-types.js";
 import { messageRun } from "#client/message-run-parts.js";
-import type { InputResponse } from "#shared/input.js";
+import { receivedMessageEventId } from "#client/received-message-id.js";
+import type { EveAgentReducer, EveAgentReducerEvent } from "#client/reducer.js";
 import type { AuthorizationCompletedStreamEvent, InputResolution } from "#protocol/message.js";
+import type { InputResponse } from "#shared/input.js";
 
 export type {
   EveAuthorizationChallenge,
   EveAuthorizationOutcome,
   EveAuthorizationPart,
-  EveMessageData,
   EveDynamicToolPart,
-  EveMessageInputRequest,
   EveMessage,
+  EveMessageData,
+  EveMessageInputRequest,
   EveMessageMetadata,
   EveMessagePart,
   EveMessageToolMetadata,
 } from "#client/message-reducer-types.js";
 
 type EveAssistantMessage = EveMessage & { readonly role: "assistant" };
-type MessageReceivedEvent = Extract<EveAgentReducerEvent, { readonly type: "message.received" }>;
-
-function receivedMessageEventId(event: MessageReceivedEvent): string {
-  const eventId: string | undefined = event.meta.id;
-  return eventId ?? `${event.data.turnId}:${event.data.sequence}`;
-}
-
-/**
- * Creates a UIMessage-compatible eve reducer for chat and agent UIs.
- *
- * The returned projection keeps eve-owned types while following the AI SDK
- * `messages[].parts[]` rendering convention used by AI Elements. It projects
- * text, reasoning, tool calls, tool results, tool approvals, submitted HITL
- * responses, and authorization prompts.
- */
+/** Projects eve events into UIMessage-compatible chat messages and parts. */
 export function defaultMessageReducer(): EveAgentReducer<EveMessageData> {
   return {
     initial() {
@@ -73,10 +60,35 @@ export function defaultMessageReducer(): EveAgentReducer<EveMessageData> {
 
 function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): EveMessageData {
   switch (event.type) {
+    case "history.seeded": {
+      const ids = new Set(event.data.messages.map((message) => message.id));
+      return {
+        messages: [
+          ...event.data.messages,
+          ...data.messages.filter((message) => !ids.has(message.id)),
+        ],
+      };
+    }
+    case "history.restored": {
+      // Rebuild independently so a repeated durable write cannot append deltas twice.
+      let inherited: EveMessageData = { messages: [] };
+      for (const historical of event.data.events) {
+        inherited = reduceMessageData(inherited, historical);
+      }
+      const inheritedIds = new Set(inherited.messages.map((message) => message.id));
+      return {
+        messages: [
+          ...inherited.messages,
+          ...data.messages.filter((message) => !inheritedIds.has(message.id)),
+        ],
+      };
+    }
+
     case "client.message.submitted":
       return upsertMessage(data, {
         id: optimisticUserMessageId(event.data.submissionId),
         metadata: {
+          custom: event.data.metadata,
           optimistic: true,
           status: "submitted",
         },
@@ -88,6 +100,7 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
       return upsertMessage(data, {
         id: optimisticUserMessageId(event.data.submissionId),
         metadata: {
+          custom: event.data.metadata,
           optimistic: true,
           status: "failed",
         },
@@ -116,12 +129,29 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
       return upsertMessage(data, {
         id: `${receivedMessageEventId(event)}:user`,
         metadata: {
+          custom: event.data.metadata,
           status: "complete",
           turnId: event.data.turnId,
         },
         parts: projectReceivedParts(event.data.parts, event.data.message),
         role: "user",
       });
+
+    case "hook.result": {
+      const annotation = event.data.responseMetadata;
+      if (annotation === undefined) return data;
+      const target = data.messages.findLast(
+        (message) => message.role === "assistant" && message.metadata?.turnId === event.data.turnId,
+      );
+      if (target === undefined) return data;
+      return upsertMessage(data, {
+        ...target,
+        metadata: {
+          ...target.metadata,
+          annotations: { ...target.metadata?.annotations, [event.data.hookId]: annotation },
+        },
+      });
+    }
 
     case "step.started":
       return updateAssistantMessage(data, event.data.turnId, (message) =>

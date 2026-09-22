@@ -1,3 +1,4 @@
+import type { SessionForkReference } from "#execution/session-checkpoint-contract.js";
 import type { UserContent } from "ai";
 
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
@@ -179,6 +180,7 @@ export interface TurnCaller {
 export interface DeliverPayload {
   readonly inputResponses?: readonly InputResponse[];
   readonly message?: string | UserContent;
+  readonly messageMetadata?: JsonObject;
   readonly context?: readonly string[];
   readonly outputSchema?: JsonObject;
   /** Framework-only task envelopes consumed before adapter/model delivery. */
@@ -226,6 +228,7 @@ export type SessionCommand =
       readonly tasks?: boolean;
       readonly turnId?: string;
     }
+  | CheckpointSessionHookPayload
   | { readonly kind: "compact" }
   | { readonly kind: "clear" }
   | { readonly kind: "reset"; readonly reason?: string };
@@ -246,13 +249,15 @@ export type ResetSessionResult =
 export type SessionCommandResult<TCommand extends SessionCommand = SessionCommand> =
   TCommand extends { readonly kind: "send" }
     ? SessionSendCommandResult
-    : TCommand extends { readonly kind: "cancel" }
-      ? CancelTurnResult
-      : TCommand extends { readonly kind: "compact" }
-        ? CompactSessionResult
-        : TCommand extends { readonly kind: "clear" }
-          ? ClearSessionResult
-          : ResetSessionResult;
+    : TCommand extends { readonly kind: "checkpoint" }
+      ? CompactSessionResult
+      : TCommand extends { readonly kind: "cancel" }
+        ? CancelTurnResult
+        : TCommand extends { readonly kind: "compact" }
+          ? CompactSessionResult
+          : TCommand extends { readonly kind: "clear" }
+            ? ClearSessionResult
+            : ResetSessionResult;
 
 export interface DispatchContinuationInput<TCommand extends SessionCommand = SessionCommand> {
   readonly command: TCommand;
@@ -304,6 +309,12 @@ export interface SessionTimeoutHookPayload {
 }
 
 /** Requests a context compaction without delivering model input. */
+export interface CheckpointSessionHookPayload {
+  readonly kind: "checkpoint";
+  readonly checkpointId: string;
+  readonly beforeTurnId: string;
+}
+
 export interface CompactSessionHookPayload {
   readonly kind: "compact";
 }
@@ -389,6 +400,7 @@ export interface SubagentAuthorizationEventHookPayload {
  * Serializable payload sent through the workflow `resumeHook`.
  */
 export type HookPayload =
+  | CheckpointSessionHookPayload
   | ClearSessionHookPayload
   | CompactSessionHookPayload
   | DeliverHookPayload
@@ -464,6 +476,10 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
+  /** Server-authorized public transcript; creates an idle conversation without a first turn. */
+  readonly seed?: import("#execution/session-transcript-seed.js").SessionTranscriptSeed;
+  /** Server-authorized native checkpoint used to seed a new independent session. */
+  readonly fork?: SessionForkReference;
   readonly adapter: ChannelAdapter<any>;
   /** Framework task that owns this run, when the run is a task executor. */
   readonly taskId?: string;
@@ -539,6 +555,7 @@ export interface RunInput {
   readonly input: {
     /** Omitted only when creating a conversation session before its first turn. */
     readonly message?: string | UserContent;
+    readonly messageMetadata?: JsonObject;
     readonly context?: readonly string[];
     readonly outputSchema?: JsonObject;
   };

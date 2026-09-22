@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EVE_PACKAGE_NAME } from "#internal/package-name.js";
+import { EVE_PACKAGE_NAME, normalizeEveRuntimeIdentity } from "#internal/package-name.js";
 
 let cachedPackageInfo: InstalledPackageInfo | undefined;
 let cachedPackageLocation: PackageLocation | undefined;
@@ -266,6 +266,14 @@ export function resolvePackageSourceDirectoryPath(relativeSourcePath: string): s
 }
 
 export function resolvePackageDependencyPath(specifier: string): string {
+  // Authored imports retain the runtime name, but Node self-resolution must use
+  // the distribution name when the package is installed through an npm alias.
+  if (specifier === EVE_PACKAGE_NAME || specifier.startsWith(`${EVE_PACKAGE_NAME}/`)) {
+    const manifest = JSON.parse(readFileSync(join(resolvePackageRoot(), "package.json"), "utf8"));
+    if (manifest.name === "@chat-js/eve") {
+      return require.resolve(`@chat-js/eve${specifier.slice(EVE_PACKAGE_NAME.length)}`);
+    }
+  }
   return require.resolve(specifier);
 }
 
@@ -298,8 +306,7 @@ function normalizeInstalledPackageInfo(value: unknown): InstalledPackageInfo | u
   }
 
   return {
-    name: packageJson.name,
-    version: packageJson.version,
+    ...normalizeEveRuntimeIdentity({ name: packageJson.name, version: packageJson.version }),
   };
 }
 

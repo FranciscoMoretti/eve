@@ -402,3 +402,15 @@ describe("resolveAssistantStepText", () => {
     expect(resolveAssistantStepText([], " \n\t")).toBeNull();
   });
 });
+
+it("coalesces metadata with the last message, never with control-only payloads", () => {
+  const first = { message: "first", messageMetadata: { selectedTool: "canvas" } };
+  expect(coalesceTurnInputs(first, { context: ["control"] }).messageMetadata).toEqual(
+    first.messageMetadata,
+  );
+  expect(coalesceTurnInputs(first, { message: "automatic" }).messageMetadata).toBeUndefined();
+  expect(
+    coalesceTurnInputs(first, { message: "second", messageMetadata: { selectedTool: null } })
+      .messageMetadata,
+  ).toEqual({ selectedTool: null });
+});

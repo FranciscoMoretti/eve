@@ -379,10 +379,10 @@ async function compact(
   overrides: Partial<CompactionConfig> & { readonly summary?: string } = {},
 ): Promise<{ result: ModelMessage[]; summarizer: ReturnType<typeof vi.mocked<never>> }> {
   const { generateText } = await import("ai");
-  const summarizer = vi.mocked(generateText);
+  const summarizer = vi.mocked(generateText, { partial: true });
   summarizer.mockResolvedValue({
     text: overrides.summary ?? "checkpoint text",
-  } as Awaited<ReturnType<typeof generateText>>);
+  } as Partial<Awaited<ReturnType<typeof generateText>>>);
 
   const compactionConfig: CompactionConfig = {
     lastKnownInputTokens: overrides.lastKnownInputTokens,
@@ -489,8 +489,8 @@ describe("compactMessages: tool-result cap heuristic", () => {
 
   it("summarizes when a no-op cannot satisfy the explicit history-only token floor", async () => {
     const { generateText } = await import("ai");
-    vi.mocked(generateText).mockResolvedValue({ text: "summary" } as Awaited<
-      ReturnType<typeof generateText>
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({ text: "summary" } as Partial<
+      Awaited<ReturnType<typeof generateText>>
     >);
     await compactMessages(
       [user("earlier"), assistant("reply"), user("continue")],
@@ -729,10 +729,10 @@ describe("compactMessages: forced summary", () => {
     "rejects a blank checkpoint without replacing history (%j)",
     async (text) => {
       const { generateText } = await import("ai");
-      vi.mocked(generateText).mockResolvedValue({
+      vi.mocked(generateText, { partial: true }).mockResolvedValue({
         finishReason: "content-filter",
         text,
-      } as Awaited<ReturnType<typeof generateText>>);
+      } as Partial<Awaited<ReturnType<typeof generateText>>>);
       const messages = [
         user("Keep the original request."),
         assistant("Work is in progress."),
@@ -760,9 +760,9 @@ describe("compactMessages: forced summary", () => {
 
   it("summarizes the full conversation even when it is already under the threshold", async () => {
     const { generateText } = await import("ai");
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text: "forced checkpoint",
-    } as Awaited<ReturnType<typeof generateText>>);
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
     const messages = [user("old message"), assistant("old reply")];
 
     const result = await compactMessages(
@@ -972,9 +972,9 @@ describe("compactMessages: summarization fallback", () => {
 
   it("forwards model options to the summarization call", async () => {
     const { generateText } = await import("ai");
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text: "summary",
-    } as Awaited<ReturnType<typeof generateText>>);
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
 
     const messages = [user("old message"), assistant("old reply"), user("continue")];
     const model = {} as Parameters<typeof compactMessages>[1];
@@ -1000,5 +1000,83 @@ describe("compactMessages: summarization fallback", () => {
         providerOptions,
       }),
     );
+  });
+});
+
+describe("compaction usage evidence", () => {
+  it("records returned provider usage before rejecting an empty summary", async () => {
+    const { generateText } = await import("ai");
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
+      text: "",
+      finishReason: "content-filter",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 0,
+        totalTokens: undefined,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+      providerMetadata: { gateway: { cost: "0.002", generationId: "summary-1" } },
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
+    const onUsage = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      compactMessages(
+        [user("retain this"), assistant("retained answer")],
+        {} as Parameters<typeof compactMessages>[1],
+        { recentWindowSize: 1, threshold: ROOMY },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        undefined,
+        onUsage,
+      ),
+    ).rejects.toThrow("empty summary");
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      usage: { costUsd: 0.002, inputTokens: 20, outputTokens: 0 },
+      providerMetadata: { gateway: { generationId: "summary-1" } },
+    });
+  });
+
+  it("records each paid attempt when shrinking the retained window", async () => {
+    const { generateText } = await import("ai");
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
+      text: "summary ".repeat(1000),
+      usage: {
+        inputTokens: 20,
+        outputTokens: 10,
+        totalTokens: undefined,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+      providerMetadata: { gateway: { cost: 0.001 } },
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
+    const onUsage = vi.fn().mockResolvedValue(undefined);
+    await compactMessages(
+      [user("old"), assistant("old answer"), user("new"), assistant("new answer")],
+      {} as Parameters<typeof compactMessages>[1],
+      { recentWindowSize: 1, threshold: 100 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      onUsage,
+    );
+    expect(vi.mocked(generateText, { partial: true }).mock.calls.length).toBeGreaterThan(1);
+    expect(onUsage).toHaveBeenCalledTimes(
+      vi.mocked(generateText, { partial: true }).mock.calls.length,
+    );
+    expect(onUsage.mock.calls.every(([evidence]) => evidence.usage.costUsd === 0.001)).toBe(true);
   });
 });

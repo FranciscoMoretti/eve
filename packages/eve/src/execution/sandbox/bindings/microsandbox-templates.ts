@@ -16,10 +16,8 @@ import {
   readTemplateMetadata,
   resolveMicrosandboxMetadataPath,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
-import {
-  loadMicrosandboxWithoutInstall,
-  removeSnapshotIfExists,
-} from "#execution/sandbox/bindings/microsandbox-runtime.js";
+import { loadMicrosandboxWithoutInstall } from "#execution/sandbox/bindings/microsandbox-module.js";
+import { removeSnapshotIfExists } from "#execution/sandbox/bindings/microsandbox-runtime.js";
 import { resolveSandboxCacheDirectory } from "#internal/application/paths.js";
 
 const MICROSANDBOX_CACHE_DIRECTORY_NAME = "microsandbox";

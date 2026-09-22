@@ -8,6 +8,8 @@
 
 export {
   type HookContext,
+  type HookModelCall,
+  type TurnCompletedHookResult,
   type HookDefinition,
   type HookEvent,
   type HookEventKey,

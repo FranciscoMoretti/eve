@@ -97,6 +97,24 @@ function createBoundedStreamResponse(events: readonly unknown[]) {
 }
 
 describe("ClientSession", () => {
+  it("sends metadata on creation and subsequent messages", async () => {
+    const bodies: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return createAcceptedResponse();
+    });
+    const messageMetadata = { chatjs: { selectedTool: null } };
+    await ClientSession.create(
+      { host: "https://eve.test", resolveHeaders: async () => new Headers() },
+      { message: "first", messageMetadata },
+    );
+    await createSession().send("second", { messageMetadata });
+    expect(bodies).toEqual([
+      { message: "first", messageMetadata },
+      { message: "second", messageMetadata },
+    ]);
+  });
+
   it("cancels an accepted turn before its stream settles with freshly resolved auth", async () => {
     let headerResolution = 0;
     const requests: Array<{ headers: Headers; method: string; url: string }> = [];

@@ -20,6 +20,7 @@ import {
   SessionKey,
   type Session as RuntimeSession,
 } from "#context/keys.js";
+import { deriveOperationContinuationToken } from "#eve-channel/request.js";
 import { createMessageCompletedEvent } from "#protocol/message.js";
 
 /**
@@ -140,6 +141,9 @@ function createEveCreateHandler(
       mode: runInput.mode,
       title: runInput.title,
     } satisfies MockSendOptions);
+    if (runInput.continuationToken !== undefined) {
+      resolveSession.mockResolvedValue(createMockSession());
+    }
     return {
       events: new ReadableStream(),
       sessionId: "test-session-id",
@@ -2336,4 +2340,257 @@ describe("eveChannel — forwarded principal", () => {
     expect(response.status).toBe(403);
     expect(handler.send).not.toHaveBeenCalled();
   });
+});
+
+describe("eveChannel — native fork authorization", () => {
+  const fork = { sessionId: "source-session", beforeTurnId: "turn_1" };
+
+  it("denies forks by default before resolving a replayed operation", async () => {
+    const handler = createEveCreateHandler(
+      { auth: () => ACCEPTED_AUTH },
+      { activeSessionId: "existing" },
+    );
+    const response = await handler.fetch(
+      createJsonMessageRequest({ message: "edit", operationId: "retry", fork }),
+    );
+    expect(response.status).toBe(403);
+    expect(handler.resolveSession).not.toHaveBeenCalled();
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("passes only an explicitly authorized source reference to native creation", async () => {
+    const authorizeFork = vi.fn(() => true);
+    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, authorizeFork });
+    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
+    expect(response.status).toBe(202);
+    expect(authorizeFork).toHaveBeenCalledWith({
+      auth: ACCEPTED_AUTH,
+      sourceSessionId: fork.sessionId,
+    });
+    expect(handler.createSession.mock.calls[0]?.[0].fork).toEqual(fork);
+  });
+
+  it("rejects a source that the verified principal does not own", async () => {
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      authorizeFork: () => false,
+    });
+    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
+    expect(response.status).toBe(403);
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("denies anonymous forks even when the source policy allows them", async () => {
+    const authorizeFork = vi.fn(() => true);
+    const handler = createEveCreateHandler({ auth: none(), authorizeFork });
+    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
+    expect(response.status).toBe(403);
+    expect(authorizeFork).not.toHaveBeenCalled();
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("denies an onMessage downgrade to unauthenticated execution", async () => {
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      authorizeFork: () => true,
+      onMessage: () => ({ auth: null }),
+    });
+    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
+    expect(response.status).toBe(403);
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("reauthorizes a principal changed by onMessage", async () => {
+    const authorizeFork = vi.fn(
+      ({ auth }: { auth: SessionAuthContext }) => auth.principalId === ACCEPTED_AUTH.principalId,
+    );
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      authorizeFork,
+      onMessage: () => ({ auth: OVERRIDE_AUTH }),
+    });
+    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
+    expect(response.status).toBe(403);
+    expect(authorizeFork).toHaveBeenCalledTimes(2);
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    {},
+    { sessionId: "source", beforeTurnId: "turn_-1" },
+    { ...fork, extra: "value" },
+  ])("rejects malformed fork references before authorization: %j", async (invalid) => {
+    const authorizeFork = vi.fn(() => true);
+    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, authorizeFork });
+    const response = await handler.fetch(
+      createJsonMessageRequest({ message: "edit", fork: invalid }),
+    );
+    expect(response.status).toBe(400);
+    expect(authorizeFork).not.toHaveBeenCalled();
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("eveChannel — server-authorized transcript seeds", () => {
+  const seed = {
+    messages: [
+      { role: "user" as const, parts: [{ type: "text" as const, text: "Published content" }] },
+    ],
+  };
+  const payload = { seed: true, operationId: "copy-1" };
+
+  it("uses only the resolver transcript and authenticated principal without invoking the message hook", async () => {
+    const resolveSeed = vi.fn(() => seed);
+    const onMessage = vi.fn(() => ({ auth: OVERRIDE_AUTH, context: ["Must not seed this"] }));
+    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed, onMessage });
+    const response = await handler.fetch(createJsonMessageRequest(payload));
+    expect(response.status).toBe(202);
+    expect(resolveSeed).toHaveBeenCalledExactlyOnceWith({
+      auth: ACCEPTED_AUTH,
+      operationId: "copy-1",
+    });
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(handler.createSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        seed,
+        auth: ACCEPTED_AUTH,
+        input: {
+          message: undefined,
+          messageMetadata: undefined,
+          context: undefined,
+          outputSchema: undefined,
+        },
+        mode: "conversation",
+        fork: undefined,
+        callback: undefined,
+      }),
+    );
+    expect(handler.createSession.mock.calls[0]?.[0].seed).not.toBe(seed);
+    expect(handler.createSession.mock.calls[0]?.[0].seed?.messages).not.toBe(seed.messages);
+  });
+
+  it("recovers an accepted seed without consulting a revoked source or dispatching again", async () => {
+    const resolveSeed = vi.fn(() => null);
+    const handler = createEveCreateHandler(
+      { auth: () => ACCEPTED_AUTH, resolveSeed },
+      { activeSessionId: "independent-copy" },
+    );
+    const response = await handler.fetch(createJsonMessageRequest(payload));
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ sessionId: "independent-copy" });
+    expect(resolveSeed).not.toHaveBeenCalled();
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("separates seed operation ownership from ordinary sends and other principals", async () => {
+    const ordinary = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
+    const first = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed: () => seed });
+    const other = createEveCreateHandler({ auth: () => OVERRIDE_AUTH, resolveSeed: () => seed });
+    for (const [handler, body] of [
+      [ordinary, { operationId: payload.operationId, message: "hi" }],
+      [first, payload],
+      [other, payload],
+    ] as const) {
+      expect((await handler.fetch(createJsonMessageRequest(body))).status).toBe(202);
+    }
+    const tokens = [ordinary, first, other].map(
+      (handler) => handler.createSession.mock.calls[0]?.[0].continuationToken,
+    );
+    expect(tokens.every((token) => typeof token === "string")).toBe(true);
+    expect(new Set(tokens).size).toBe(3);
+  });
+
+  it("rejects anonymous, unconfigured and unauthorized seed operations before native allocation", async () => {
+    const resolveSeed = vi.fn(() => seed);
+    const anonymous = createEveCreateHandler({ auth: none(), resolveSeed });
+    const disabled = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
+    const denied = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed: () => null });
+    for (const handler of [anonymous, disabled, denied]) {
+      expect((await handler.fetch(createJsonMessageRequest(payload))).status).toBe(403);
+      expect(handler.createSession).not.toHaveBeenCalled();
+    }
+    expect(resolveSeed).not.toHaveBeenCalled();
+    expect(anonymous.resolveSession).not.toHaveBeenCalled();
+    expect(disabled.resolveSession).not.toHaveBeenCalled();
+  });
+
+  it("does not expose resolver errors to the caller", async () => {
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      resolveSeed: () => {
+        throw new Error("private-source-internal-detail");
+      },
+    });
+    const response = await handler.fetch(createJsonMessageRequest(payload));
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain("private-source-internal-detail");
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects private runtime metadata returned by a resolver before allocation", async () => {
+    const privateSeed = {
+      messages: [
+        {
+          role: "user" as const,
+          parts: [{ type: "text" as const, text: "Visible" }],
+          turnId: "owner-turn",
+        },
+      ],
+    };
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      resolveSeed: () => privateSeed,
+    });
+    expect((await handler.fetch(createJsonMessageRequest(payload))).status).toBe(500);
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve or allocate a browser-supplied transcript", async () => {
+    const resolveSeed = vi.fn(() => seed);
+    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed });
+    expect(
+      (await handler.fetch(createJsonMessageRequest({ ...payload, messages: seed.messages })))
+        .status,
+    ).toBe(400);
+    expect(resolveSeed).not.toHaveBeenCalled();
+    expect(handler.resolveSession).not.toHaveBeenCalled();
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+});
+
+it("looks up a seeded operation only in its explicit authenticated namespace", async () => {
+  const channel = eveChannel({ auth: () => ACCEPTED_AUTH });
+  const route = channel.routes.find(
+    (item) => item.method === "GET" && item.path === "/eve/v1/operation/:operationId",
+  );
+  if (!route || route.method === "WEBSOCKET") throw new Error("Missing operation lookup route");
+  const seedToken = await deriveOperationContinuationToken({
+    auth: ACCEPTED_AUTH,
+    operationId: "copy-1",
+    kind: "seed",
+  });
+  const resolveSession = vi.fn(async (token: string) =>
+    token === seedToken ? createMockSession({ id: "saved-copy" }) : undefined,
+  );
+  const args = { ...createRouteArgs(), params: { operationId: "copy-1" }, resolveSession };
+  const seeded = await route.handler(
+    new Request("https://example.com/eve/v1/operation/copy-1?kind=seed"),
+    args,
+  );
+  expect(seeded.status).toBe(200);
+  await expect(seeded.json()).resolves.toEqual({ sessionId: "saved-copy" });
+  expect(seeded.headers.get("cache-control")).toBe("no-store");
+  const ordinary = await route.handler(
+    new Request("https://example.com/eve/v1/operation/copy-1"),
+    args,
+  );
+  expect(ordinary.status).toBe(404);
+  resolveSession.mockClear();
+  const invalid = await route.handler(
+    new Request("https://example.com/eve/v1/operation/copy-1?kind=unknown"),
+    args,
+  );
+  expect(invalid.status).toBe(400);
+  expect(resolveSession).not.toHaveBeenCalled();
 });

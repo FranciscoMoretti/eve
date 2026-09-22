@@ -38,6 +38,7 @@ import { mockSandbox, type MockSandbox } from "#internal/testing/mocks/mock-sand
  * backend so runtime tests never depend on a host container or VM service.
  */
 export interface TestAppDescriptor {
+  readonly sandboxBackend?: SandboxBackend;
   readonly agent?: {
     readonly limits?: {
       readonly maxInputTokensPerSession?: number | false;
@@ -172,7 +173,7 @@ export async function createTestRuntime(descriptor: TestAppDescriptor = {}): Pro
     modules: [
       {
         loadNamespace: async () => ({
-          default: defineSandbox({ backend: TEST_SANDBOX_BACKEND }),
+          default: defineSandbox({ backend: descriptor.sandboxBackend ?? TEST_SANDBOX_BACKEND }),
         }),
         logicalPath: "sandbox.ts",
       },

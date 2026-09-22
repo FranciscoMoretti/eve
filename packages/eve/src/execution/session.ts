@@ -194,6 +194,7 @@ export function projectToDurableSession(session: HarnessSession): DurableSession
     outputSchema?: HarnessSession["outputSchema"];
     rootSessionId?: string;
     sandboxState?: HarnessSession["sandboxState"];
+    localSandboxIdentity?: HarnessSession["localSandboxIdentity"];
     sessionId: string;
     state?: HarnessSession["state"];
     taskId?: string;
@@ -221,6 +222,9 @@ export function projectToDurableSession(session: HarnessSession): DurableSession
   }
   if (session.outputSchema !== undefined) {
     durable.outputSchema = session.outputSchema;
+  }
+  if (session.localSandboxIdentity !== undefined) {
+    durable.localSandboxIdentity = session.localSandboxIdentity;
   }
   if (session.sandboxState !== undefined) {
     durable.sandboxState = session.sandboxState;
@@ -275,6 +279,9 @@ export function hydrateDurableSession(input: {
   }
   if (durable.outputSchema !== undefined) {
     session.outputSchema = durable.outputSchema;
+  }
+  if (durable.localSandboxIdentity !== undefined) {
+    session.localSandboxIdentity = durable.localSandboxIdentity;
   }
   if (durable.sandboxState !== undefined) {
     session.sandboxState = durable.sandboxState;

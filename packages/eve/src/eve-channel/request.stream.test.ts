@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Session } from "#channel/session.js";
-import { createSessionStreamResponse } from "#eve-channel/request.js";
+import { createSessionStreamResponse } from "#eve-channel/stream-response.js";
 import {
   EVE_STREAM_CONTROL_VERSION,
   EVE_STREAM_CONTROL_VERSION_QUERY,

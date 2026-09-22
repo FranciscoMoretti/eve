@@ -77,6 +77,9 @@ export async function admitSessionInboxPayload(
       const admission = input.queue.enqueueDelivery(command);
       return admission === undefined ? { kind: "consumed" } : { admission, kind: "delivery" };
     }
+    case "checkpoint":
+      input.queue.enqueueCheckpoint(command);
+      return { kind: "consumed" };
     case "clear":
     case "compact":
       input.queue.enqueueControl(command.kind);

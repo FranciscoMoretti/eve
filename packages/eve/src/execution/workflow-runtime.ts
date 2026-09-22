@@ -1,3 +1,4 @@
+import { prepareSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
 import { randomBytes } from "node:crypto";
 
 import { context, trace } from "#compiled/@opentelemetry/api/index.js";
@@ -145,6 +146,19 @@ export function createWorkflowRuntime(config: {
 }): Runtime {
   return {
     async createSession(input: RunInput): Promise<RunHandle> {
+      if (input.seed) {
+        if (
+          input.mode !== "conversation" ||
+          input.input.message ||
+          input.fork ||
+          input.parent ||
+          input.callback ||
+          input.taskId ||
+          config.nodeId
+        )
+          throw new Error("Transcript seeds require a fresh idle root conversation.");
+        prepareSessionTranscriptSeed(input.seed);
+      }
       const bundle = await getCompiledRuntimeAgentBundle({
         compiledArtifactsSource: config.compiledArtifactsSource,
         nodeId: config.nodeId,
@@ -214,6 +228,8 @@ export function createWorkflowRuntime(config: {
         kind: "initial",
         input: input.input,
         ownerDeploymentId: await resolveCurrentWorkflowDeploymentId(),
+        fork: input.fork,
+        seed: input.seed,
         serializedContext,
       };
       const taskId = input.taskId ?? input.callback?.taskId;
@@ -250,6 +266,9 @@ export function createWorkflowRuntime(config: {
           ? {}
           : buildInvocationAttributes(input.externalInvocation)),
       };
+
+      // Resource inventory must remain readable without resolving session input.
+      if (collectorRunId !== undefined) attributes["$eve.activity_collector"] = collectorRunId;
 
       let run: Awaited<ReturnType<typeof startWorkflowOnCurrentDeployment>>;
       try {

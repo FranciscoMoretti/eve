@@ -7,6 +7,7 @@ import type {
   CancelSessionResult,
   ClientSessionState,
   SendTurnInput,
+  RespondTurnOptions,
   SendTurnOptions,
   SendTurnPayload,
 } from "#client/types.js";
@@ -173,7 +174,7 @@ export class EvalSessionDriver implements EveEvalSession {
 
   async respond(
     responses: readonly InputResponse[],
-    options: SendTurnOptions = {},
+    options: RespondTurnOptions = {},
   ): Promise<EveEvalTurn> {
     if (responses.length === 0) {
       throw new Error("respond() requires at least one input response.");
@@ -184,7 +185,7 @@ export class EvalSessionDriver implements EveEvalSession {
 
   async startRespond(
     responses: readonly InputResponse[],
-    options: SendTurnOptions = {},
+    options: RespondTurnOptions = {},
   ): Promise<EveEvalLiveTurn> {
     if (responses.length === 0) throw new Error("startRespond() requires input responses.");
     return await this.#start({ ...options, inputResponses: responses });

@@ -1,0 +1,61 @@
+name: ChatJS eve package
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the tested tarball to npm under the chatjs tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatjs-eve-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.repository == 'FranciscoMoretti/eve'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm pack:chatjs
+      - run: pnpm exec oxlint
+      - run: pnpm guard:invariants
+      - run: pnpm docs:check
+      - run: pnpm --filter eve exec vitest run --config vitest.unit.config.ts
+      - run: pnpm --filter eve exec tsc --noEmit -p tsconfig.json
+      - run: pnpm --filter eve exec vitest run --config vitest.integration.config.ts src/execution/session-history-seed.integration.test.ts src/execution/session-transcript-seed.integration.test.ts src/execution/session-fork.integration.test.ts src/execution/session-resource-fork.integration.test.ts src/execution/session-checkpoint.integration.test.ts src/execution/hook-results.integration.test.ts src/harness/seed-attachments.integration.test.ts
+      - run: node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.0.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatjs-eve-package
+          path: artifacts/*.tgz
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish
+    needs: package
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: chatjs-eve-package
+          path: artifacts
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - run: npm publish artifacts/chat-js-eve-0.61.0-chatjs.0.tgz --access public --tag chatjs --provenance

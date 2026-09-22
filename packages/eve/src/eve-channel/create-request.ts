@@ -1,3 +1,4 @@
+import type { SessionForkReference } from "#execution/session-checkpoint-contract.js";
 import type { UserContent } from "ai";
 
 import type {
@@ -9,6 +10,9 @@ import type { JsonObject } from "#shared/json.js";
 import type { RunMode } from "#shared/run-mode.js";
 
 export interface ParsedCreateBody {
+  seed?: true;
+  fork?: SessionForkReference;
+  messageMetadata?: JsonObject;
   activityObserver?: ActivityObserverConfig;
   callback?: SessionCallback;
   capabilities?: SessionCapabilities;

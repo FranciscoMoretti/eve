@@ -78,6 +78,7 @@ export function finishResolvedInput(input: {
     context?: StepInput["context"];
     inputResponses?: StepInput["inputResponses"];
     message?: StepInput["message"];
+    messageMetadata?: StepInput["messageMetadata"];
   } = {};
   let clientContext: readonly string[] | undefined;
   if (input.leftoverResponses.length > 0) {
@@ -93,6 +94,8 @@ export function finishResolvedInput(input: {
     }
     if (input.resolvedStepInput?.message !== undefined) {
       deferredInput.message = input.resolvedStepInput.message;
+      if (input.resolvedStepInput.messageMetadata !== undefined)
+        deferredInput.messageMetadata = input.resolvedStepInput.messageMetadata;
     }
   }
   attachClientContext(deferredInput, clientContext);
@@ -134,13 +137,17 @@ export function compactStepInput(input: ResolvedStepInput | undefined): Resolved
     context?: StepInput["context"];
     inputResponses?: StepInput["inputResponses"];
     message?: StepInput["message"];
+    messageMetadata?: StepInput["messageMetadata"];
     messageConsumed?: boolean;
     outputSchema?: StepInput["outputSchema"];
   } = {};
 
   if ((input.context?.length ?? 0) > 0) result.context = input.context;
   if ((input.inputResponses?.length ?? 0) > 0) result.inputResponses = input.inputResponses;
-  if (input.message !== undefined) result.message = input.message;
+  if (input.message !== undefined) {
+    result.message = input.message;
+    if (input.messageMetadata !== undefined) result.messageMetadata = input.messageMetadata;
+  }
   if (input.messageConsumed === true) result.messageConsumed = true;
   if (input.outputSchema !== undefined) result.outputSchema = input.outputSchema;
 

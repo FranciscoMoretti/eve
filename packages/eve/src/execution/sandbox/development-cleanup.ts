@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
 
+import { createDockerCli, DockerUnavailableError } from "#execution/sandbox/bindings/docker-cli.js";
 import {
   DOCKER_SANDBOX_LABEL,
   stopDockerContainerIfRunning,
 } from "#execution/sandbox/bindings/docker-container.js";
-import { createDockerCli, DockerUnavailableError } from "#execution/sandbox/bindings/docker-cli.js";
 import {
   MICROSANDBOX_METADATA_VERSION,
   readSessionMetadata,
   writeSessionMetadata,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
+import { loadMicrosandboxWithoutInstall } from "#execution/sandbox/bindings/microsandbox-module.js";
 import {
   createProviderName,
-  loadMicrosandboxWithoutInstall,
   removeSnapshotIfExists,
   stopAndSnapshotMicrosandboxSandbox,
 } from "#execution/sandbox/bindings/microsandbox-runtime.js";
@@ -78,12 +78,19 @@ async function stopDevelopmentMicrosandboxResources(
     return;
   }
 
-  const sandboxes = await module.Sandbox.listWith({
-    labels: {
-      "eve.backend": "microsandbox",
-      [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
-    },
-  });
+  const sandboxes: Awaited<ReturnType<typeof module.Sandbox.list>>["sandboxes"] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await module.Sandbox.listWith((list) => {
+      list.labels({
+        "eve.backend": "microsandbox",
+        [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
+      });
+      return cursor === undefined ? list : list.cursor(cursor);
+    });
+    sandboxes.push(...page.sandboxes);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
 
   await Promise.all(
     sandboxes

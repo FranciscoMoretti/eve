@@ -19,9 +19,16 @@ export type SandboxSessionState = SandboxBackendSessionState;
  * Every agent owns exactly one sandbox, so the state is just a single
  * `initialized` flag and an optional persisted session record.
  */
+export interface SandboxForkCheckpoint {
+  readonly backendName: string;
+  readonly metadata: Record<string, unknown>;
+}
+
 export interface SandboxState {
   readonly initialized: boolean;
   readonly session: SandboxSessionState | null;
+  /** Immutable filesystem seed, never a reconnect identity from the source session. */
+  readonly forkCheckpoint?: SandboxForkCheckpoint;
 }
 
 /**
@@ -32,6 +39,7 @@ export interface SandboxState {
  */
 export interface SandboxAccess {
   captureState(): Promise<SandboxState>;
+  captureForkCheckpoint?(checkpointKey: string): Promise<SandboxForkCheckpoint | undefined>;
   delete?(options?: SandboxDeleteOptions): Promise<void>;
   get(): Promise<SandboxSession | null>;
   stop(): Promise<void>;

@@ -162,6 +162,7 @@ export function coalesceTurnInputs(a: StepInput, b: StepInput): StepInput {
   const result: {
     inputResponses?: readonly InputResponse[];
     message?: string | UserContent;
+    messageMetadata?: StepInput["messageMetadata"];
     context?: readonly string[];
     outputSchema?: StepInput["outputSchema"];
   } = {};
@@ -172,6 +173,8 @@ export function coalesceTurnInputs(a: StepInput, b: StepInput): StepInput {
 
   if (message !== undefined) {
     result.message = message;
+    const metadata = b.message !== undefined ? b.messageMetadata : a.messageMetadata;
+    if (metadata !== undefined) result.messageMetadata = metadata;
   }
 
   if (context !== undefined) {

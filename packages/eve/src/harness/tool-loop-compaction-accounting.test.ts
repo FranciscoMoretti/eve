@@ -2,6 +2,8 @@ import { getRequestEnvelopeTokens } from "#harness/request-envelope.js";
 import { generateText, jsonSchema, type LanguageModel, ToolLoopAgent } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { LiveStepDynamicModelSelectionKey } from "#context/keys.js";
+import { ContextContainer, contextStorage } from "#context/container.js";
 import { appendPendingInputBatch } from "#harness/input-requests.js";
 import { validateHarnessModelMessages } from "#harness/messages.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -153,9 +155,9 @@ function expectStepFn(value: StepNext): StepFn {
 
 describe("tool-loop structured compaction accounting", () => {
   it("keeps private memory out of the summary while retaining its attributed record", async () => {
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text: "ordinary summary",
-    } as Awaited<ReturnType<typeof generateText>>);
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
     setupMockAgentSequence([
       {
         finishReason: "stop",
@@ -207,8 +209,9 @@ describe("tool-loop structured compaction accounting", () => {
       { message: "continue" },
     );
 
-    expect(vi.mocked(generateText)).toHaveBeenCalledOnce();
-    const prompt = vi.mocked(generateText).mock.calls[0]?.[0].messages?.[0]?.content;
+    expect(vi.mocked(generateText, { partial: true })).toHaveBeenCalledOnce();
+    const prompt = vi.mocked(generateText, { partial: true }).mock.calls[0]?.[0].messages?.[0]
+      ?.content;
     if (typeof prompt !== "string") throw new Error("Expected the compaction prompt text.");
     expect(prompt).not.toContain("PRIVATE_MEMORY_SENTINEL");
     expect(JSON.stringify(result.session.history)).toContain("PRIVATE_MEMORY_SENTINEL");
@@ -216,9 +219,9 @@ describe("tool-loop structured compaction accounting", () => {
   });
 
   it("compacts before the continuation step when structured tool results were appended", async () => {
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text: "summary",
-    } as Awaited<ReturnType<typeof generateText>>);
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
 
     setupMockAgentSequence([
       {
@@ -315,7 +318,7 @@ describe("tool-loop structured compaction accounting", () => {
 
     const second = await expectStepFn(first.next)(first.session);
 
-    expect(vi.mocked(generateText)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateText, { partial: true })).toHaveBeenCalledTimes(1);
     expect(second.session.history[0]).toEqual({
       content: "Summary of our conversation so far:",
       kind: "context.compaction",
@@ -328,9 +331,9 @@ describe("tool-loop structured compaction accounting", () => {
   });
 
   it("counts synthesized pending-input tool responses when checking for compaction", async () => {
-    vi.mocked(generateText).mockResolvedValue({
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text: "summary",
-    } as Awaited<ReturnType<typeof generateText>>);
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
 
     setupMockAgentSequence([
       {
@@ -381,7 +384,7 @@ describe("tool-loop structured compaction accounting", () => {
       ],
     });
 
-    expect(vi.mocked(generateText)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateText, { partial: true })).toHaveBeenCalledTimes(1);
     expect(result.session.history[0]).toEqual({
       content: "Summary of our conversation so far:",
       kind: "context.compaction",
@@ -465,8 +468,8 @@ describe("tool-loop structured compaction accounting", () => {
 it("compacts history when dynamic instructions grow the request envelope", async () => {
   const { ContextContainer, contextStorage } = await import("#context/container.js");
   const { SessionDynamicInstructionsKey } = await import("#context/keys.js");
-  vi.mocked(generateText).mockResolvedValue({ text: "summary" } as Awaited<
-    ReturnType<typeof generateText>
+  vi.mocked(generateText, { partial: true }).mockResolvedValue({ text: "summary" } as Partial<
+    Awaited<ReturnType<typeof generateText>>
   >);
   setupMockAgentSequence([
     {
@@ -521,8 +524,8 @@ describe("final request envelope compaction", () => {
       tenant: [{ role: "system", content: "tenant policy ".repeat(1_000) }],
     });
     setupMockAgentSequence([completed(), completed(), completed()]);
-    vi.mocked(generateText).mockResolvedValue({ text: "summary" } as Awaited<
-      ReturnType<typeof generateText>
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({ text: "summary" } as Partial<
+      Awaited<ReturnType<typeof generateText>>
     >);
     const runStep = createToolLoopHarness(createTestConfig());
     const first = await contextStorage.run(ctx, () =>
@@ -554,8 +557,8 @@ describe("final request envelope compaction", () => {
     const schemaDescription = "connector catalog field ".repeat(1_000);
     const events: string[] = [];
     setupMockAgentSequence([completed()]);
-    vi.mocked(generateText).mockResolvedValue({ text: "summary" } as Awaited<
-      ReturnType<typeof generateText>
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({ text: "summary" } as Partial<
+      Awaited<ReturnType<typeof generateText>>
     >);
     const runStep = createToolLoopHarness(
       createTestConfig({
@@ -634,8 +637,8 @@ describe("final request envelope compaction", () => {
     const onCompaction = vi.fn(() => {
       throw error;
     });
-    vi.mocked(generateText).mockResolvedValue({ text: "summary" } as Awaited<
-      ReturnType<typeof generateText>
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({ text: "summary" } as Partial<
+      Awaited<ReturnType<typeof generateText>>
     >);
     const runStep = createToolLoopHarness(createTestConfig({ onCompaction }));
     await expect(
@@ -651,3 +654,63 @@ describe("final request envelope compaction", () => {
     expect(ToolLoopAgent).not.toHaveBeenCalled();
   });
 });
+it.each(["summary", ""])(
+  "emits compaction usage before checkpoint validation (%j)",
+  async (text) => {
+    vi.mocked(generateText, { partial: true }).mockResolvedValue({
+      text,
+      finishReason: "stop",
+      usage: {
+        inputTokens: 30,
+        outputTokens: 5,
+        totalTokens: undefined,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
+      providerMetadata: { gateway: { cost: 0.004, generationId: "compact-generation" } },
+    } as Partial<Awaited<ReturnType<typeof generateText>>>);
+    const handleEvent = vi.fn().mockResolvedValue(undefined);
+    const runStep = createToolLoopHarness(
+      createTestConfig({
+        compactOnly: true,
+        dispatchDynamicModelEvent: async ({ ctx }) => {
+          ctx.setVirtualContext(LiveStepDynamicModelSelectionKey, {
+            reference: { id: "test-model" },
+          });
+        },
+        handleEvent,
+        resolveModel: vi
+          .fn()
+          .mockResolvedValue({ provider: "gateway", modelId: "test-model" } as LanguageModel),
+      }),
+    );
+    const initial = createTestSession({
+      history: [{ role: "user", kind: "user", content: "retain me" }],
+    });
+    const session = {
+      ...initial,
+      agent: { ...initial.agent, dynamicModel: true as const, modelReference: undefined },
+    };
+    await contextStorage.run(new ContextContainer(), () => runStep(session));
+    const events = handleEvent.mock.calls.map(([event]) => event);
+    expect(events.map((event) => event.type)).toEqual([
+      "compaction.requested",
+      "compaction.usage",
+      ...(text ? ["compaction.completed"] : []),
+      "session.waiting",
+    ]);
+    expect(events[1]).toMatchObject({
+      type: "compaction.usage",
+      data: {
+        sessionId: "test-session",
+        turnId: "turn_0",
+        usage: { costUsd: 0.004, inputTokens: 30, outputTokens: 5 },
+        providerMetadata: { gateway: { generationId: "compact-generation" } },
+      },
+    });
+  },
+);

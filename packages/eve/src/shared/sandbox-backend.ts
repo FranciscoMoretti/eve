@@ -12,6 +12,8 @@ export interface SandboxBackendHandle<SO = Record<string, never>> {
   readonly session: SandboxSession;
   readonly useSessionFn: SandboxSessionUseFn<SO>;
   captureState(): Promise<SandboxBackendSessionState>;
+  /** Captures immutable filesystem state for a turn boundary. Repeating a key returns the same snapshot. */
+  captureForkCheckpoint?(checkpointKey: string): Promise<Record<string, unknown> | undefined>;
   /**
    * Permanently deletes this sandbox and its disposable backend state.
    * Reusable or shared template state must not be deleted.
@@ -96,6 +98,8 @@ export interface SandboxBackendCreateInput {
   readonly templateKey: string | null;
   readonly sessionKey: string;
   readonly existingMetadata?: Record<string, unknown>;
+  /** Seeds a new session from immutable filesystem state; never a source reconnect record. */
+  readonly forkCheckpoint?: Record<string, unknown>;
   /**
    * Runtime tags the backend should attach to sandbox resources when
    * the underlying provider supports tags.

@@ -961,6 +961,28 @@ describe("createToolLoopHarness", () => {
     expect(ToolLoopAgent).not.toHaveBeenCalled();
   });
 
+  it("emits user metadata without exposing it to model history", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Hello!", role: "assistant" }] },
+      text: "Hello!",
+      toolCalls: [],
+      toolResults: [],
+    });
+    const events: UnstampedMessageStreamEvent[] = [];
+    const runStep = createToolLoopHarness(
+      createTestConfig("conversation", async (event) => {
+        events.push(event);
+      }),
+    );
+    const metadata = { secretMarker: "ui-only-marker", chatjs: { selectedTool: null } };
+    const result = await runStep(createTestSession(), { message: "Hi", messageMetadata: metadata });
+    expect(events.find((event) => event.type === "message.received")).toMatchObject({
+      data: { metadata },
+    });
+    expect(JSON.stringify(result.session.history)).not.toContain("ui-only-marker");
+  });
+
   it("parks when model finishes with stop", async () => {
     setupMockAgent({
       finishReason: "stop",

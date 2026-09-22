@@ -1,33 +1,18 @@
-import { setTimeout as delay } from "node:timers/promises";
-import { BoundaryHookError } from "#shared/boundary-hook-error.js";
-import { GenerationSteering } from "#harness/generation-steering.js";
-import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
-import {
-  isStepCount,
-  type LanguageModelCallEndEvent,
-  type LanguageModel,
-  type ModelMessage,
-  type ProviderMetadata,
-  type SystemModelMessage,
-  type TelemetryOptions,
-  ToolLoopAgent,
-  type ToolSet,
-  type TypedToolCall,
-  type TypedToolError,
-  type TypedToolResult,
-} from "ai";
 import type { SessionAuthContext } from "#channel/types.js";
-import { resolveInstalledPackageInfo } from "#internal/application/package.js";
-import { readClientContext } from "#internal/client-context.js";
-import { resolveProviderHeaders } from "#internal/gateway.js";
-import { createErrorId, createLogger, formatError, logError } from "#internal/logging.js";
-import { formatLanguageModelGatewayId } from "#internal/runtime-model.js";
+import {
+  buildDynamicTools,
+  buildResponseAuthorizationTools,
+} from "#context/build-dynamic-tools.js";
 import { contextStorage } from "#context/container.js";
 import {
-  estimateRequestEnvelope,
-  getRequestEnvelopeTokens,
-  setRequestEnvelopeTokens,
-} from "#harness/request-envelope.js";
+  buildDynamicInstructionMessages,
+  drainDynamicInstructionUserMessages,
+  prepareDynamicInstructionPreamble,
+} from "#context/dynamic-instruction-lifecycle.js";
+import { isDynamicModelSelectionError } from "#context/dynamic-model-lifecycle.js";
+import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
+import { buildDynamicSubagentTools } from "#context/dynamic-subagent-lifecycle.js";
+import { getEffectiveModelSelection } from "#context/effective-model.js";
 import {
   AuthKey,
   HistoryStateKey,
@@ -38,66 +23,49 @@ import {
   TurnTaskDeliveryKey,
 } from "#context/keys.js";
 import {
-  buildDynamicInstructionMessages,
-  drainDynamicInstructionUserMessages,
-  prepareDynamicInstructionPreamble,
-} from "#context/dynamic-instruction-lifecycle.js";
-import {
   drainMemoryCommit,
   prepareMemoryCompaction,
   prepareMemoryPreamble,
 } from "#context/memory-lifecycle.js";
-import { isDynamicModelSelectionError } from "#context/dynamic-model-lifecycle.js";
-import { getEffectiveModelSelection } from "#context/effective-model.js";
+import { prepareToolApprovalReceipts } from "#context/tool-approval-receipts.js";
+import { createToolResultMessagePartFromToolError } from "#harness/action-result-helpers.js";
+import { activeTurnId } from "#harness/active-turn-id.js";
+import { getAdvertisedTools } from "#harness/advertised-tools.js";
 import {
-  buildDynamicTools,
-  buildResponseAuthorizationTools,
-} from "#context/build-dynamic-tools.js";
-import { buildDynamicSubagentTools } from "#context/dynamic-subagent-lifecycle.js";
-import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
-import { toErrorMessage } from "#shared/errors.js";
+  getApprovalAuditState,
+  markApprovalCandidateHistoryEventEmitted,
+  markApprovalCandidatePendingEventEmitted,
+  markApprovalSettlementEventEmitted,
+} from "#harness/approval-candidates.js";
 import {
-  createActionResultEvent,
-  createApprovalCandidateEvent,
-  createApprovalSettledEvent,
-  createCompactionCompletedEvent,
-  createCompactionRequestedEvent,
-  createContextClearedEvent,
-  createInputResolvedEvent,
-  createInputRequestedEvent,
-  createResultCompletedEvent,
-  createSessionWaitingEvent,
-  type UnstampedMessageStreamEvent,
-} from "#protocol/message.js";
-import type { RuntimeTraceContext } from "#protocol/message.js";
-import { ASK_QUESTION_TOOL_NAME } from "#harness/request-input-tool.js";
-import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import { projectParkedAgentHandles, resolveAgentsAnnouncement } from "#subagents/handles/prompt.js";
-import { getAgentHandleStore } from "#subagents/handles/store.js";
-import type { InputRequest } from "#shared/input.js";
+  coordinateApprovalDelivery,
+  shouldPrepareApprovalReplayTools,
+} from "#harness/approval-delivery-coordinator.js";
 import {
   hydrateSandboxAttachments,
   stageAttachmentsToSandbox,
+  stagePendingSeedAttachments,
 } from "#harness/attachment-staging.js";
+import {
+  getSupersededAuthorizationChallenges,
+  setPendingAuthorization,
+} from "#harness/authorization.js";
+import {
+  BackgroundToolExecutorKey,
+  createBackgroundToolCallBatch,
+} from "#harness/background-tools.js";
 import {
   compactMessages,
   getInputTokenCount,
   resolveCompactionModel,
   shouldCompact,
 } from "#harness/compaction.js";
+import {
+  createCoordinationRequestFromToolCall,
+  resolvePendingCoordination,
+  setPendingCoordinationBatch,
+} from "#harness/coordination.js";
 import { createCurrentMessages } from "#harness/current-messages.js";
-import { estimateTokens } from "#harness/token-estimate.js";
-import {
-  accumulateTurnUsage,
-  getTurnUsageState,
-  setTurnUsageState,
-  type TokenUsageDelta,
-} from "#harness/turn-tag-state.js";
-import {
-  applySessionLimitContinuation,
-  enforceSessionUsageLimit,
-} from "#harness/session-limit-enforcement.js";
-import { setEveAttributes } from "#runtime/attributes/emit.js";
 import {
   advanceStep,
   emitFailedStep,
@@ -109,33 +77,20 @@ import {
   getHarnessEmissionState,
   setHarnessEmissionState,
 } from "#harness/emission.js";
+import type { HarnessToolDefinition } from "#harness/execute-tool.js";
+import { buildFinalOutputTool, FINAL_OUTPUT_TOOL_NAME } from "#harness/final-output.js";
+import { GenerationSteering } from "#harness/generation-steering.js";
+import {
+  renderPendingApprovalsInstruction,
+  renderPendingApprovalsSnippet,
+} from "#harness/hitl/approval-prompt.js";
+import { resolveInlineAuthorizationInterrupt } from "#harness/inline-tool-authorization.js";
 import {
   extractQuestionInputRequests,
   extractToolApprovalInputRequests,
 } from "#harness/input-extraction.js";
 import {
-  renderPendingApprovalsInstruction,
-  renderPendingApprovalsSnippet,
-} from "#harness/hitl/approval-prompt.js";
-import { createToolResultMessagePartFromToolError } from "#harness/action-result-helpers.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
-import {
-  clearTurnClientContextState,
-  getTurnClientContextState,
-  setTurnClientContextState,
-} from "#harness/turn-client-context.js";
-import {
-  getApprovalAuditState,
-  markApprovalCandidateHistoryEventEmitted,
-  markApprovalCandidatePendingEventEmitted,
-  markApprovalSettlementEventEmitted,
-} from "#harness/approval-candidates.js";
-import {
-  coordinateApprovalDelivery,
-  shouldPrepareApprovalReplayTools,
-} from "#harness/approval-delivery-coordinator.js";
-import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
-import {
+  appendPendingInputBatch,
   consumeDeferredStepInput,
   getApprovedTools,
   getPendingInputRequestIds,
@@ -143,96 +98,79 @@ import {
   hasPendingApprovalBatch,
   hasStepInput,
   resolvePendingInput,
-  appendPendingInputBatch,
 } from "#harness/input-requests.js";
-import { getPendingInputBatches, queueDeferredStepInput } from "#harness/pending-input-batches.js";
-import {
-  convertStaleResponsesToUserMessage,
-  dropStaleSessionLimitContinuationResponses,
-} from "#harness/stale-input-responses.js";
+import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
 import {
   createFrameworkUserMessage,
+  createTurnInputMessages,
   createUserMessage,
   frameworkMessageKindForStepInput,
+  type HarnessModelMessage,
   normalizeModelMessages,
   normalizeUserContent,
-  createTurnInputMessages,
   resolveAssistantStepText,
-  type HarnessModelMessage,
   type UserModelMessage,
   validateHarnessModelMessages,
 } from "#harness/messages.js";
-import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
-import {
-  getSupersededAuthorizationChallenges,
-  setPendingAuthorization,
-} from "#harness/authorization.js";
-import { resolveInlineAuthorizationInterrupt } from "#harness/inline-tool-authorization.js";
-import {
-  createAuthorizationCompletedEvent,
-  createAuthorizationRequiredEvent,
-  createMessageCompletedEvent,
-  createStepStartedEvent,
-} from "#protocol/message.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
   EmptyModelResponseError,
   extractModelCallErrorDetails,
   extractUnsupportedProviderToolTypes,
+  extractUpstreamRejectionMessage,
   isNoOutputGeneratedError,
   type UpstreamRejectionSummary,
-  extractUpstreamRejectionMessage,
 } from "#harness/model-call-error.js";
-import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
-import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
-import type { JsonObject, JsonValue } from "#shared/json.js";
-import { EMPTY_DELIVERY_SENTINEL, hasEmptyDeliverySentinel } from "#shared/empty-delivery.js";
-import { resolveDeliveryPolicy } from "#tasks/delivery-policy.js";
-import { resolveInitiatingTaskContext } from "#tasks/delivery-context.js";
-import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
-import { getAdvertisedTools } from "#harness/advertised-tools.js";
-import {
-  BackgroundToolExecutorKey,
-  createBackgroundToolCallBatch,
-} from "#harness/background-tools.js";
+import { readGatewayGenerationId } from "#harness/model-usage.js";
+import { getPendingInputBatches, queueDeferredStepInput } from "#harness/pending-input-batches.js";
 import {
   applyLastToolCacheBreakpoint,
   applySystemCacheBreakpoint,
   detectPromptCachePath,
   getAnthropicCacheMarker,
 } from "#harness/prompt-cache.js";
+import { mergeProviderSafetyIdentifier } from "#harness/provider-safety.js";
+import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
 import { resolveFrameworkToolFromUpstreamType } from "#harness/provider-tools.js";
 import {
-  createCoordinationRequestFromToolCall,
-  resolvePendingCoordination,
-  setPendingCoordinationBatch,
-} from "#harness/coordination.js";
+  estimateRequestEnvelope,
+  getRequestEnvelopeTokens,
+  setRequestEnvelopeTokens,
+} from "#harness/request-envelope.js";
+import { ASK_QUESTION_TOOL_NAME } from "#harness/request-input-tool.js";
+import { type SemanticErrorSummary, summarizeKnownError } from "#harness/semantic-errors/index.js";
+import {
+  applySessionLimitContinuation,
+  enforceSessionUsageLimit,
+} from "#harness/session-limit-enforcement.js";
+import {
+  convertStaleResponsesToUserMessage,
+  dropStaleSessionLimitContinuationResponses,
+} from "#harness/stale-input-responses.js";
+import { buildStepHooks, emitStepActions, type HarnessStepResult } from "#harness/step-hooks.js";
+import { estimateTokens } from "#harness/token-estimate.js";
 import {
   getInvalidToolCallInputError,
   isInvalidToolCall,
 } from "#harness/tool-call-input-errors.js";
 import {
-  buildStepHooks,
-  emitStepActions,
-  readGatewayGenerationId,
-  type HarnessStepResult,
-} from "#harness/step-hooks.js";
-import { mergeProviderSafetyIdentifier } from "#harness/provider-safety.js";
-import {
   buildToolApproval,
   buildToolSetFromDefinitions,
   buildToolSetWithProviderTools,
 } from "#harness/tools.js";
-import { buildFinalOutputTool, FINAL_OUTPUT_TOOL_NAME } from "#harness/final-output.js";
-import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
-import type { RunMode } from "#shared/run-mode.js";
-import { createHistoryViewPreparer, type HistoryViewProjector } from "#shared/history-view.js";
+import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import {
-  canonicalizeMemoryRecords,
-  clearMemorySessionState,
-  shouldCanonicalizeMemory,
-} from "#shared/memory-state.js";
+  clearTurnClientContextState,
+  getTurnClientContextState,
+  setTurnClientContextState,
+} from "#harness/turn-client-context.js";
+import {
+  accumulateTurnUsage,
+  getTurnUsageState,
+  setTurnUsageState,
+  type TokenUsageDelta,
+} from "#harness/turn-tag-state.js";
 import {
   type CompactionConfig,
   type HarnessSession,
@@ -244,6 +182,65 @@ import {
   type StepResult,
   type ToolLoopHarnessConfig,
 } from "#harness/types.js";
+import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
+import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
+import { resolveInstalledPackageInfo } from "#internal/application/package.js";
+import { readClientContext } from "#internal/client-context.js";
+import { resolveProviderHeaders } from "#internal/gateway.js";
+import { createErrorId, createLogger, formatError, logError } from "#internal/logging.js";
+import { formatLanguageModelGatewayId } from "#internal/runtime-model.js";
+import type { RuntimeTraceContext } from "#protocol/message.js";
+import {
+  createActionResultEvent,
+  createApprovalCandidateEvent,
+  createApprovalSettledEvent,
+  createAuthorizationCompletedEvent,
+  createAuthorizationRequiredEvent,
+  createCompactionCompletedEvent,
+  createCompactionRequestedEvent,
+  createCompactionUsageEvent,
+  createContextClearedEvent,
+  createInputRequestedEvent,
+  createInputResolvedEvent,
+  createMessageCompletedEvent,
+  createResultCompletedEvent,
+  createSessionWaitingEvent,
+  createStepStartedEvent,
+  type UnstampedMessageStreamEvent,
+} from "#protocol/message.js";
+import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
+import { setEveAttributes } from "#runtime/attributes/emit.js";
+import { BoundaryHookError } from "#shared/boundary-hook-error.js";
+import { EMPTY_DELIVERY_SENTINEL, hasEmptyDeliverySentinel } from "#shared/empty-delivery.js";
+import { toErrorMessage } from "#shared/errors.js";
+import { createHistoryViewPreparer, type HistoryViewProjector } from "#shared/history-view.js";
+import type { InputRequest } from "#shared/input.js";
+import type { JsonObject, JsonValue } from "#shared/json.js";
+import {
+  canonicalizeMemoryRecords,
+  clearMemorySessionState,
+  shouldCanonicalizeMemory,
+} from "#shared/memory-state.js";
+import type { RunMode } from "#shared/run-mode.js";
+import { projectParkedAgentHandles, resolveAgentsAnnouncement } from "#subagents/handles/prompt.js";
+import { getAgentHandleStore } from "#subagents/handles/store.js";
+import { resolveInitiatingTaskContext } from "#tasks/delivery-context.js";
+import { resolveDeliveryPolicy } from "#tasks/delivery-policy.js";
+import {
+  isStepCount,
+  type LanguageModel,
+  type LanguageModelCallEndEvent,
+  type ModelMessage,
+  type ProviderMetadata,
+  type SystemModelMessage,
+  type TelemetryOptions,
+  ToolLoopAgent,
+  type ToolSet,
+  type TypedToolCall,
+  type TypedToolError,
+  type TypedToolResult,
+} from "ai";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * Creates a tool-loop harness step function backed by AI SDK `ToolLoopAgent`.
@@ -613,7 +610,25 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     if (config.compactOnly === true) {
       if (session.history.length > 0) {
         try {
+          session = await stagePendingSeedAttachments(session);
           const ctx = contextStorage.getStore();
+          // Resolve live provider objects again after hydration, just as for
+          // ordinary model work. This is resolver dispatch only: compaction
+          // does not emit a synthetic step or turn to the durable stream.
+          if (ctx !== undefined && config.dispatchDynamicModelEvent !== undefined) {
+            await config.dispatchDynamicModelEvent({
+              ctx,
+              event: {
+                data: {
+                  sequence: emissionState.sequence,
+                  stepIndex: emissionState.stepIndex,
+                  turnId: activeTurnId(emissionState),
+                },
+                type: "step.started",
+              } as UnstampedMessageStreamEvent,
+              messages: projectHistory(session.history, session.state),
+            });
+          }
           const resolvedModel = await resolveEffectiveRuntimeModel({ config, ctx, session });
           session = resolvedModel.session;
 
@@ -850,6 +865,14 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       session,
       stepInput: coordinated.stepInput,
     });
+    if (store !== undefined) {
+      prepareToolApprovalReceipts(
+        store,
+        session.sessionId,
+        pending.resolvedInputs,
+        pending.session.state,
+      );
+    }
     if (pending.outcome === "unresolved") {
       // The coordination batch owns the assistant messages. Once that batch
       // resolves, commit its results before the still-pending HITL batch parks.
@@ -1145,6 +1168,30 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     }
 
     messages = [...messages, ...preparedTurnInput];
+
+    // Resolve copied files after recording the incoming turn, so storage failures
+    // park a retryable conversation without losing its transcript or new input.
+    try {
+      const staged = await stagePendingSeedAttachments(session);
+      if (staged !== session) {
+        // Preserve current input identities used to position runtime context.
+        messages = [...staged.history, ...messages.slice(session.history.length)];
+        session = { ...staged, history: messages };
+      }
+    } catch (error) {
+      throwIfTurnAborted(config.abortSignal);
+      if (!emit || config.mode === "task") throw error;
+      stepInstrumentation?.recordError(error);
+      emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
+        code: "SEED_ATTACHMENT_STAGING_FAILED",
+        continuationToken: session.continuationToken,
+        message: "Copied attachments could not be loaded. Retry when file storage is available.",
+      });
+      return {
+        next: null,
+        session: setHarnessEmissionState({ ...session, history: messages }, emissionState),
+      };
+    }
 
     const createModelMessages = (
       durableMessages: readonly HarnessModelMessage[],
@@ -3009,6 +3056,7 @@ async function emitStructuredResult(
   emissionState: ReturnType<typeof getHarnessEmissionState>,
   structured: JsonValue,
   mode: RunMode,
+  messages: readonly ModelMessage[],
 ): Promise<ReturnType<typeof getHarnessEmissionState>> {
   await emit(
     createResultCompletedEvent({
@@ -3018,7 +3066,7 @@ async function emitStructuredResult(
       turnId: emissionState.turnId,
     }),
   );
-  return emitTurnEpilogue(emit, emissionState, mode);
+  return emitTurnEpilogue(emit, emissionState, mode, messages);
 }
 
 /**
@@ -3041,7 +3089,7 @@ async function finishTaskTurn(input: {
 
   if (schema === undefined) {
     if (emit) {
-      emissionState = await emitTurnEpilogue(emit, emissionState, "task");
+      emissionState = await emitTurnEpilogue(emit, emissionState, "task", session.history);
       session = setHarnessEmissionState(session, emissionState);
     }
     return { next: { done: true, output: stepOutput ?? "" }, session };
@@ -3065,7 +3113,13 @@ async function finishTaskTurn(input: {
 
   session = persistStructuredAssistantTurn(session, history, structured);
   if (emit) {
-    emissionState = await emitStructuredResult(emit, emissionState, structured, "task");
+    emissionState = await emitStructuredResult(
+      emit,
+      emissionState,
+      structured,
+      "task",
+      session.history,
+    );
     session = setHarnessEmissionState(session, emissionState);
   }
   return { next: { done: true, output: structured }, session };
@@ -3091,7 +3145,7 @@ async function finishConversationTurn(input: {
 
   if (schema === undefined) {
     if (emit) {
-      emissionState = await emitTurnEpilogue(emit, emissionState, "conversation");
+      emissionState = await emitTurnEpilogue(emit, emissionState, "conversation", session.history);
       session = setHarnessEmissionState(session, emissionState);
     }
     const settledTurn = { output: stepOutput ?? "" } satisfies SettledTurn;
@@ -3119,7 +3173,13 @@ async function finishConversationTurn(input: {
 
   session = persistStructuredAssistantTurn(session, history, structured);
   if (emit) {
-    emissionState = await emitStructuredResult(emit, emissionState, structured, "conversation");
+    emissionState = await emitStructuredResult(
+      emit,
+      emissionState,
+      structured,
+      "conversation",
+      session.history,
+    );
     session = setHarnessEmissionState(session, emissionState);
   }
   const settledTurn = { output: structured } satisfies SettledTurn;
@@ -3294,6 +3354,17 @@ async function maybeCompact(input: {
                 getRequestEnvelopeTokens(session),
               ) - requestEnvelopeTokens,
             ),
+        async (evidence) => {
+          await emit?.(
+            createCompactionUsageEvent({
+              ...evidence,
+              modelId: formatLanguageModelGatewayId(compaction.model),
+              sequence: emissionState.sequence,
+              sessionId: session.sessionId,
+              turnId: emissionState.turnId,
+            }),
+          );
+        },
       )
     : [...ordinary];
   messages = validateHarnessModelMessages([...canonical.memory, ...compactedOrdinary]);

@@ -1,3 +1,4 @@
+import type { JsonObject } from "#shared/json.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 
@@ -9,6 +10,7 @@ export interface ClientMessageSubmittedEvent {
   readonly data: {
     readonly createdAt: number;
     readonly message: string;
+    readonly metadata?: JsonObject;
     readonly submissionId: string;
   };
   readonly type: "client.message.submitted";
@@ -23,8 +25,10 @@ export interface ClientMessageFailedEvent {
     readonly createdAt: number;
     readonly error: {
       readonly message: string;
+      readonly metadata?: JsonObject;
     };
     readonly message: string;
+    readonly metadata?: JsonObject;
     readonly submissionId: string;
   };
   readonly type: "client.message.failed";

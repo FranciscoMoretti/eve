@@ -351,6 +351,31 @@ describe("createSession", () => {
     expect(hydrated.outputSchema).toEqual(runOutputSchema);
   });
 
+  it("retains birth provider identity through durable projection and hydration", () => {
+    const localSandboxIdentity = {
+      version: 1,
+      sessionId: "sess-root",
+      backendName: "microsandbox",
+      appRoot: "/local/worker",
+    } as const;
+    const session = {
+      ...createSession({
+        continuationToken: "root-token",
+        sessionId: "sess-root",
+        turnAgent: createTestTurnAgent(),
+      }),
+      localSandboxIdentity,
+    };
+    const durable = projectToDurableSession(session);
+    expect(durable.localSandboxIdentity).toEqual(localSandboxIdentity);
+    expect(
+      hydrateDurableSession({
+        durable: JSON.parse(JSON.stringify(durable)),
+        turnAgent: createTestTurnAgent(),
+      }).localSandboxIdentity,
+    ).toEqual(localSandboxIdentity);
+  });
+
   it("persists delegated root lineage through durable session projection and hydration", () => {
     const session = createSession({
       continuationToken: "subagent-token",

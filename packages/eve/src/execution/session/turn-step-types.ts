@@ -1,3 +1,4 @@
+import type { CheckpointSessionHookPayload } from "#channel/types.js";
 import type { DeliverHookPayload } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
 import type { SettledTurn, StepResult } from "#harness/types.js";
@@ -16,6 +17,7 @@ export interface RuntimeActionResultStepInput {
  * was in flight is appended ahead of that action's result in the same step.
  */
 export interface TurnStepPayload {
+  readonly checkpoint?: CheckpointSessionHookPayload;
   readonly control?: "clear" | "compact";
   readonly delivery?: DeliverHookPayload;
   readonly runtimeResults?: RuntimeActionResultStepInput;

@@ -1752,7 +1752,7 @@ importers:
         version: 4.0.3
       historical-eve-0-30-8:
         specifier: npm:eve@0.30.8
-        version: eve@0.30.8(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.4)(@vercel/blob@2.8.0)(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(ai@7.0.105(zod@4.5.4))(aws4fetch@1.0.20)(braintrust@3.24.0(@aws-sdk/credential-provider-web-identity@3.972.49)(supports-color@10.2.2)(zod@4.5.4))(chokidar@5.0.0)(dotenv@17.4.2)(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(just-bash@3.1.0(supports-color@10.2.2))(lru-cache@11.5.2)(microsandbox@0.5.5)(rollup@4.63.3)(vite@8.3.0(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
+        version: eve@0.30.8(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.4)(@vercel/blob@2.8.0)(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(ai@7.0.105(zod@4.5.4))(aws4fetch@1.0.20)(braintrust@3.24.0(@aws-sdk/credential-provider-web-identity@3.972.49)(supports-color@10.2.2)(zod@4.5.4))(chokidar@5.0.0)(dotenv@17.4.2)(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(just-bash@3.1.0(supports-color@10.2.2))(lru-cache@11.5.2)(microsandbox@0.6.18)(rollup@4.63.3)(vite@8.3.0(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
       jose:
         specifier: 6.2.3
         version: 6.2.3
@@ -1769,8 +1769,8 @@ importers:
         specifier: 'catalog:'
         version: 17.0.6
       microsandbox:
-        specifier: 0.5.5
-        version: 0.5.5
+        specifier: 0.6.18
+        version: 0.6.18
       next:
         specifier: 'catalog:'
         version: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -6747,8 +6747,21 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
+  '@superradcompany/microsandbox-darwin-arm64@0.6.18':
+    resolution: {integrity: sha512-C+bz9+v8JXQ6BG0FXbiTywM/dSNjIFifF3fOh5IU3JW3OiB0HcgjBiVRFWpZYk/pV6eKhZTYSkUiIWwYc3SRNA==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [darwin]
+
   '@superradcompany/microsandbox-linux-arm64-gnu@0.5.5':
     resolution: {integrity: sha512-rOTT9yv81gEExbu8FDIyVQtN4wUk734jqWVNSXnMOk8CqLlIHZzLw0wRzkvWvuMUQ59B9GHG7jOzIinIkmnlsw==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.6.18':
+    resolution: {integrity: sha512-UVtFm32CExLeB0VhiLIW+mvVCkyWi6Yg+1AYWQAvfXj8ngDYEprZz/0Kksp/T8lAnV5hFIYZ2ZrPs0jAGbAR6A==}
     engines: {node: '>= 22'}
     cpu: [arm64]
     os: [linux]
@@ -6760,6 +6773,25 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@superradcompany/microsandbox-linux-x64-gnu@0.6.18':
+    resolution: {integrity: sha512-b9Mu+tu1Vq407c8sr7scNOxBgGpJX/Znd4NGFQ/Dx44SS6bHU3pjUEAdso3IpEB2Cx9nrGIBtBdaRrVw1ro+6w==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.6.18':
+    resolution: {integrity: sha512-QDW9JfnTHd4lbFpms3y+c5oyEdOXK1kZCNPONm6nVrdz1Wr+UVy+zMiMadzL1AJgG4rF3Tg6WT9Xa1j0ekPk6w==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@superradcompany/microsandbox-win32-x64-msvc@0.6.18':
+    resolution: {integrity: sha512-PS1vBcboB4QwZjruBouRApAsqyhUk9U1c2w+hQOCzYzFMoWVsSyUanAwuswiloqyoj2SREwBG5wY8jnAJFzr2g==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [win32]
 
   '@sveltejs/acorn-typescript@1.0.13':
     resolution: {integrity: sha512-wgKggnhZVL9Bfx1OaKKTrYY9BFRk6C8UAkQNUcIv1+llzYrIqy+RZm5HPKzn0NpEBvTVhTqB4kQyllZywsRBRQ==}
@@ -12497,6 +12529,11 @@ packages:
     engines: {node: '>= 22'}
     hasBin: true
 
+  microsandbox@0.6.18:
+    resolution: {integrity: sha512-M38LkxCk6ppz7qXuQ+bHAgahX4bWNgNdrN5OIFpm7OVV1Bqfpvbwog+zP/QvIiImNHgIleB7M8dU1Kd4jTdwvg==}
+    engines: {node: '>= 22'}
+    hasBin: true
+
   mime-db@1.52.0:
     resolution: {integrity: sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==}
     engines: {node: '>= 0.6'}
@@ -18122,30 +18159,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4)':
-    dependencies:
-      '@hono/node-server': 2.1.1(hono@4.13.8)
-      ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
-      content-type: 1.0.5
-      cors: 2.8.6
-      cross-spawn: 7.0.6
-      eventsource: 3.0.7
-      eventsource-parser: 3.1.0
-      express: 5.2.1(supports-color@10.2.2)
-      express-rate-limit: 8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
-      hono: 4.13.8
-      jose: 6.2.3
-      json-schema-typed: 8.0.2
-      pkce-challenge: 5.0.1
-      raw-body: 3.0.2
-      zod: 4.5.4
-      zod-to-json-schema: 3.25.2(zod@4.5.4)
-    optionalDependencies:
-      '@cfworker/json-schema': 4.1.1
-    transitivePeerDependencies:
-      - supports-color
-
   '@modelcontextprotocol/server@2.0.0':
     dependencies:
       '@modelcontextprotocol/core': 2.0.0
@@ -21399,10 +21412,25 @@ snapshots:
   '@superradcompany/microsandbox-darwin-arm64@0.5.5':
     optional: true
 
+  '@superradcompany/microsandbox-darwin-arm64@0.6.18':
+    optional: true
+
   '@superradcompany/microsandbox-linux-arm64-gnu@0.5.5':
     optional: true
 
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.6.18':
+    optional: true
+
   '@superradcompany/microsandbox-linux-x64-gnu@0.5.5':
+    optional: true
+
+  '@superradcompany/microsandbox-linux-x64-gnu@0.6.18':
+    optional: true
+
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.6.18':
+    optional: true
+
+  '@superradcompany/microsandbox-win32-x64-msvc@0.6.18':
     optional: true
 
   '@sveltejs/acorn-typescript@1.0.13(acorn@8.18.0)':
@@ -25609,7 +25637,7 @@ snapshots:
       ai: 7.0.105(zod@4.5.4)
       eve: link:packages/eve
 
-  eve@0.30.8(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.4)(@vercel/blob@2.8.0)(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(ai@7.0.105(zod@4.5.4))(aws4fetch@1.0.20)(braintrust@3.24.0(@aws-sdk/credential-provider-web-identity@3.972.49)(supports-color@10.2.2)(zod@4.5.4))(chokidar@5.0.0)(dotenv@17.4.2)(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(just-bash@3.1.0(supports-color@10.2.2))(lru-cache@11.5.2)(microsandbox@0.5.5)(rollup@4.63.3)(vite@8.3.0(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1)):
+  eve@0.30.8(@opentelemetry/api@1.9.1)(@upstash/redis@1.38.4)(@vercel/blob@2.8.0)(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(ai@7.0.105(zod@4.5.4))(aws4fetch@1.0.20)(braintrust@3.24.0(@aws-sdk/credential-provider-web-identity@3.972.49)(supports-color@10.2.2)(zod@4.5.4))(chokidar@5.0.0)(dotenv@17.4.2)(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(just-bash@3.1.0(supports-color@10.2.2))(lru-cache@11.5.2)(microsandbox@0.6.18)(rollup@4.63.3)(vite@8.3.0(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1)):
     dependencies:
       ai: 7.0.105(zod@4.5.4)
       nitro: 3.0.260610-beta(@upstash/redis@1.38.4)(@vercel/blob@2.8.0)(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(aws4fetch@1.0.20)(chokidar@5.0.0)(dotenv@17.4.2)(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.2)(rollup@4.63.3)(vite@8.3.0(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
@@ -25618,7 +25646,7 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       braintrust: 3.24.0(@aws-sdk/credential-provider-web-identity@3.972.49)(supports-color@10.2.2)(zod@4.5.4)
       just-bash: 3.1.0(supports-color@10.2.2)
-      microsandbox: 0.5.5
+      microsandbox: 0.6.18
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -28516,6 +28544,15 @@ snapshots:
       '@superradcompany/microsandbox-darwin-arm64': 0.5.5
       '@superradcompany/microsandbox-linux-arm64-gnu': 0.5.5
       '@superradcompany/microsandbox-linux-x64-gnu': 0.5.5
+    optional: true
+
+  microsandbox@0.6.18:
+    optionalDependencies:
+      '@superradcompany/microsandbox-darwin-arm64': 0.6.18
+      '@superradcompany/microsandbox-linux-arm64-gnu': 0.6.18
+      '@superradcompany/microsandbox-linux-x64-gnu': 0.6.18
+      '@superradcompany/microsandbox-win32-arm64-msvc': 0.6.18
+      '@superradcompany/microsandbox-win32-x64-msvc': 0.6.18
 
   mime-db@1.52.0: {}
 

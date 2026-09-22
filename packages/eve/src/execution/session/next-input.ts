@@ -1,3 +1,4 @@
+import type { CheckpointSessionHookPayload } from "#channel/types.js";
 import type { DeliverPayload } from "#channel/types.js";
 import { routeSelectedDelivery } from "#execution/session/route-selected-delivery.js";
 import type {
@@ -15,6 +16,7 @@ import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.
 import { getSessionTaskCohorts } from "#tasks/session-task-cohorts.js";
 
 export type NextTurnInstruction =
+  | CheckpointSessionHookPayload
   | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
   | { readonly kind: "authorization-resume"; readonly payloads: readonly DeliverPayload[] }
   | { readonly kind: SessionControl }
@@ -49,6 +51,7 @@ export async function nextTurnDelivery(input: {
         freshSequence: inbox.hasPending() ? undefined : freshSequence,
       },
     );
+    if (selected?.kind === "checkpoint") return selected;
     if (selected?.kind === "control") return { kind: selected.control };
     if (selected?.kind === "authorization-resume") return selected;
     if (selected?.kind === "turn") {

@@ -118,6 +118,8 @@ export interface CreateSessionOptions {
 
 /** Options shared by message sends and HITL responses on a client session. */
 export interface SendTurnOptions<TOutput = unknown> {
+  /** Durable application data for this user message; never included in model prompts. */
+  readonly messageMetadata?: JsonObject;
   /** Policy for a message sent while the fixed session has an active turn. */
   readonly turnPolicy?: TurnPolicy;
 
@@ -161,7 +163,10 @@ export interface SendTurnOptions<TOutput = unknown> {
 }
 
 /** Options for answering pending HITL input requests on a client session. */
-export type RespondTurnOptions<TOutput = unknown> = SendTurnOptions<TOutput>;
+export type RespondTurnOptions<TOutput = unknown> = Omit<
+  SendTurnOptions<TOutput>,
+  "messageMetadata"
+>;
 
 /** @internal Transport envelope used by stores and command adapters. */
 export type SendTurnPayload<TOutput = unknown> =
@@ -172,6 +177,7 @@ export type SendTurnPayload<TOutput = unknown> =
   | (RespondTurnOptions<TOutput> & {
       readonly inputResponses: readonly InputResponse[];
       readonly message?: never;
+      readonly messageMetadata?: never;
     });
 
 /** Retry and backoff settings for one kind of stream reconnection. */

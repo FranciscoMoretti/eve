@@ -296,6 +296,28 @@ describe("withEve", () => {
     });
   });
 
+  it("starts the managed eve server when Next.js loads production server config", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.mocked(resolveEveDestinationPrefix).mockResolvedValueOnce("http://127.0.0.1:4274");
+
+    const config = await withEve<TestConfig>({})("phase-production-server", {
+      defaultConfig: {},
+    });
+
+    expect(resolveEveDestinationPrefix).toHaveBeenCalledOnce();
+    expect(resolveEveDestinationPrefix).toHaveBeenCalledWith({
+      appRoot: process.cwd(),
+      devServerTimeoutMs: undefined,
+      logLabel: undefined,
+      phase: "phase-production-server",
+      productionDestinationPrefix: "http://127.0.0.1:4274",
+      productionServerOrigin: "http://127.0.0.1:4274",
+    });
+
+    await config.rewrites?.();
+    expect(resolveEveDestinationPrefix).toHaveBeenCalledOnce();
+  });
+
   it("accepts a custom stable local production port", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("EVE_NEXT_PRODUCTION_PORT", "51234");
