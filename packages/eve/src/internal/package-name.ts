@@ -17,7 +17,7 @@ export function normalizeEveRuntimeIdentity(identity: { name: string; version: s
   version: string;
 } {
   if (identity.name !== "@chat-js/eve") return identity;
-  const version = /^(\d+\.\d+\.\d+)-chatjs\.\d+$/.exec(identity.version)?.[1];
+  const version = /^(\d+\.\d+\.\d+)-chatjs\.(?:registry\.)?\d+$/.exec(identity.version)?.[1];
   if (version === undefined) throw new Error(`Unsupported ChatJS eve version: ${identity.version}`);
   return { name: EVE_PACKAGE_NAME, version };
 }
