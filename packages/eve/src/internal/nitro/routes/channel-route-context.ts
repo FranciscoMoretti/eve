@@ -25,6 +25,8 @@ const homeRouteMetadataKey = "__eveHomeRouteMetadata";
 const routeChannelNameKey = "__eveRouteChannelName";
 const remoteAgentStreamHeadersResolverKey = "__eveRemoteAgentStreamHeadersResolver";
 const routeSessionCreatorKey = "__eveRouteSessionCreator";
+const routeCreationIntentKey = "__eveRouteCreationIntent";
+type RouteCreationIntentReader = (sessionId: string) => Promise<string | undefined>;
 
 type InternalRouteArgs = RouteHandlerArgs & {
   [agentInfoRouteResponseKey]?: AgentInfoRouteResponse;
@@ -32,6 +34,7 @@ type InternalRouteArgs = RouteHandlerArgs & {
   [routeChannelNameKey]?: string;
   [remoteAgentStreamHeadersResolverKey]?: RemoteAgentStreamHeadersResolver;
   [routeSessionCreatorKey]?: RouteSessionCreator;
+  [routeCreationIntentKey]?: RouteCreationIntentReader;
 };
 
 export function attachRouteChannelName<TArgs extends RouteHandlerArgs>(
@@ -81,10 +84,19 @@ export function readHomeRouteMetadata(args: RouteHandlerArgs): HomeRouteMetadata
 export function attachRouteSessionCreator<TArgs extends RouteHandlerArgs>(
   args: TArgs,
   createSession: RouteSessionCreator,
+  readCreationIntent?: RouteCreationIntentReader,
 ): TArgs {
   const routeArgs: InternalRouteArgs = args;
   routeArgs[routeSessionCreatorKey] = createSession;
+  routeArgs[routeCreationIntentKey] = readCreationIntent;
   return args;
+}
+
+export function readRouteCreationIntent(
+  args: RouteHandlerArgs,
+): RouteCreationIntentReader | undefined {
+  const routeArgs: InternalRouteArgs = args;
+  return routeArgs[routeCreationIntentKey];
 }
 
 export function readRouteSessionCreator(args: RouteHandlerArgs): RouteSessionCreator | undefined {
