@@ -397,6 +397,11 @@ export function isPathImport(source: string): boolean {
 }
 
 function isFrameworkRuntimeImport(source: string, importer: string | undefined): boolean {
+  // The PostgreSQL provider is installed by the application and may be an npm
+  // alias. It is not part of eve's vendored process-shared Workflow runtime.
+  if (source === "@workflow/world-postgres" || source.startsWith("@workflow/world-postgres/")) {
+    return false;
+  }
   if (source === "eve" || source.startsWith("eve/")) {
     return true;
   }
