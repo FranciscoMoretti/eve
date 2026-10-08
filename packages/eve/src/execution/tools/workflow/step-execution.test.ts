@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withWorkflowStepAuthorization } from "#execution/tools/workflow/step-execution.js";
 import { ContextContainer, contextStorage } from "#context/container.js";
-import { AuthKey } from "#context/keys.js";
+import { AuthKey, SandboxKey } from "#context/keys.js";
+import { requireSandboxSession } from "#execution/sandbox/require-sandbox.js";
 import {
   ConnectionAuthorizationRequiredError,
   ConnectionAuthorizationFailedError,
@@ -79,6 +80,27 @@ describe("workflow step authorization", () => {
     durable.entries.clear();
   });
   afterEach(() => vi.unstubAllEnvs());
+  it("does not inherit sandbox access for authored workflow steps", async () => {
+    const ambient = new ContextContainer();
+    const get = vi.fn(async () => null);
+    ambient.set(SandboxKey, {
+      get,
+      stop: async () => {},
+      captureState: async () => ({ initialized: false, session: null }),
+    });
+    await contextStorage.run(ambient, async () => {
+      await expect(runStep((ctx) => ctx.getSandbox())).rejects.toThrow(
+        "eve sandbox runtime access is unavailable",
+      );
+      await expect(runStep(() => requireSandboxSession())).rejects.toThrow(
+        "This tool requires sandbox access",
+      );
+      await expect(runStep((ctx) => ctx.getSkill("test"))).rejects.toThrow(
+        "eve sandbox runtime access is unavailable",
+      );
+    });
+    expect(get).not.toHaveBeenCalled();
+  });
   it("does not exchange a consumed code again when the rest of the step retries", async () => {
     let exchanged = false;
     const complete = vi.fn(async () => {
