@@ -1,3 +1,4 @@
+import { creationIntent } from "#execution/creation-envelope.js";
 import { resolveForwardedPrincipal } from "#channel/forwarded-principal.js";
 import type { SessionParent, SessionTraceContext } from "#channel/types.js";
 import {
@@ -15,7 +16,10 @@ import {
 } from "#execution/session-transcript-seed.js";
 import { attachClientContext } from "#internal/client-context.js";
 import { createLogger, logError } from "#internal/logging.js";
-import { readRouteSessionCreator } from "#internal/nitro/routes/channel-route-context.js";
+import {
+  readRouteCreationIntent,
+  readRouteSessionCreator,
+} from "#internal/nitro/routes/channel-route-context.js";
 import {
   readForwardedAudienceBaggage,
   readForwardedParentSessionBaggage,
@@ -136,17 +140,23 @@ export function createEveSessionRoute(input: EveChannelInput) {
             operationId: body.operationId,
             kind: body.seed ? "seed" : undefined,
           });
+    const requestIntent = creationIntent(body);
     if (operationToken !== undefined) {
       const owner = await args.resolveSession(operationToken);
       if (owner !== undefined) {
+        const readIntent = readRouteCreationIntent(args);
+        const acceptedIntent = await readIntent?.(owner.id);
+        if (acceptedIntent !== requestIntent) {
+          return Response.json(
+            { ok: false, error: "Operation intent does not match the accepted session." },
+            { status: 409 },
+          );
+        }
         return Response.json(
           { ok: true, sessionId: owner.id, status: "accepted" },
           {
-            headers: {
-              "cache-control": "no-store",
-              [EVE_SESSION_ID_HEADER]: owner.id,
-            },
             status: 202,
+            headers: { "cache-control": "no-store", [EVE_SESSION_ID_HEADER]: owner.id },
           },
         );
       }
@@ -248,6 +258,7 @@ export function createEveSessionRoute(input: EveChannelInput) {
     let handle: Awaited<ReturnType<typeof createSession>>;
     try {
       handle = await createSession({
+        creationIntent: requestIntent,
         fork: body.fork,
         seed,
         activityObserver: body.activityObserver,
