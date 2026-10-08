@@ -298,6 +298,10 @@ async function buildRouteArgs(
         delivery: createChannelDeliveryMetadata(deliverySource),
         requestId,
       }),
+    async (sessionId) => {
+      const run = await (await getWorld()).runs.get(sessionId, { resolveData: "none" });
+      return run.attributes?.["$eve.creation.intent"];
+    },
   );
   if (bundle.resolveRemoteAgentStreamHeaders !== undefined) {
     attachRemoteAgentStreamHeadersResolver(args, bundle.resolveRemoteAgentStreamHeaders);
