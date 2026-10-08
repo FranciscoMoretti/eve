@@ -3,7 +3,7 @@ import { normalizeEveRuntimeIdentity } from "#internal/package-name.js";
 
 describe("eve distribution identity", () => {
   it("preserves persisted runtime identity across fork package revisions", () => {
-    for (const version of ["0.61.0-chatjs.0", "0.61.0-chatjs.12"]) {
+    for (const version of ["0.61.0-chatjs.0", "0.61.0-chatjs.12", "0.61.0-chatjs.registry.1"]) {
       expect(normalizeEveRuntimeIdentity({ name: "@chat-js/eve", version })).toEqual({
         name: "eve",
         version: "0.61.0",
