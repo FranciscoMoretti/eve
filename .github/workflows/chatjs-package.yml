@@ -34,7 +34,7 @@ jobs:
       - run: pnpm --filter eve exec vitest run --config vitest.unit.config.ts
       - run: pnpm --filter eve exec tsc --noEmit -p tsconfig.json
       - run: pnpm --filter eve exec vitest run --config vitest.integration.config.ts src/execution/session-history-seed.integration.test.ts src/execution/session-transcript-seed.integration.test.ts src/execution/session-fork.integration.test.ts src/execution/session-resource-fork.integration.test.ts src/execution/session-checkpoint.integration.test.ts src/execution/hook-results.integration.test.ts src/harness/seed-attachments.integration.test.ts
-      - run: node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.0.tgz
+      - run: node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.3.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: chatjs-eve-package
@@ -58,4 +58,4 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      - run: npm publish artifacts/chat-js-eve-0.61.0-chatjs.0.tgz --access public --tag chatjs --provenance
+      - run: npm publish artifacts/chat-js-eve-0.61.0-chatjs.3.tgz --access public --tag chatjs --provenance
