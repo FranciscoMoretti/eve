@@ -73,7 +73,14 @@ export function findCatalogModelByProviderModelId(input: {
     }
   }
 
-  return null;
+  // Provider aliases can be the public catalog slug while the provider's
+  // concrete model ID is dated. This is metadata lookup, not dispatch rewriting.
+  const model = findCatalogModelBySlug(
+    input.models,
+    `${resolvedProvider}/${input.providerModelId}`,
+  );
+  const provider = model?.providers.find((entry) => entry.provider === resolvedProvider);
+  return model !== undefined && provider !== undefined ? { model, provider } : null;
 }
 
 export function modelCatalogLimitsFromProvider(

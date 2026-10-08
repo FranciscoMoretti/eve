@@ -1,6 +1,12 @@
 name: ChatJS eve package
 
 on:
+  pull_request:
+    paths:
+      - 'packages/eve/**'
+      - 'scripts/pack-chatjs.mjs'
+      - 'scripts/test-chatjs-package.mjs'
+      - '.github/workflows/chatjs-package.yml'
   workflow_dispatch:
     inputs:
       publish:
@@ -21,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.1'
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -34,7 +43,7 @@ jobs:
       - run: pnpm --filter eve exec vitest run --config vitest.unit.config.ts
       - run: pnpm --filter eve exec tsc --noEmit -p tsconfig.json
       - run: pnpm --filter eve exec vitest run --config vitest.integration.config.ts src/execution/session-history-seed.integration.test.ts src/execution/session-transcript-seed.integration.test.ts src/execution/session-fork.integration.test.ts src/execution/session-resource-fork.integration.test.ts src/execution/session-checkpoint.integration.test.ts src/execution/hook-results.integration.test.ts src/harness/seed-attachments.integration.test.ts
-      - run: node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.0.tgz
+      - run: node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.3.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: chatjs-eve-package
@@ -58,4 +67,4 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      - run: npm publish artifacts/chat-js-eve-0.61.0-chatjs.0.tgz --access public --tag chatjs --provenance
+      - run: npm publish artifacts/chat-js-eve-0.61.0-chatjs.3.tgz --access public --tag chatjs --provenance

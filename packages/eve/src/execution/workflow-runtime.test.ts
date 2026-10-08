@@ -582,6 +582,10 @@ describe("createWorkflowRuntime#createSession", () => {
       {
         allowReservedAttributes: true,
         attributes: {
+          "$eve.creation.key": expect.stringMatching(/^eve:v1:[a-f0-9]{64}$/),
+          "$eve.creation.intent": expect.stringMatching(/^[a-f0-9]{64}$/),
+          "$eve.creation.role": "session",
+          "$eve.creation.claim_token": expect.stringMatching(/^eve:inbox:v1:.+$/),
           "$eve.is_otel_trace_enabled": "false",
           "$eve.is_trace_content_visible": "false",
           "$eve.title": "hello",
@@ -877,6 +881,10 @@ describe("createWorkflowRuntime#createSession", () => {
         allowReservedAttributes: true,
         attributes: {
           "$eve.channel_request_id": "req_run",
+          "$eve.creation.key": expect.stringMatching(/^eve:v1:[a-f0-9]{64}$/),
+          "$eve.creation.intent": expect.stringMatching(/^[a-f0-9]{64}$/),
+          "$eve.creation.role": "session",
+          "$eve.creation.claim_token": expect.stringMatching(/^eve:inbox:v1:.+$/),
           "$eve.is_otel_trace_enabled": "false",
           "$eve.is_trace_content_visible": "false",
           "$eve.title": "hello",
@@ -919,6 +927,10 @@ describe("createWorkflowRuntime#createSession", () => {
     expect(startMock).toHaveBeenCalledWith(workflowEntryReference, expect.any(Array), {
       allowReservedAttributes: true,
       attributes: {
+        "$eve.creation.key": expect.stringMatching(/^eve:v1:[a-f0-9]{64}$/),
+        "$eve.creation.intent": expect.stringMatching(/^[a-f0-9]{64}$/),
+        "$eve.creation.role": "session",
+        "$eve.creation.claim_token": expect.stringMatching(/^eve:inbox:v1:.+$/),
         "$eve.is_otel_trace_enabled": "false",
         "$eve.parent": "parent-session",
         "$eve.parent_call": "call-1",
@@ -966,6 +978,10 @@ describe("createWorkflowRuntime#createSession", () => {
     expect(startMock).toHaveBeenCalledWith(workflowEntryReference, expect.any(Array), {
       allowReservedAttributes: true,
       attributes: {
+        "$eve.creation.key": expect.stringMatching(/^eve:v1:[a-f0-9]{64}$/),
+        "$eve.creation.intent": expect.stringMatching(/^[a-f0-9]{64}$/),
+        "$eve.creation.role": "session",
+        "$eve.creation.claim_token": expect.stringMatching(/^eve:inbox:v1:.+$/),
         "$eve.is_otel_trace_enabled": "false",
         "$eve.is_trace_content_visible": "false",
         "$eve.title": "hello",

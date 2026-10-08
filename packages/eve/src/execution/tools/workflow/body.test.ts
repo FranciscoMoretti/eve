@@ -66,6 +66,8 @@ it("binds workflow-only methods to the run context", async () => {
     expect(ctx.agents).toEqual({ reviewer: { description: "Review deployments." } });
     expect(Object.isFrozen(ctx.agents)).toBe(true);
     expect(Object.isFrozen(ctx.agents.reviewer)).toBe(true);
+    expect(() => ctx.getSandbox()).toThrow("the session sandbox belongs to the turn");
+    expect(() => ctx.getSkill("test")).toThrow("skills are read through the session sandbox");
     const answer = await ctx.ask(question);
     const result = await ctx.agent(target, invocation);
     expect(mocks.ask).toHaveBeenCalledWith(ctx, question);

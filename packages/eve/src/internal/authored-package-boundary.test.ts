@@ -13,6 +13,37 @@ import {
 const PACKAGE_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 describe("createGenerationPackageBoundaryPlugin", () => {
+  it("leaves the application-owned PostgreSQL provider to application resolution", async () => {
+    for (const factory of [
+      createGenerationPackageBoundaryPlugin,
+      createRuntimeLoaderPackageBoundaryPlugin,
+    ]) {
+      const plugin = factory({ externalDependencies: [], packageRoot: PACKAGE_ROOT });
+      const resolveId = plugin.resolveId as (
+        this: RolldownResolveContext,
+        source: string,
+        importer: string | undefined,
+        options: { kind: string },
+      ) => Promise<unknown>;
+      const context: RolldownResolveContext = {
+        async resolve() {
+          return { id: join(PACKAGE_ROOT, "node_modules/@workflow/world-postgres/dist/index.js") };
+        },
+      };
+      await expect(
+        resolveId.call(
+          context,
+          "@workflow/world-postgres",
+          join(PACKAGE_ROOT, "agent/channels/eve.ts"),
+          { kind: "import-statement" },
+        ),
+      ).resolves.toEqual(
+        factory === createGenerationPackageBoundaryPlugin
+          ? undefined
+          : { external: true, id: "@workflow/world-postgres" },
+      );
+    }
+  });
   it("keeps eve imports portable", async () => {
     const plugin = createGenerationPackageBoundaryPlugin({
       externalDependencies: [],

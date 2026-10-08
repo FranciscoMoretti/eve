@@ -7,23 +7,23 @@ native checkpoints; the history continuation experiment does not replace them.
 
 ## Build and test a package
 
-Use Node 24+ and the pnpm version pinned in `package.json`.
+Use Node 24+, Bun 1.3.1 for packaging, and the upstream workspace package manager for installation.
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm pack:chatjs
-node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.0.tgz
+node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.3.tgz
 pnpm guard:invariants
 pnpm --filter eve exec tsc --noEmit -p tsconfig.json
 pnpm --filter eve exec vitest run --config vitest.unit.config.ts
 pnpm --filter eve exec vitest run --config vitest.integration.config.ts src/execution/session-history-seed.integration.test.ts src/execution/session-transcript-seed.integration.test.ts src/execution/session-fork.integration.test.ts src/execution/session-resource-fork.integration.test.ts src/execution/session-checkpoint.integration.test.ts src/execution/hook-results.integration.test.ts src/harness/seed-attachments.integration.test.ts
 ```
 
-`pack:chatjs` runs the normal source build and pnpm packaging, then changes the
-package's distribution metadata to `@chat-js/eve@0.61.0-chatjs.0`. The workspace
+`pack:chatjs` runs the source build and Bun packaging, then changes the
+package's distribution metadata to `@chat-js/eve@0.61.0-chatjs.3`. The workspace
 package remains named `eve`, keeping internal imports, workspace dependencies,
-and workflow identities stable. pnpm resolves catalog dependencies before the
-archive is renamed. CLI scaffold dependency tokens point to the scoped package.
+and workflow identities stable. The packer resolves the AI peer catalog and rejects
+unresolved workspace dependencies. CLI scaffold dependency tokens point to the scoped package.
 The package declares the Microsandbox 0.6 SDK contract directly.
 
 The consumer smoke test installs the archive as `eve` using npm, checks public
@@ -44,11 +44,11 @@ scaffold tests. Do not publish or commit absolute local tarball paths. For
 shared CI, use the exact published prerelease through an npm alias:
 
 ```json
-{ "dependencies": { "eve": "npm:@chat-js/eve@0.61.0-chatjs.0" } }
+{ "dependencies": { "eve": "npm:@chat-js/eve@0.61.0-chatjs.3" } }
 ```
 
 Generated ChatJS applications retain this dependency rather than rebuilding and
-vendoring an eve patch. The unrelated MCP and Postgres patches remain.
+vendoring an eve patch. The maintained PostgreSQL provider is published separately; candidate integration removes obsolete compiled-patch vendoring.
 
 ## Publish
 
@@ -60,7 +60,7 @@ A first publication may require an authenticated owner of the `@chat-js` npm
 scope to bootstrap the package:
 
 ```sh
-npm publish artifacts/chat-js-eve-0.61.0-chatjs.0.tgz --access public --tag chatjs
+npm publish artifacts/chat-js-eve-0.61.0-chatjs.3.tgz --access public --tag chatjs
 ```
 
 Do not publish until the package and ChatJS checks pass. Publish the tested
@@ -88,3 +88,30 @@ ChatJS passes lint, all seven workspace type checks, 359 focused runtime tests,
 and 22 scaffold/vendor tests against this archive. Publication and the registry
 lockfile gate remain pending npm authentication. These results do not certify
 migration of existing deployed Workflow runs or live provider recovery.
+
+The next scoped candidate preserves dynamic tool approval input generics. Its dynamic-tool extension contract is epoch 52 and retains epoch 51; the upstream persisted workflow identity remains 0.61.0. Building and testing the candidate does not publish it.
+# Experimental candidate registry branch
+
+The `chatjs.registry.N` local artifacts preserve durable runtime identity
+`eve@0.61.0`. They are separate from the approved `.2` package and are not public
+release candidates until native acceptance and rollout gates are complete.
+
+Creation operations bind an immutable request intent to a server-derived
+principal/channel/agent identity. Existing receipts are returned only when intent
+matches; changed intent is rejected. Accepted transcript copies can recover their
+receipt without resolving a subsequently revoked source. Concurrent new
+candidates still pass through World admission and claim the physical continuation
+inbox before session initialization.
+
+PostgreSQL World providers remain application-owned dependencies, including npm
+aliases. Authored modules resolve them from the application rather than eve's
+vendored Workflow runtime. Owned child session lineage is recorded by the World
+at first candidate admission; applications must validate canonical parent and
+authorized root before recovering missing child bindings.
+
+Existing durable histories require pinned-old-runtime drainage or separate
+database quarantine: initialization reordering is not a transparent replay
+upgrade. Legacy inventory and unsupported auxiliary renderer effects remain
+explicit cleanup blockers. See `research/chatjs-candidate-ownership.md`.
+
+The proposed reviewed registry release is `@chat-js/eve@0.61.0-chatjs.3`. It must be packed from reviewed source and revalidated with the corresponding World `.1` archive; experimental registry tarballs must not be relabeled or substituted for the earlier prepared `.2` release.

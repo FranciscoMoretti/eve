@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   findCatalogModelBySlug,
+  findCatalogModelByProviderModelId,
   normalizeCatalogModelId,
   type CatalogModel,
 } from "#internal/model-catalog.js";
@@ -79,5 +80,56 @@ describe("findCatalogModelBySlug", () => {
 
   it("returns undefined for an unknown slug", () => {
     expect(findCatalogModelBySlug(MODELS, "unknown/model")).toBeUndefined();
+  });
+});
+
+describe("provider model aliases", () => {
+  const provider = {
+    provider: "openai",
+    providerModelId: "gpt-5-nano-2025-08-07",
+    contextWindowTokens: 400_000,
+  };
+  const model: CatalogModel = {
+    slug: "openai/gpt-5-nano",
+    providers: [
+      { provider: "azure", providerModelId: "gpt-5-nano", contextWindowTokens: 123_000 },
+      provider,
+    ],
+  };
+  const lookup = (
+    models: readonly CatalogModel[],
+    providerModelId = "gpt-5-nano",
+    name = "openai.responses",
+  ) =>
+    findCatalogModelByProviderModelId({
+      models,
+      provider: name,
+      providerModelId,
+      providerAliases: { direct: "openai" },
+    });
+  it("resolves a slug alias to metadata from the same provider", () => {
+    expect(lookup([model])).toEqual({ model, provider });
+  });
+  it("keeps exact dated provider IDs supported", () => {
+    expect(lookup([model], provider.providerModelId)).toEqual({ model, provider });
+  });
+  it("prefers an exact provider ID over another model's slug alias", () => {
+    const exactProvider = {
+      ...provider,
+      providerModelId: "gpt-5-nano",
+      contextWindowTokens: 200_000,
+    };
+    const exactModel = { slug: "openai/other", providers: [exactProvider] };
+    expect(lookup([model, exactModel])).toEqual({ model: exactModel, provider: exactProvider });
+  });
+  it("never takes another provider's metadata from the matching slug", () => {
+    expect(lookup([{ ...model, providers: [model.providers[0]!] }])).toBeNull();
+  });
+  it("retains unknown IDs as unresolved", () => {
+    expect(lookup([model], "unknown")).toBeNull();
+  });
+  it("uses configured provider aliases without changing dispatch identity", () => {
+    expect(lookup([model], "gpt-5-nano", "direct.responses")).toEqual({ model, provider });
+    expect(model.providers[1]!.providerModelId).toBe("gpt-5-nano-2025-08-07");
   });
 });

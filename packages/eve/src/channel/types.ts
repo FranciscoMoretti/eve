@@ -476,6 +476,8 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
+  /** Server-derived stable create intent; never populated from raw request attributes. */
+  readonly creationIntent?: string;
   /** Server-authorized public transcript; creates an idle conversation without a first turn. */
   readonly seed?: import("#execution/session-transcript-seed.js").SessionTranscriptSeed;
   /** Server-authorized native checkpoint used to seed a new independent session. */
