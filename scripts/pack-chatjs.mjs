@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const packageRoot = join(root, "packages/eve");
 const output = resolve(process.argv[2] ?? join(root, "artifacts"));
 const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-const version = `${manifest.version}-chatjs.0`;
+const version = `${manifest.version}-chatjs.3`;
 const name = "@chat-js/eve";
 const temporary = await mkdtemp(join(tmpdir(), "chatjs-eve-pack-"));
 const run = (command, args, cwd) =>
