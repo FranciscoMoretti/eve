@@ -1,3 +1,4 @@
+import { createSessionCreationAttributes } from "#execution/creation-envelope.js";
 import { prepareSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
 import { randomBytes } from "node:crypto";
 
@@ -146,6 +147,11 @@ export function createWorkflowRuntime(config: {
 }): Runtime {
   return {
     async createSession(input: RunInput): Promise<RunHandle> {
+      input = {
+        ...input,
+        continuationToken:
+          input.continuationToken || `eve:generated:${randomBytes(32).toString("hex")}`,
+      };
       if (input.seed) {
         if (
           input.mode !== "conversation" ||
@@ -169,6 +175,11 @@ export function createWorkflowRuntime(config: {
         run: input,
       });
       const effectiveAgent = resolveEffectiveAgentRuntime(bundle, ctx);
+      const creationAttributes = createSessionCreationAttributes({
+        run: input,
+        agentId: effectiveAgent.turnAgent.id,
+        namespace: process.env.WORKFLOW_QUEUE_NAMESPACE ?? "default",
+      });
       initializeSessionInstrumentation({
         agentName: effectiveAgent.turnAgent.id,
         ctx,
@@ -200,7 +211,11 @@ export function createWorkflowRuntime(config: {
           const collector = await startWorkflowOnCurrentDeployment(
             activityCollectorWorkflowReference,
             [collectorInput],
-            { experimental_retention: retention },
+            {
+              experimental_retention: retention,
+              allowReservedAttributes: true,
+              attributes: { ...creationAttributes, "$eve.creation.role": "auxiliary" },
+            },
           );
           collectorRunId = collector.runId;
           const fallbackOrigin = process.env.VERCEL_URL
@@ -262,6 +277,7 @@ export function createWorkflowRuntime(config: {
             });
       const attributes = {
         ...sessionAttributes,
+        ...creationAttributes,
         ...(input.externalInvocation === undefined
           ? {}
           : buildInvocationAttributes(input.externalInvocation)),
