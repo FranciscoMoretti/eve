@@ -6,6 +6,8 @@ import { callAdapterEventHandler, type ChannelAdapter } from "#channel/adapter.j
 import { isCompiledChannel } from "#channel/compiled-channel.js";
 import { readClientContext } from "#internal/client-context.js";
 import { attachRouteSessionCreator } from "#internal/nitro/routes/channel-route-context.js";
+import { creationIntent } from "#execution/creation-envelope.js";
+import { parseCreateBody } from "#eve-channel/request.js";
 import { mockChannelContext } from "#internal/testing/mocks/mock-channel-operations.js";
 import { type AuthFn, none } from "#public/channels/auth.js";
 import { eveChannel, defaultEveAuth, type EveChannelInput } from "#public/channels/eve.js";
@@ -108,7 +110,7 @@ function createRouteArgs(): RouteHandlerArgs {
  */
 function createEveCreateHandler(
   input: EveChannelInput,
-  options: { readonly activeSessionId?: string } = {},
+  options: { readonly activeSessionId?: string; readonly acceptedIntent?: string } = {},
 ) {
   const channel = eveChannel(input);
   const createRoute = channel.routes.find(
@@ -158,6 +160,7 @@ function createEveCreateHandler(
       const args = attachRouteSessionCreator(
         { ...createRouteArgs(), resolveSession },
         createSession as never,
+        async () => options.acceptedIntent,
       );
       return (createRoute as any).handler(req, args);
     },
@@ -953,7 +956,12 @@ describe("eveChannel — create session idempotency", () => {
   it("returns the existing child for a replayed operation without dispatching again", async () => {
     const handler = createEveCreateHandler(
       { auth: () => ACCEPTED_AUTH },
-      { activeSessionId: "child-1" },
+      {
+        activeSessionId: "child-1",
+        acceptedIntent: creationIntent(
+          parseCreateBody({ message: "hi", operationId: "operation-1" }),
+        ),
+      },
     );
 
     const response = await handler.fetch(
@@ -963,6 +971,23 @@ describe("eveChannel — create session idempotency", () => {
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toMatchObject({ ok: true, sessionId: "child-1" });
     expect(handler.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects changed intent before returning an existing operation receipt", async () => {
+    const handler = createEveCreateHandler(
+      { auth: () => ACCEPTED_AUTH },
+      {
+        activeSessionId: "child-1",
+        acceptedIntent: creationIntent(
+          parseCreateBody({ message: "original", operationId: "operation-1" }),
+        ),
+      },
+    );
+    const response = await handler.fetch(
+      createJsonMessageRequest({ message: "changed", operationId: "operation-1" }),
+    );
+    expect(response.status).toBe(409);
+    expect(handler.createSession).not.toHaveBeenCalled();
   });
 
   it("scopes the operation token to the complete authenticated principal", async () => {
@@ -2474,7 +2499,10 @@ describe("eveChannel — server-authorized transcript seeds", () => {
     const resolveSeed = vi.fn(() => null);
     const handler = createEveCreateHandler(
       { auth: () => ACCEPTED_AUTH, resolveSeed },
-      { activeSessionId: "independent-copy" },
+      {
+        activeSessionId: "independent-copy",
+        acceptedIntent: creationIntent(parseCreateBody(payload)),
+      },
     );
     const response = await handler.fetch(createJsonMessageRequest(payload));
     expect(response.status).toBe(202);
