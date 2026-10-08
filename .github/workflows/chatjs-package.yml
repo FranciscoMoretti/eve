@@ -1,6 +1,12 @@
 name: ChatJS eve package
 
 on:
+  pull_request:
+    paths:
+      - 'packages/eve/**'
+      - 'scripts/pack-chatjs.mjs'
+      - 'scripts/test-chatjs-package.mjs'
+      - '.github/workflows/chatjs-package.yml'
   workflow_dispatch:
     inputs:
       publish:
