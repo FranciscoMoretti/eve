@@ -120,29 +120,13 @@ async function bootInitialOwner(
       sessionId,
       writable: getWritable<SessionCheckpoint>({ namespace: SESSION_CHECKPOINT_NAMESPACE }),
     };
-    const [sessionCreation, stableClaim, aliasClaim] = await Promise.allSettled([
-      createSessionStep({
-        identityWritable: getWritable<SessionSandboxIdentityReceipt>({
-          namespace: SESSION_SANDBOX_IDENTITY_NAMESPACE,
-        }),
-        fork: input.fork,
-        seed: input.seed,
-        compiledArtifactsSource: serializedBundle.source,
-        continuationToken,
-        dynamicSubagentAgentConfig: serializedContext["eve.dynamicSubagentAgentConfig"] as
-          | DynamicSubagentAgentConfig
-          | undefined,
-        inheritedLimits: input.limits,
-        nodeId: serializedBundle.nodeId,
-        outputSchema: input.input.outputSchema,
-        rootSessionId: readRootSessionId(serializedContext),
-        sessionId,
-        taskId: input.taskId,
-      }),
+    // Ownership precedes sandbox identity, history restoration and all
+    // session initialization effects. Losing candidates retain only protocol
+    // bookkeeping and can be classified without guessing from absent output.
+    const [stableClaim, aliasClaim] = await Promise.allSettled([
       inbox.claimSessionHook(sessionCommandHookToken(sessionId)),
       continuationToken === "" ? Promise.resolve() : inbox.claimSessionHook(continuationToken),
     ]);
-    if (sessionCreation.status === "rejected") throw sessionCreation.reason;
     if (stableClaim.status === "rejected") throw stableClaim.reason;
     if (aliasClaim.status === "rejected") {
       if (!isHookConflictError(aliasClaim.reason)) throw aliasClaim.reason;
@@ -159,6 +143,24 @@ async function bootInitialOwner(
       await inbox.dispose();
       return undefined;
     }
+    const sessionCreation = await createSessionStep({
+      identityWritable: getWritable<SessionSandboxIdentityReceipt>({
+        namespace: SESSION_SANDBOX_IDENTITY_NAMESPACE,
+      }),
+      fork: input.fork,
+      seed: input.seed,
+      compiledArtifactsSource: serializedBundle.source,
+      continuationToken,
+      dynamicSubagentAgentConfig: serializedContext["eve.dynamicSubagentAgentConfig"] as
+        | DynamicSubagentAgentConfig
+        | undefined,
+      inheritedLimits: input.limits,
+      nodeId: serializedBundle.nodeId,
+      outputSchema: input.input.outputSchema,
+      rootSessionId: readRootSessionId(serializedContext),
+      sessionId,
+      taskId: input.taskId,
+    });
     if (input.fork)
       await restoreSessionHistoryStep({ fork: input.fork, writable: sessionWritable });
     if (input.seed)
@@ -182,7 +184,7 @@ async function bootInitialOwner(
         retention: input.retention,
         serializedContext,
         sessionId,
-        sessionState: sessionCreation.value.state,
+        sessionState: sessionCreation.state,
         sessionTimeoutMs,
         sessionTimeoutDeadline: sessionTimeoutDeadline(
           sessionTimeoutMs,
