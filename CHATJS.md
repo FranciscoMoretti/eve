@@ -12,7 +12,7 @@ Use Node 24+ and the pnpm version pinned in `package.json`.
 ```sh
 pnpm install --frozen-lockfile
 pnpm pack:chatjs
-node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.2.tgz
+node scripts/test-chatjs-package.mjs artifacts/chat-js-eve-0.61.0-chatjs.3.tgz
 pnpm guard:invariants
 pnpm --filter eve exec tsc --noEmit -p tsconfig.json
 pnpm --filter eve exec vitest run --config vitest.unit.config.ts
@@ -20,7 +20,7 @@ pnpm --filter eve exec vitest run --config vitest.integration.config.ts src/exec
 ```
 
 `pack:chatjs` runs the normal source build and pnpm packaging, then changes the
-package's distribution metadata to `@chat-js/eve@0.61.0-chatjs.2`. The workspace
+package's distribution metadata to `@chat-js/eve@0.61.0-chatjs.3`. The workspace
 package remains named `eve`, keeping internal imports, workspace dependencies,
 and workflow identities stable. pnpm resolves catalog dependencies before the
 archive is renamed. CLI scaffold dependency tokens point to the scoped package.
@@ -44,11 +44,11 @@ scaffold tests. Do not publish or commit absolute local tarball paths. For
 shared CI, use the exact published prerelease through an npm alias:
 
 ```json
-{ "dependencies": { "eve": "npm:@chat-js/eve@0.61.0-chatjs.2" } }
+{ "dependencies": { "eve": "npm:@chat-js/eve@0.61.0-chatjs.3" } }
 ```
 
 Generated ChatJS applications retain this dependency rather than rebuilding and
-vendoring an eve patch. The unrelated MCP and Postgres patches remain.
+vendoring an eve patch. The maintained PostgreSQL provider is published separately; candidate integration removes obsolete compiled-patch vendoring.
 
 ## Publish
 
@@ -60,7 +60,7 @@ A first publication may require an authenticated owner of the `@chat-js` npm
 scope to bootstrap the package:
 
 ```sh
-npm publish artifacts/chat-js-eve-0.61.0-chatjs.2.tgz --access public --tag chatjs
+npm publish artifacts/chat-js-eve-0.61.0-chatjs.3.tgz --access public --tag chatjs
 ```
 
 Do not publish until the package and ChatJS checks pass. Publish the tested
