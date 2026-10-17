@@ -91,6 +91,7 @@ The default eve channel inspects the agent, creates sessions, accepts callbacks 
 - `GET /eve/v1/health` (check whether the application is reachable)
 - `GET /eve/v1/info` (inspect the agent)
 - `POST /eve/v1/session` (create a session, optionally sending its first message)
+- `GET /eve/v1/operation/:operationId` (recover a creation operation without dispatching)
 - `POST /eve/v1/session/:sessionId` (send a follow-up)
 - `POST /eve/v1/session/:sessionId/cancel` (cancel the in-flight turn)
 - `POST /eve/v1/session/:sessionId/clear` (clear the session's model history)
@@ -353,3 +354,17 @@ For scripts, server-to-server calls, evals, tests, and custom clients, use the [
 - [Client SDK](../guides/client/overview): call the eve channel from TypeScript
 - [Auth & route protection](../guides/auth-and-route-protection): the route auth policy
 - [Sessions, runs & streaming](../concepts/sessions-runs-and-streaming): the routes this channel exposes
+
+## Recovering an uncertain creation
+
+An authenticated creation can include `operationId`. If its response is lost,
+read `GET /eve/v1/operation/:operationId` with the same authenticated principal.
+A successful lookup returns `{ "sessionId": "..." }`. An absent operation returns
+404 with `code: "eve_operation_not_found"`. Responses use `Cache-Control: no-store`.
+The lookup never creates a session, sends a message, or resumes an agent.
+
+The operation identity uses the same authenticator, issuer, principal type and
+principal ID as creation. Another principal cannot retrieve the operation by
+knowing its ID. Anonymous callers and query parameters are rejected. A transport
+failure is not evidence that the operation is absent; preserve the original
+operation and reconcile it before deciding whether another dispatch is allowed.

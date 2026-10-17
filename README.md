@@ -1,6 +1,6 @@
 ## ChatJS 0.80.1 upgrade candidate
 
-**Incomplete and nondeployable: the real ChatJS agents do not compile yet.**
+**Incomplete and nondeployable: the guest agent passes; authenticated integration remains blocked.**
 [Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets the maintained
 `francisco/chatjs-package` branch, baseline
 `5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`. This candidate starts at exact upstream
@@ -25,8 +25,11 @@ review base. None of these draft proof PRs deletes maintained runtime code.
 
 ### Implemented retained extensions and upstream replacements
 
-**Implemented retained runtime extensions: none.** The residual candidate changes
-are proof fixtures and documentation. Required contracts below are still missing.
+**Implemented runtime extension: authenticated read-only creation-operation lookup.**
+It reuses upstream creation token derivation and owner resolution without sending
+or creating. Ten focused route/create tests and package type checking pass; the
+packaged integrated recovery gate is still pending. Other required contracts below
+remain missing.
 The absence of old fork code is not proof that its requirements work upstream.
 
 | Original inventory group | Replacement evidence                                                                                                                           | Remaining integration gate                                                |
@@ -59,6 +62,30 @@ runtime port. No old-session continuity or historical billing import is required
 Authority, exact correlation, ownership, quota/balance, best-effort accounting,
 independent tool charging and no automatic resend remain mandatory. The PostgreSQL
 consumed-prefix patch and abrupt-crash recovery gate remain separate.
+
+### Integrated ChatJS progress
+
+Work continues on the dedicated `codex/eve080-integrated-upgrade` ChatJS branch,
+based on merged main `c0ab1c0504bb3da73ca0f3625f66c47bf69e042e`, with an explicit
+local candidate tarball. Production main's pin is unchanged.
+
+- `b1858c77f`: real guest source compiles/builds; real Next proxy and signed guest
+  credentials pass create/send/stream/exact cursor reconnect/active cancellation.
+  External gateway HTTP is deterministic; database points to unused loopback port.
+  Both agents remain configured normally after temporary guest isolation.
+- `050f9f968`, followed by fixture typing cleanup `8aa4e52df`: native approval
+  consumers and research child sessions adopted. Six suites/74 cases pass, and
+  the existing native research harness passes adaptive research with independently
+  charged search receipts and cancellation of owned children. It caught the
+  structured reply rename to `eve__reply`. No provider model accounting claim.
+- Actual authenticated compiler has 31 remaining copy/seed/projection diagnostics.
+  Full repository lint/types remain blocked. Evidence and reproduction are in
+  ChatJS `apps/chat/tests/eve-upgrade/README.md`.
+
+The published #848 route assertion was changed by autofix after its earlier green
+run; it is stale, not merge-ready. The integrated branch restores the exact mock
+arity and passes the final focused suite. No separate proof publication is being
+expanded while integrated work is prioritized.
 
 ### Exact candidate integration checkpoint
 

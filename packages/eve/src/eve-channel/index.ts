@@ -124,6 +124,36 @@ export function eveChannel(input: EveChannelInput): EveChannel {
       GET(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
       HEAD(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
 
+      GET(`${EVE_ROUTE_PREFIX}/operation/:operationId`, async (req, { params, resolveSession }) => {
+        const auth = await routeAuth(req, input.auth);
+        if (auth instanceof Response) return auth;
+        if (
+          auth.principalType === "anonymous" ||
+          !params.operationId ||
+          new URL(req.url).search !== ""
+        ) {
+          return Response.json(
+            {
+              error:
+                "Operation lookup requires an authenticated principal, an operation id and no query parameters.",
+              ok: false,
+            },
+            { status: 400, headers: { "cache-control": "no-store" } },
+          );
+        }
+        const token = await deriveOperationContinuationToken({
+          auth,
+          operationId: params.operationId,
+        });
+        const session = await resolveSession(token);
+        return session === undefined
+          ? Response.json(
+              { error: "Operation not found.", code: "eve_operation_not_found" },
+              { status: 404, headers: { "cache-control": "no-store" } },
+            )
+          : Response.json({ sessionId: session.id }, { headers: { "cache-control": "no-store" } });
+      }),
+
       GET(EVE_INFO_ROUTE_PATH, async (req, args) => {
         const authResult = await routeAuth(req, input.auth);
         if (authResult instanceof Response) return authResult;
