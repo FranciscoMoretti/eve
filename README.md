@@ -1,17 +1,9 @@
 ## ChatJS eve 0.80.1 integration candidate
 
-This branch is a **draft for review, not a release or production cutover**.
-The paired ChatJS branch now compiles both real agents and has local guest and
-authenticated integration evidence. External model and Blob transport use
-explicit disposable fixtures; application authentication, workflow execution,
-PostgreSQL persistence and local microsandbox VMs are real.
-
-[Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets
-`francisco/chatjs-package`, maintained baseline
-`5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`.
-The umbrella includes the upstream upgrade. Review the **residual fork** against
-`codex/chatjs-eve080-base`, exact upstream 0.80.1
-`e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
+This draft retains the runtime contracts needed by ChatJS on eve 0.80.1.
+[Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) includes the upstream
+upgrade and targets `francisco/chatjs-package`. Review the residual fork against
+exact upstream 0.80.1, `e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
 
 ### Retained runtime contracts
 
@@ -49,79 +41,28 @@ The old independent app proof PRs #848/#849 are not the integrated app branch;
 
 The remaining original inventory groups map to the retained contracts above
 (checkpoints/forks, history import, attachments, sandbox lifecycle), app-owned
-alternatives (message metadata, admission), and the paired package validation
-below (distribution). They are not an automatic queue to port old APIs.
+alternatives (message metadata, admission), and package distribution. They are not an automatic queue to port old APIs.
 
-### Exact paired package and evidence
+### Resource authority and adoption limits
 
-Runtime candidate: signed+DCO commit `8fb9d359`.
-The app selects `.eve-upgrade/eve-0.80.1-8fb9d359.tgz` in all four consumers.
-SHA-256: `559964f080e818519965f63d1f58bd10a1b17614665e930f97226a584fee2079`.
-Full integration checks below were recorded on `efe221c7`. The new candidate
-changes only the Microsandbox helper import to bypass hosted optional-installer
-pruning. A real Rolldown regression and the actual hosted ChatJS eve build failed
-before that correction and pass afterward. The local hosted build skips sandbox
-prewarming and is not deployment evidence. Later documentation-only commits do
-not change this runtime candidate.
-The app branch is `codex/eve080-integrated-upgrade`, based on merged main
-`c0ab1c0504bb3da73ca0f3625f66c47bf69e042e`. Its committed evidence lives in
-`apps/chat/tests/eve-upgrade/README.md` and `authenticated-evidence.json`.
-The tarball is a local integration artifact, not a published package or production pin.
+Resource retirement requires `MSB_BACKEND=local`, one canonical cache,
+matching HOME/MSB_HOME, and an absolute MSB_HOME when set. Remote or production
+hosts, cache mismatch, unattributed metadata and crashed locks fail closed.
+Locks are never stolen or expired. App copy-retention policy remains separate
+from native borrower facts; this is not distributed fencing.
 
-Validated locally:
+Stable native identity receipts accompany resource names: VM IDs and snapshot
+digests plus artifact paths come from successful SDK allocation results. Cleanup
+refuses a replacement that reused a name. Snapshot absence is checked at its
+recorded artifact path, because the SDK snapshot index is rebuildable; removal
+keeps native child/dependency protection enabled. Fork artifact version 2 retains
+the captured digest and verifies its manifest before restore. Mutable state
+snapshot restoration performs the same identity check. Earlier name-only
+fork/resource records are unsupported.
 
-- Both agents compile; all eight app type tasks and root lint pass. Guest and
-  authenticated create/send/stream/reconnect/cancel run through the real proxy.
-- Owner document create/edit, stale revision rejection, browser approval and
-  foreign rejection pass. The integration fixed disabled approval controls.
-- Authenticated upload, native attachment URL replay and Edit restoration pass;
-  foreign download/submission is rejected. Transport uses a disposable Blob fixture.
-- App SIGKILL after native acceptance leaves the same dispatch unknown after
-  restart and does not resend. A separate native post-commit SIGKILL retains its
-  checkpoint and copy boundary after restart.
-- A real native owner captured a VM checkpoint, the source advanced, and a copy
-  read the original file under its own session ID. Foreign checkpoint access was
-  rejected. Development stop preserved receipts; `eve dev --resume` restored the
-  source's latest file in the same VM. Final owned session cleanup reached zero.
-- Real SDK resource checks cover retirement/allocation races, unknown allocation,
-  source cleanup with a live child, failed removal/retry and replacement identity
-  rejection. The authenticated worker route separately verifies copy retention.
-- All 60 native workspace type tasks, targeted unit/integration tests, lint,
-  invariant guard and docs checks pass. The shutdown regression failed before
-  repair because it lost ownership metadata, and passes with preserved receipts.
-
-Source-owner/VM host evidence: `/tmp/eve080-owner-vm-persisted-final.log`,
-`/tmp/eve080-owner-vm-events.json`, `/tmp/eve080-owner-vm-metadata.json`,
-`/tmp/eve080-owner-vm-resumed.json`, `/tmp/eve080-owner-vm-final-cleanup.log`.
-Provider evidence and reproduction:
-[resource proof](research/chatjs-native-checkpoints/README.md#local-resource-retirement).
-
-### Limits and release gates
-
-Resource retirement is explicitly local: `MSB_BACKEND=local`, one canonical
-cache, matching HOME/MSB_HOME, and an absolute MSB_HOME when set. Remote or
-production hosts, cache mismatch, unattributed metadata and crashed locks fail
-closed. Locks are never stolen or expired. This is not distributed fencing.
-App copy-retention policy remains separate from native borrower facts.
-
-The earlier owner/VM proof uses a deterministic authored tool fixture. The
-[combined authenticated app evidence](https://github.com/FranciscoMoretti/chat-js/blob/ec381a867/apps/chat/tests/eve-upgrade/REQUIREMENTS.md)
-now also verifies document revisions, owned files and bound reservations with an
-actual immutable VM fork, plus an independently allocated saved public copy.
-Authenticated MCP checks use real connector rows, current database policy and
-owner approval receipts with disposable HTTP transport. The temporary fetch/dispatcher
-injection used for that transport does not verify live OAuth, SSRF or DNS pinning.
-There is no claim of a kill inside the native checkpoint commit window: that boundary has injected storage
-fault coverage, while actual native SIGKILL occurs after commit. Early failing
-shutdown fixtures are retained for inspection when their ownership or allocation
-receipt is unknown; final successful fixture sessions were purged.
-
-Local approval route captures pass in four viewport/theme variants. Fleet visual
-comparison was blocked by missing `UIVERIFY_API_KEY`. Full CI/scenario/e2e tiers
-and production deployment were not run locally. The PostgreSQL consumed-prefix
-patch remains separate. Review CI, distribution/release policy and production
-resource authority before adoption; no maintained merge, release, deployment,
-live database migration or production pin change is authorized by this draft.
+Fresh extensions must use the current checkpoint, sandbox and protocol contract
+versions. No legacy session or billing import is supported. Package publication
+and production resource authority must be resolved before adoption.
 
 ---
 
@@ -274,12 +215,3 @@ Please do not open public issues for security vulnerabilities. Instead, follow
 
 eve is currently in beta and subject to the [Vercel beta terms](https://vercel.com/docs/release-phases/public-beta-agreement);
 the framework, APIs, documentation, and behavior may change before general availability.
-
-Stable native identity receipts accompany resource names: VM IDs and snapshot
-digests plus artifact paths come from successful SDK allocation results. Cleanup
-refuses a replacement that reused a name. Snapshot absence is checked at its
-recorded artifact path, because the SDK snapshot index is rebuildable; snapshot
-removal also keeps native child/dependency protection enabled. Fork artifact
-version 2 retains the captured digest, resolves its indexed path and verifies the
-manifest before restore. Mutable state snapshot restoration performs the same
-identity check. Earlier name-only fork/resource records are unsupported.
