@@ -9,6 +9,13 @@ create an issue solely to accompany this pull request. Call out breaking
 changes, preserved behavior, scope boundaries, or stacked PRs when relevant.
 -->
 
+### Fork impact and companion changes
+
+<!-- Link companion ChatJS PRs, or explain why none is needed. List inventory
+entries added, narrowed, or removed and the responsibility that remains. State
+merge versus package-adoption dependencies. Link existing upstream discussions
+and describe the supported contract or product change that retires each patch. -->
+
 ### Validation
 
 <!--
@@ -17,6 +24,8 @@ results or limitations. Explain when tests are not applicable.
 -->
 
 ### Checklist
+
+- [ ] README fork inventory updated, or "inventory reviewed; no change" explained above
 
 - [ ] This change was requested or approved by a maintainer
 - [ ] I ran the relevant checks from `CONTRIBUTING.md`

@@ -1,3 +1,39 @@
+## ChatJS fork inventory
+
+This inventory describes the maintained `francisco/chatjs-package` branch relative to
+upstream [`eve@0.61.0` (`241e5004`)](https://github.com/vercel/eve/commit/241e5004cb1ac1e2bcd716a154bbc64f5a61cc53).
+It is a list of our remaining patches, not a claim that newer upstream releases lack them.
+[Build and distribution details](CHATJS.md).
+
+| Change                                | What it does / why it remains                                                                                                                                                | Removal condition                                                                                                                                                           |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact approval receipts               | Binds execution to the winning authenticated approval. ChatJS rechecks owner and current tool policy at execution time.                                                      | A supported runtime preserves the same call/input/approver binding and callback through rediscovery, cancellation and restart.                                              |
+| Message metadata and identity         | Carries caller operation IDs and tool selection to the exact received message; keeps replayed message IDs stable. Pending sends and annotations use this evidence.           | Supported correlation on create/send retains every coalesced caller token; ChatJS owns display annotations.                                                                 |
+| Creation-operation lookup             | Binds an authenticated immutable creation operation to its allocated session. Lost responses must not create another conversation.                                           | Supported lookup recovers the same allocation without reissuing uncertain work.                                                                                             |
+| Completion-hook results               | Persists auxiliary response annotations such as follow-up suggestions, outside model history.                                                                                | Supported durable result delivery preserves exact-turn targeting, replay and copy behavior, or ChatJS replaces this feature.                                                |
+| Compaction and hook model accounting  | Emits per-call compaction usage and hook `modelCalls`; current ChatJS billing consumes these fork fields.                                                                    | Adopt [application-owned billing](https://github.com/FranciscoMoretti/chat-js/pull/842), then remove these events/types. Keep independent tool charges and display results. |
+| Ordinary step usage                   | Normalizes token/cost fields and gateway generation IDs on ordinary step events. Runtime usage evidence remains available independently of application billing.              | Supported step usage covers remaining consumers, or verified-unused extra fields can be removed.                                                                            |
+| Checkpoints and forks                 | Captures/reads/restores native and named boundaries, including document and sandbox state. Conversation branching needs a consistent snapshot.                               | Supported checkpoints and owned forks pass boundary, state-restoration and resource-isolation tests.                                                                        |
+| History import and projection         | Imports trusted transcript seeds and restores history with stable message/tool identities, annotations and model display. New conversation copies still need this.           | Supported authenticated import/fork APIs preserve these semantics without replaying inherited tools or billing.                                                             |
+| Attachment staging                    | Resolves owned files and stages copied/seeded attachments, with retry after staging failure.                                                                                 | Supported file resolution preserves ownership and complete attachment content through copy/fork.                                                                            |
+| Sandbox lifecycle                     | Adds local identity receipts, owned checkpoints, cleanup and Microsandbox 0.6 lifecycle/serialized mutations. Prevents foreign-resource deletion and preserves forked files. | Supported backend APIs provide equivalent ownership, snapshot and cleanup guarantees for the selected SDK.                                                                  |
+| Resumable HTTP streams                | Adds tail positions, bounded reads, heartbeats and lease-end control frames. Clients reconnect without treating controls as messages.                                        | Supported transport resumes exact durable positions and bounds idle connections.                                                                                            |
+| Next production startup               | Starts local/named workers during production-server initialization, before rewrite handling.                                                                                 | A supported Next integration passes production startup and routing checks.                                                                                                  |
+| Distribution and protocol integration | Ships `@chat-js/eve` with matching exports, compiler/stream capabilities and stable workflow identities; retains ordinary step usage evidence.                               | All required runtime contracts are supported, the application passes against that release, and the scoped package plus remaining integration patches can be dropped.        |
+
+**Every fork PR must update this inventory:** add or revise affected rows and their
+removal conditions, delete rows when their patches are retired, and state “inventory
+reviewed; no change” in the PR when no row changes. Rebase/upgrade PRs must update the
+comparison baseline and re-evaluate each row. Each PR must link its companion ChatJS
+PR (or explain why none is needed), summarize entries added/narrowed/removed, and
+state application/package adoption order. Link upstream issues or discussions when
+known; distinguish an upstream implementation from a verified replacement for our
+contract. Fresh-start deployment requires no
+old-session continuation or historical billing import. PostgreSQL-world patches live
+in ChatJS and are tracked separately from this eve fork.
+
+---
+
 <div align="center">
   <a href="https://eve.dev/">
     <picture>
