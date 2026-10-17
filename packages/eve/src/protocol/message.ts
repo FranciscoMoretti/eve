@@ -643,17 +643,6 @@ export interface CompactionRequestedStreamEvent {
   type: "compaction.requested";
 }
 
-/** Usage returned by one compaction model call, including rejected summary attempts. */
-export interface CompactionUsageStreamEvent {
-  data: Pick<StepCompletedStreamEvent["data"], "usage" | "providerMetadata"> & {
-    modelId: string;
-    sequence: number;
-    sessionId: string;
-    turnId: string;
-  };
-  type: "compaction.usage";
-}
-
 /**
  * Stream event emitted after one compaction checkpoint message has been
  * appended to the durable session history.
@@ -770,12 +759,6 @@ export interface HookResultStreamEvent {
     readonly hookId: string;
     readonly turnId: string;
     readonly responseMetadata?: JsonObject;
-    readonly modelCalls?: readonly {
-      readonly failed?: boolean;
-      readonly modelId: string;
-      readonly usage?: StepCompletedStreamEvent["data"]["usage"];
-      readonly providerMetadata?: StepCompletedProviderMetadata;
-    }[];
   };
 }
 
@@ -832,7 +815,6 @@ export type UnstampedMessageStreamEvent =
   | ApprovalSettledStreamEvent
   | ContextClearedStreamEvent
   | CompactionCompletedStreamEvent
-  | CompactionUsageStreamEvent
   | CompactionRequestedStreamEvent
   | AuthorizationCompletedStreamEvent
   | AuthorizationRequiredStreamEvent
@@ -1922,11 +1904,4 @@ function formatActionResultOutput(output: unknown): string {
   }
 
   return "Action failed.";
-}
-
-/** Creates durable usage evidence for one completed compaction model call. */
-export function createCompactionUsageEvent(
-  data: CompactionUsageStreamEvent["data"],
-): CompactionUsageStreamEvent {
-  return { type: "compaction.usage", data };
 }

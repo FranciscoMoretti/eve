@@ -1442,9 +1442,9 @@ it("merges hook namespaces only into the matching assistant turn and replays det
     {
       type: "hook.result",
       data: {
-        hookId: "usage",
+        hookId: "suggestions",
         turnId: "turn_missing",
-        modelCalls: [{ modelId: "a", failed: true }],
+        responseMetadata: { items: ["Unmatched suggestion"] },
       },
     },
   ];

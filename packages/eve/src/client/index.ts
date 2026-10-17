@@ -105,7 +105,6 @@ export type {
   AssistantStepFinishReason,
   AuthorizationOutcome,
   CompactionCompletedStreamEvent,
-  CompactionUsageStreamEvent,
   CompactionRequestedStreamEvent,
   AuthorizationCompletedStreamEvent,
   ConnectionAuthorizationOutcome,

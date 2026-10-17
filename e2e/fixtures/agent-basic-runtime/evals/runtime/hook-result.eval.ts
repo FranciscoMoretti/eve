@@ -2,8 +2,7 @@ import { defineEval } from "eve/evals";
 import { equals } from "eve/evals/expect";
 
 export default defineEval({
-  description:
-    "Completion hook annotations and attempt evidence persist before idle and replay over the wire.",
+  description: "Completion hook annotations persist before idle and replay over the wire.",
   async test(t) {
     const turn = await t.send("Reply briefly.", { messageMetadata: { hookResultFixture: true } });
     turn.notEvent("turn.failed");
@@ -11,10 +10,6 @@ export default defineEval({
     await t.require(
       result?.type === "hook.result" ? result.data.responseMetadata : undefined,
       equals({ suggestions: ["Fixture next step"] }),
-    );
-    await t.require(
-      result?.type === "hook.result" ? result.data.modelCalls : undefined,
-      equals([{ modelId: "fixture-uncompleted", failed: true }]),
     );
     const types = turn.events.map((event) => event.type);
     await t.require(

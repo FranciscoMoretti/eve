@@ -135,7 +135,7 @@ it("never substitutes an ordinary turn boundary for a named checkpoint", async (
   expect(output).toEqual([]);
 });
 
-it("inherits hook annotations without copying auxiliary usage evidence", async () => {
+it("inherits hook annotations through history restoration", async () => {
   const { writable, output } = setup([
     {
       type: "hook.result",
@@ -143,7 +143,6 @@ it("inherits hook annotations without copying auxiliary usage evidence", async (
         hookId: "suggestions",
         turnId: "turn_0",
         responseMetadata: { items: ["Next?"] },
-        modelCalls: [{ modelId: "billed-model", usage: { costUsd: 1 } }],
       },
     },
     createTurnStartedEvent({ sequence: 1, turnId: "turn_1" }),
@@ -151,6 +150,4 @@ it("inherits hook annotations without copying auxiliary usage evidence", async (
   await restoreSessionHistory({ fork, writable });
   const text = output.map((chunk) => new TextDecoder().decode(chunk)).join("");
   expect(text).toContain("Next?");
-  expect(text).not.toContain("modelCalls");
-  expect(text).not.toContain("billed-model");
 });
