@@ -53,12 +53,10 @@ it("reconnects the source after failed immutable capture and never substitutes a
   const snapshot = vi.fn(async () => {
     throw new Error("snapshot failed");
   });
-  const lookup = vi.fn(async () => {
-    throw new Error("snapshot not found");
-  });
+  const lookup = vi.fn(async () => []);
   const module = {
     Sandbox: { start, get: async () => ({ stopWithTimeout: async () => {}, snapshot }) },
-    Snapshot: { get: lookup },
+    Snapshot: { list: lookup },
   };
   const vm = new MicrosandboxVm(
     {
@@ -102,14 +100,16 @@ it("does not finish stopping until the persisted VM has stopped, so resume canno
   expect(detach).toHaveBeenCalledOnce();
 });
 
-vi.mock("#execution/sandbox/bindings/microsandbox-metadata.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("#execution/sandbox/bindings/microsandbox-metadata.js")>();
-  return {
-    ...actual,
-    writeSessionMetadata: metadataState.writeSessionMetadata,
-  };
-});
+// Resource ownership and retirement races have filesystem integration coverage;
+// these unit cases own SDK lifecycle ordering and network-policy behavior.
+vi.mock("#execution/sandbox/bindings/microsandbox-resource-metadata.js", () => ({
+  updateMicrosandboxMaterialization: (path: string, _sessionId: string, metadata: unknown) =>
+    metadataState.writeSessionMetadata(path, metadata),
+  withMicrosandboxResourceOperation: (input: {
+    resource: { name: string };
+    run: (previouslyLive: boolean) => Promise<unknown>;
+  }) => input.run(input.resource.name === "eve-sbx-ses-old"),
+}));
 
 // The microsandbox native bindings ship for macOS (Apple Silicon) and
 // glibc Linux only; keep every microsandbox suite off Windows.
@@ -718,6 +718,9 @@ function createMockMicrosandboxModule(
   const module = {
     MicrosandboxError: class extends Error {},
     Sandbox: {
+      async listWith() {
+        return { sandboxes: [] };
+      },
       async get() {
         return oldHandle;
       },
@@ -729,6 +732,9 @@ function createMockMicrosandboxModule(
       },
     },
     Snapshot: {
+      async list() {
+        return [];
+      },
       async get(snapshotName: string) {
         if (!snapshots.has(snapshotName)) {
           throw new Error(`snapshot store unavailable for ${snapshotName}`);

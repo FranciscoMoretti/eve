@@ -125,3 +125,15 @@ export function readSkillFileSource(args: RouteHandlerArgs): SkillFileSource | u
   const routeArgs: InternalRouteArgs = args;
   return routeArgs[skillFileSourceKey];
 }
+
+const localSandboxRoots = new WeakMap<RouteHandlerArgs, string>();
+
+export function attachLocalSandboxAppRoot(args: RouteHandlerArgs, appRoot: string): void {
+  localSandboxRoots.set(args, appRoot);
+}
+
+export function requireLocalSandboxAppRoot(args: RouteHandlerArgs): string {
+  const root = localSandboxRoots.get(args);
+  if (root === undefined) throw new Error("Local sandbox authority is unavailable in this host.");
+  return root;
+}

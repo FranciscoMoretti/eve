@@ -117,3 +117,30 @@ Restored history carries the retained checkpoint `beforeTurnId` together with it
 events. Application document history uses this exact boundary to recover inherited
 revision lineage without guessing from visible messages or introducing a legacy
 history decoder. The restore integration test checks the boundary and events.
+
+## Local resource retirement
+
+`manageLocalMicrosandboxResources(routeContext, input)` is the minimal retained
+provider contract for the application cleanup coordinator. It reads the actual
+local host root from the route dispatcher; `expectedAppRoot` only checks that
+root. The application authenticates the caller, authorizes the exact deleting
+session or fenced descendant, and decides whether retained checkpoints and
+accepted/pending copy references can be released. The provider owns exact VM,
+state snapshot and fork snapshot names and their allocation/removal phases in
+its existing session metadata. Borrowed snapshots retain source provenance.
+
+This implementation is limited to the local development host with explicit
+`MSB_BACKEND=local`, one canonical cache and matching local HOME/MSB_HOME settings.
+It provides no remote or distributed fencing. Retirement and allocation intent
+use the same per-session cache lock. Crashed locks are never stolen or expired;
+interrupted allocation remains unknown even if a later SDK list is empty. Failed
+removal remains retryable, and removal completes only after exact provider
+absence is confirmed. Metadata without ownership facts is rejected, not migrated.
+
+Run `MSB_BACKEND=local node research/chatjs-native-checkpoints/verify-resource-cleanup.mjs`
+after building eve. The disposable SDK 0.6.18 proof exercises both allocation/
+retirement orderings, a real created VM whose allocation response is lost, live
+consumer retention, source VM removal, and failed snapshot removal followed by
+confirmed retry. The harness explicitly removes its own returned VM after the
+lost-response assertion; this is fixture teardown, not an automatic reconciliation
+policy. It leaves metadata in the printed temporary directory for inspection.

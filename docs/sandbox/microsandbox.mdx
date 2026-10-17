@@ -36,3 +36,27 @@ The checkpoint owner must retain and eventually release them. This provider
 capability alone does not expose a conversation checkpoint or fork endpoint.
 
 See the [sandbox overview](/docs/sandbox) for managed workspace, skills, parent inheritance, and custom providers.
+
+## Local resource retirement
+
+Local session resources require `MSB_BACKEND=local`. eve records their exact
+native names and allocation/removal state in the session cache. Failed allocation
+may remain unknown and cannot be retried automatically. Failed removal remains
+pending until a later removal confirms absence. Existing metadata without these
+ownership facts cannot be resumed by this fork.
+
+Applications can import `manageLocalMicrosandboxResources` from
+`eve/sandbox/microsandbox` inside an authenticated local channel route. Pass the
+route context and `{ sessionId, expectedAppRoot, action: "retire" | "purge",
+releaseForkSnapshots }`. Authorize the exact session and fence application
+admission first. Retire all relevant sessions before purging; remove consumer
+resources before releasing their source snapshots. Only set
+`releaseForkSnapshots` after application checkpoint and pending/accepted copy
+references are retired. A nonzero `remaining` result means resources are retained;
+an error never confirms cleanup.
+
+The worker selects its actual cache; `expectedAppRoot` only checks locality.
+This operation is supported only by the local development host with one shared
+canonical cache and matching HOME/MSB_HOME settings. Remote and production hosts
+are rejected. Locks do not expire or transfer ownership after a crash. These
+local locks do not provide distributed fencing.

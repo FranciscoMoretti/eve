@@ -43,6 +43,6 @@ describe("loadMicrosandboxModule", () => {
         },
         options: resolveMicrosandboxOptions({ setup: { autoInstall: false } }),
       }),
-    ).rejects.toThrow(/microsandbox@0\.7\.0[\s\S]*pnpm add -D microsandbox@0\.5\.5/u);
+    ).rejects.toThrow(/microsandbox@0\.7\.0[\s\S]*pnpm add -D microsandbox@0\.6\.18/u);
   });
 });

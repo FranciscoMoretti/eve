@@ -24,6 +24,48 @@ export interface MicrosandboxSessionMetadata {
   readonly sandboxName: string;
   readonly stateSnapshotName?: string;
   readonly version: typeof MICROSANDBOX_METADATA_VERSION;
+  readonly resources?: MicrosandboxResourceMetadata;
+}
+
+export interface MicrosandboxResourceFact {
+  readonly kind: "sandbox" | "state-snapshot" | "fork-snapshot";
+  readonly name: string;
+  readonly phase: "allocating" | "live" | "removing" | "removed";
+}
+
+/** Local provider facts, independent of application retention policy. */
+export interface MicrosandboxResourceMetadata {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly authority: string;
+  readonly borrowedForkSnapshot?: string;
+  readonly entries: readonly MicrosandboxResourceFact[];
+}
+
+function isResourceFact(value: unknown): value is MicrosandboxResourceFact {
+  return (
+    isRecord(value) &&
+    ["sandbox", "state-snapshot", "fork-snapshot"].includes(String(value.kind)) &&
+    typeof value.name === "string" &&
+    value.name.length > 0 &&
+    ["allocating", "live", "removing", "removed"].includes(String(value.phase))
+  );
+}
+
+function isResourceMetadata(value: unknown): value is MicrosandboxResourceMetadata {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.sessionId === "string" &&
+    value.sessionId.length > 0 &&
+    typeof value.authority === "string" &&
+    value.authority.length > 0 &&
+    (value.borrowedForkSnapshot === undefined || typeof value.borrowedForkSnapshot === "string") &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isResourceFact) &&
+    new Set(value.entries.map((entry) => `${entry.kind}:${entry.name}`)).size ===
+      value.entries.length
+  );
 }
 
 export function createMicrosandboxSessionMetadata(input: {
@@ -96,6 +138,9 @@ export function readSessionMetadataRecord(value: unknown): MicrosandboxSessionMe
   ) {
     return null;
   }
+  if (value.resources !== undefined && !isResourceMetadata(value.resources)) {
+    throw new Error("Invalid microsandbox resource metadata.");
+  }
   return {
     image: typeof value.image === "string" ? value.image : undefined,
     networkPolicy: value.networkPolicy,
@@ -104,6 +149,7 @@ export function readSessionMetadataRecord(value: unknown): MicrosandboxSessionMe
     stateSnapshotName:
       typeof value.stateSnapshotName === "string" ? value.stateSnapshotName : undefined,
     version: MICROSANDBOX_METADATA_VERSION,
+    resources: value.resources,
   };
 }
 

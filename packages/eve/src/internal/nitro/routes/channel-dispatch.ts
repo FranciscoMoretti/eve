@@ -19,6 +19,7 @@ import {
   attachAgentInfoRouteResponse,
   attachHomeRouteMetadata,
   attachRouteChannelName,
+  attachLocalSandboxAppRoot,
   attachRemoteAgentStreamHeadersResolver,
   attachRouteSessionCreator,
   attachSkillFileSource,
@@ -314,6 +315,7 @@ async function buildRouteArgs(
       }),
   );
   attachSkillFileSource(args, agent.skillFiles);
+  if (config.kind === "development") attachLocalSandboxAppRoot(args, config.appRoot);
   if (bundle.resolveRemoteAgentStreamHeaders !== undefined) {
     attachRemoteAgentStreamHeadersResolver(args, bundle.resolveRemoteAgentStreamHeaders);
   }

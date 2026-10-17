@@ -4,6 +4,7 @@ type NetworkPolicySandboxSession = SandboxSession & {
   setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
 };
 import { randomUUID } from "node:crypto";
+import { initializeMicrosandboxResourceMetadata } from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 
 import {
   hydrateSandboxProviderResources,
@@ -230,6 +231,7 @@ export async function createMicrosandboxHandle(input: {
   readonly providerName: string;
   readonly runtimeOptions?: MicrosandboxSandboxRuntimeOptions;
   readonly sessionIdentity?: string;
+  readonly borrowedForkSnapshot?: string;
 }): Promise<{
   readonly handle: SandboxProviderHandle<NetworkPolicySandboxSession>;
   readonly state: {
@@ -256,6 +258,19 @@ export async function createMicrosandboxHandle(input: {
     ...image,
     networkPolicy: input.runtimeOptions?.networkPolicy,
   };
+  const sandboxName = createProviderName("eve-sbx-ses", sessionIdentity);
+  await initializeMicrosandboxResourceMetadata({
+    path: metadataPath,
+    sessionId: input.context.session.id,
+    borrowedForkSnapshot: input.borrowedForkSnapshot,
+    metadata: {
+      version: MICROSANDBOX_METADATA_VERSION,
+      optionsHash: input.optionsHash,
+      sandboxName,
+      image: options.image,
+      networkPolicy: options.networkPolicy,
+    },
+  });
   const module = await loadMicrosandboxModule({ host: input.context.host, options });
   const activeSessionKey = createActiveMicrosandboxSessionKey(sessionRootPath, input.optionsHash);
   const activeHandle = activeMicrosandboxSessionHandles.get(activeSessionKey);
@@ -308,9 +323,9 @@ export async function createMicrosandboxHandle(input: {
       templateKey: preparedTemplate.snapshotName,
     });
   }
-  const sandboxName = createProviderName("eve-sbx-ses", sessionIdentity);
   const sandbox = await createPreparedMicrosandbox({
     fromSnapshot: preparedTemplate.snapshotName,
+    metadataPath,
     module,
     name: sandboxName,
     networkPolicy: options.networkPolicy,

@@ -1,3 +1,7 @@
+import {
+  updateMicrosandboxMaterialization,
+  withMicrosandboxResourceOperation,
+} from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { posix } from "node:path";
@@ -17,7 +21,7 @@ import {
   createMicrosandboxSessionMetadata,
   MICROSANDBOX_METADATA_VERSION,
   type MicrosandboxSessionMetadata,
-  writeSessionMetadata,
+  type MicrosandboxResourceFact,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
   assertMicrosandboxPlatformCandidate,
@@ -115,18 +119,32 @@ export class MicrosandboxVm {
       "eve-sbx-fork",
       `${this.#input.sessionKey}:${checkpointKey}`,
     );
-    try {
-      await this.#input.module.Snapshot.get(snapshotName);
-      return snapshotName;
-    } catch (error) {
-      if (!isMicrosandboxNotFoundError(error)) throw error;
-    }
-    try {
-      await this.stopAndSnapshot(snapshotName);
-    } finally {
-      // A copy capture must leave the source usable, including after a failed snapshot.
-      this.#sandbox = await this.#input.module.Sandbox.start(this.#sandboxName);
-    }
+    await this.resourceOperation(
+      "fork-snapshot",
+      snapshotName,
+      "allocate",
+      async (previouslyLive) => {
+        if (previouslyLive) {
+          await this.#input.module.Snapshot.get(snapshotName);
+          return;
+        }
+        const snapshots = await this.#input.module.Snapshot.list();
+        if (snapshots.some((snapshot) => snapshot.name === snapshotName)) {
+          throw new Error("Microsandbox fork snapshot already exists without ownership.");
+        }
+        try {
+          await this.stopAndSnapshot(snapshotName);
+        } finally {
+          // Restart is fenced independently: retirement may have raced capture.
+          this.#sandbox = await this.resourceOperation(
+            "sandbox",
+            this.#sandboxName,
+            "allocate",
+            () => this.#input.module.Sandbox.start(this.#sandboxName),
+          );
+        }
+      },
+    );
     return snapshotName;
   }
 
@@ -150,13 +168,15 @@ export class MicrosandboxVm {
       `${this.#input.sessionKey}:${randomUUID()}`,
     );
 
-    await this.stopAndSnapshot(stateSnapshotName);
+    await this.resourceOperation("state-snapshot", stateSnapshotName, "allocate", () =>
+      this.stopAndSnapshot(stateSnapshotName),
+    );
     this.#stateSnapshotName = stateSnapshotName;
     if (this.#metadataPath !== undefined) {
       await this.writeMetadata(this.#metadataPath, optionsHash);
     }
     if (previousStateSnapshotName !== undefined) {
-      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
+      await this.removeResource("state-snapshot", previousStateSnapshotName);
     }
     return createMicrosandboxSessionMetadata({
       networkPolicy: this.#networkPolicy,
@@ -213,12 +233,12 @@ export class MicrosandboxVm {
   }
 
   async removePersisted(): Promise<void> {
-    await removeSandboxIfExists(this.#input.module, this.#sandboxName);
+    await this.removeResource("sandbox", this.#sandboxName);
     const stateSnapshotName = this.#stateSnapshotName;
     if (stateSnapshotName === undefined) {
       return;
     }
-    await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
+    await this.removeResource("state-snapshot", stateSnapshotName);
     this.#stateSnapshotName = undefined;
   }
 
@@ -230,8 +250,10 @@ export class MicrosandboxVm {
     );
     const previousSandboxName = this.#sandboxName;
 
-    await this.stopAndSnapshot(stateSnapshotName);
-    await removeSandboxIfExists(this.#input.module, previousSandboxName);
+    await this.resourceOperation("state-snapshot", stateSnapshotName, "allocate", () =>
+      this.stopAndSnapshot(stateSnapshotName),
+    );
+    await this.removeResource("sandbox", previousSandboxName);
 
     const nextSandboxName = createProviderName(
       "eve-sbx-ses",
@@ -239,6 +261,8 @@ export class MicrosandboxVm {
     );
     this.#sandbox = await createMicrosandbox({
       fromSnapshot: stateSnapshotName,
+      metadataPath: this.#metadataPath,
+      sessionKey: this.#input.sessionKey,
       module: this.#input.module,
       name: nextSandboxName,
       networkPolicy: policy,
@@ -253,9 +277,9 @@ export class MicrosandboxVm {
     if (this.#metadataPath !== undefined && this.#optionsHash !== undefined) {
       await this.writeMetadata(this.#metadataPath, this.#optionsHash);
     }
-    await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
+    await this.removeResource("state-snapshot", stateSnapshotName);
     if (previousStateSnapshotName !== undefined) {
-      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
+      await this.removeResource("state-snapshot", previousStateSnapshotName);
     }
   }
 
@@ -319,13 +343,38 @@ export class MicrosandboxVm {
   async writeMetadata(path: string, optionsHash: string): Promise<void> {
     this.#metadataPath = path;
     this.#optionsHash = optionsHash;
-    await writeSessionMetadata(path, {
+    await updateMicrosandboxMaterialization(path, this.#input.sessionKey, {
       image: this.#input.options.image,
       networkPolicy: this.#networkPolicy,
       optionsHash,
       sandboxName: this.#sandboxName,
       stateSnapshotName: this.#stateSnapshotName,
       version: MICROSANDBOX_METADATA_VERSION,
+    });
+  }
+
+  private async resourceOperation<T>(
+    kind: MicrosandboxResourceFact["kind"],
+    name: string,
+    operation: "allocate" | "remove",
+    run: (previouslyLive: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (this.#metadataPath === undefined) return await run(false);
+    return await withMicrosandboxResourceOperation({
+      path: this.#metadataPath,
+      sessionId: this.#input.sessionKey,
+      resource: { kind, name },
+      operation,
+      run,
+    });
+  }
+
+  private async removeResource(
+    kind: MicrosandboxResourceFact["kind"],
+    name: string,
+  ): Promise<void> {
+    await this.resourceOperation(kind, name, "remove", async () => {
+      await removeMicrosandboxResource(this.#input.module, { kind, name });
     });
   }
 
@@ -349,6 +398,7 @@ export class MicrosandboxVm {
 }
 
 export async function createPreparedMicrosandbox(input: {
+  readonly metadataPath?: string;
   readonly fromSnapshot?: string;
   readonly log?: (message: string) => void;
   readonly module: MicrosandboxModule;
@@ -363,6 +413,8 @@ export async function createPreparedMicrosandbox(input: {
   const initialNetworkPolicy = input.setupBaseRuntime ? "allow-all" : input.networkPolicy;
   const sandbox = await createMicrosandbox({
     fromSnapshot: input.fromSnapshot,
+    metadataPath: input.metadataPath,
+    sessionKey: input.sessionKey,
     log: input.log,
     module: input.module,
     name: input.name,
@@ -384,6 +436,7 @@ export async function createPreparedMicrosandbox(input: {
     sandbox,
     input.name,
     initialNetworkPolicy,
+    input.metadataPath,
   );
 
   if (input.setupBaseRuntime) {
@@ -428,10 +481,18 @@ export async function connectMicrosandbox(input: {
     return await restoreMicrosandboxSessionSnapshot(input);
   }
 
-  const sandbox =
-    handle.status === "running" || handle.status === "draining"
-      ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
-      : await handle.startDetached();
+  const sandbox = await withMicrosandboxResourceOperation({
+    path: input.metadataPath,
+    sessionId: input.sessionKey,
+    resource: { kind: "sandbox", name: input.metadata.sandboxName },
+    operation: "allocate",
+    run: async (previouslyLive) => {
+      if (!previouslyLive) throw new Error("Microsandbox resume ownership is unavailable.");
+      return handle.status === "running" || handle.status === "draining"
+        ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
+        : await handle.startDetached();
+    },
+  });
 
   return new MicrosandboxVm(
     {
@@ -467,6 +528,8 @@ async function restoreMicrosandboxSessionSnapshot(input: {
   const sandboxName = createProviderName("eve-sbx-ses", `${input.sessionKey}:${randomUUID()}`);
   const sandbox = await createMicrosandbox({
     fromSnapshot: input.metadata.stateSnapshotName,
+    metadataPath: input.metadataPath,
+    sessionKey: input.sessionKey,
     module: input.module,
     name: sandboxName,
     networkPolicy: input.metadata.networkPolicy,
@@ -475,7 +538,17 @@ async function restoreMicrosandboxSessionSnapshot(input: {
     user: MICROSANDBOX_USER,
     workdir: WORKSPACE_ROOT,
   });
-  await removeSandboxIfExists(input.module, input.metadata.sandboxName);
+  await withMicrosandboxResourceOperation({
+    path: input.metadataPath,
+    sessionId: input.sessionKey,
+    resource: { kind: "sandbox", name: input.metadata.sandboxName },
+    operation: "remove",
+    run: () =>
+      removeMicrosandboxResource(input.module, {
+        kind: "sandbox",
+        name: input.metadata.sandboxName,
+      }),
+  });
 
   const vm = new MicrosandboxVm(
     {
@@ -655,6 +728,8 @@ export async function doesPathExist(path: string): Promise<boolean> {
 }
 
 async function createMicrosandbox(input: {
+  readonly metadataPath?: string;
+  readonly sessionKey?: string;
   readonly fromSnapshot?: string;
   readonly log?: (message: string) => void;
   readonly module: MicrosandboxModule;
@@ -673,7 +748,6 @@ async function createMicrosandbox(input: {
     .labels(resolveMicrosandboxLabels(input.tags))
     .memory(input.options.memoryMiB)
     .pullPolicy(input.options.pullPolicy)
-    .replace()
     .workdir(input.workdir);
 
   if (input.fromSnapshot !== undefined) {
@@ -699,11 +773,25 @@ async function createMicrosandbox(input: {
     input.fromSnapshot === undefined
       ? `image "${input.options.image}"`
       : `snapshot "${input.fromSnapshot}"`;
-  return await createMicrosandboxWithProgress({
-    builder: applyMicrosandboxNetwork(builder, input.networkPolicy),
-    errorType: input.module.MicrosandboxError,
-    log: input.log,
-    source,
+  if (input.metadataPath === undefined) builder = builder.replace();
+  const create = () =>
+    createMicrosandboxWithProgress({
+      builder: applyMicrosandboxNetwork(builder, input.networkPolicy),
+      errorType: input.module.MicrosandboxError,
+      log: input.log,
+      source,
+    });
+  if (input.metadataPath === undefined) return await create();
+  if (input.sessionKey === undefined) throw new Error("Microsandbox session owner is required.");
+  return await withMicrosandboxResourceOperation({
+    path: input.metadataPath,
+    sessionId: input.sessionKey,
+    resource: { kind: "sandbox", name: input.name },
+    operation: "allocate",
+    run: async (previouslyLive) => {
+      if (previouslyLive) throw new Error("Microsandbox resource must be resumed, not replaced.");
+      return await create();
+    },
   });
 }
 
@@ -743,4 +831,29 @@ function resolveMicrosandboxLabels(
     "eve.provider": "microsandbox",
     ...withDevelopmentSandboxTags(tags),
   };
+}
+
+/** Confirms exact absence after removal; an SDK error message is not an absence proof. */
+export async function removeMicrosandboxResource(
+  module: MicrosandboxModule,
+  resource: Pick<MicrosandboxResourceFact, "kind" | "name">,
+): Promise<void> {
+  if (resource.kind !== "sandbox") {
+    await removeSnapshotIfExists(module, resource.name);
+    if ((await module.Snapshot.list()).some((snapshot) => snapshot.name === resource.name))
+      throw new Error("Microsandbox snapshot removal is unconfirmed.");
+    return;
+  }
+  await removeSandboxIfExists(module, resource.name);
+  let cursor: string | undefined;
+  for (let page = 0; page < 100; page += 1) {
+    const result = await module.Sandbox.listWith((builder) =>
+      cursor === undefined ? builder.limit(100) : builder.limit(100).cursor(cursor),
+    );
+    if (result.sandboxes.some((sandbox) => sandbox.name === resource.name))
+      throw new Error("Microsandbox removal is unconfirmed.");
+    cursor = result.nextCursor;
+    if (cursor === undefined) return;
+  }
+  throw new Error("Microsandbox removal verification exceeded its inventory limit.");
 }

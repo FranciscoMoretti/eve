@@ -76,6 +76,7 @@ export function createMicrosandboxSandboxProvider(
         }
         const result = await createMicrosandboxHandle({
           artifact: { ...artifact, snapshotName: snapshot.snapshotName },
+          borrowedForkSnapshot: snapshot.snapshotName,
           context,
           options,
           optionsHash,
@@ -133,6 +134,7 @@ export function createMicrosandboxSandboxProvider(
         artifact,
         context,
         createIfMissing: false,
+        borrowedForkSnapshot: state.forkSnapshotName,
         sessionIdentity: state.sessionIdentity,
         options,
         optionsHash,
