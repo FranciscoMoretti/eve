@@ -61,8 +61,13 @@ snapshot restoration performs the same identity check. Earlier name-only
 fork/resource records are unsupported.
 
 Fresh extensions must use the current checkpoint, sandbox and protocol contract
-versions. No legacy session or billing import is supported. Package publication
-and production resource authority must be resolved before adoption.
+versions. No legacy session or billing import is supported.
+
+The fork is published as `@chat-js/eve@0.80.1-chatjs.0`. ChatJS preserves the
+`eve` import name with the exact dependency alias
+`npm:@chat-js/eve@0.80.1-chatjs.0`. Prereleases use the `chatjs` dist-tag;
+consumers should pin an exact version. Production resource authority still
+requires separate validation before adoption.
 
 ---
 
