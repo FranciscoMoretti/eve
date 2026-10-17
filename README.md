@@ -1,6 +1,8 @@
 ## ChatJS 0.80.1 upgrade candidate
 
-**Incomplete and nondeployable: the guest agent passes; authenticated integration remains blocked.**
+**Integration remains incomplete and nondeployable.** Guest and authenticated create/send/reconnect/cancel, app crash fencing, checkpoint restart/copy, and local resource cleanup have evidence. Full authenticated approval/document/attachment flows and final integrated review remain.
+
+The sections below retain earlier checkpoints; current runtime resource candidate is `43e9d7d3`.
 [Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets the maintained
 `francisco/chatjs-package` branch, baseline
 `5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`. This candidate starts at exact upstream
@@ -44,24 +46,48 @@ that count can be updated; the app still uses candidate `6869c350` at this point
 The human chose a durable ChatJS intent journal and no automatic resend. A lost
 response may remain unknown permanently. The local native GET operation lookup
 extension has been removed; no native admission ledger is added. ChatJS owns a
-positive-only route using upstream `resolveSession`, with a small adapter pinned
-to 0.80.1's internal (not public) auth-scoped create-token derivation. Lookup
-absence never proves nonacceptance and never authorizes dispatch. This route is
-needed by existing tool-scope reconciliation when a native owner starts before
-the app receives and binds the creation response.
+positive-only seed/copy route using upstream `resolveSession`, with a small adapter
+pinned to 0.80.1's internal auth-scoped token derivation. This is separate from
+create/send admission. Lookup absence never proves nonacceptance and never
+authorizes dispatch.
 
 The app journal commits an operation before its sole native dispatch and retains
 known response bindings. Unknown entries remain reserved across later requests.
 This does not promise exact recovery after native acceptance and response loss.
 The adapter has a parity check against the installed candidate; future eve
-upgrades must rerun it. Full app integration and process-crash verification remain
-separate from the focused database/helper and proxy tests.
+upgrades must rerun it. The authenticated app SIGKILL proof now confirms that an accepted send with a lost
+response remains unknown after restart without another dispatch. This does not
+claim a kill within the native checkpoint commit window.
 
-| Original inventory group | Replacement evidence                                                                                                                           | Remaining integration gate                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Next production startup  | [Two agents, real build/start, negative control, concurrency and failure/retry](research/chatjs-next-startup/README.md)                        | Full ChatJS startup after compiler blockers are resolved                  |
-| Resumable HTTP streams   | [Six actual GET policy/relay to native HTTP scenarios](research/chatjs-native-streams/README.md), including exact cursor, real lease and abort | Adopt exact `follow=false` app allowlist; real full-app integration       |
-| Exact approval receipts  | [Accepted 15+3 runtime cases and five actual MCP/deletion consumer scenarios](research/chatjs-native-approvals/README.md)                      | Candidate response-policy accessor patch; real catalog/DB/app integration |
+**Implemented local resource retirement: `43e9d7d3`.**
+The existing microsandbox session metadata now records exact resource names,
+owner/cache identity, borrowed snapshot provenance and allocation/removal phases.
+`manageLocalMicrosandboxResources(routeContext, input)` uses the actual worker
+cache, while the app authenticates deletion, authorizes the owner and retains
+pending/accepted copy references under its existing owner lock. Per-session local
+locks fence allocation against retirement; uncertain allocation remains unknown,
+failed removal retries, and exact native absence confirms removal. Native borrower
+facts retain snapshots until their consumers are removed. No generic resource
+ledger or old sandbox-identity API is restored.
+
+This contract is limited to the local development host, explicit
+`MSB_BACKEND=local`, one canonical cache and matching HOME/MSB_HOME. Remote or
+production hosts, cache mismatch, unattributed metadata and crashed locks fail
+closed; locks are never stolen or expired. It is not distributed fencing. Remove
+the extension when upstream supplies equivalent current-provider ownership,
+retirement fencing and confirmed cleanup, preserving app retention policy.
+[The resource proof and limitations](research/chatjs-native-checkpoints/README.md#local-resource-retirement)
+cover actual SDK 0.6.18 VMs, both race orderings, lost allocation response, live
+consumer retention and failed removal/retry. The paired app's real authenticated
+worker route also rejects foreign ownership and preserves actual snapshots for
+preparing/accepted copy reservations. No live database or production resources
+were used.
+
+| Original inventory group | Replacement evidence                                                                                                                           | Remaining integration gate                                            |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Next production startup  | [Two agents, real build/start, negative control, concurrency and failure/retry](research/chatjs-next-startup/README.md)                        | Final packaged regression; both agents boot in the integrated app     |
+| Resumable HTTP streams   | [Six actual GET policy/relay to native HTTP scenarios](research/chatjs-native-streams/README.md), including exact cursor, real lease and abort | Final candidate regression; authenticated proxy/reconnect/cancel pass |
+| Exact approval receipts  | [Accepted 15+3 runtime cases and five actual MCP/deletion consumer scenarios](research/chatjs-native-approvals/README.md)                      | Full authenticated approval/document/MCP persistence flow             |
 
 Streaming's principal/database boundary and approvals' database/MCP persistence
 boundary are fixtures. No credential/getToken or workflow-context equivalence is
@@ -135,9 +161,13 @@ local candidate tarball. Production main's pin is unchanged.
   the existing native research harness passes adaptive research with independently
   charged search receipts and cancellation of owned children. It caught the
   structured reply rename to `eve__reply`. No provider model accounting claim.
-- Actual authenticated compiler has 31 remaining copy/seed/projection diagnostics.
-  Full repository lint/types remain blocked. Evidence and reproduction are in
-  ChatJS `apps/chat/tests/eve-upgrade/README.md`.
+- Current integrated app through `45b255efd` and the pending cleanup companion
+  passes all eight type-check tasks and root lint. Authenticated runtime, app
+  SIGKILL/no-resend, native restart/retained copy, causal display metadata and
+  local resource evidence are recorded in ChatJS
+  `apps/chat/tests/eve-upgrade/README.md`. This supersedes the earlier compiler
+  blocker counts below; remaining gates are full approval/document/attachment
+  flows and final integrated review.
 
 The published #848 route assertion was changed by autofix after its earlier green
 run; it is stale, not merge-ready. The integrated branch restores the exact mock
