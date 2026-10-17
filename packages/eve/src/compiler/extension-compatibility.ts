@@ -22,10 +22,10 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 93,
+    current: 94,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 76, 77, 78, 80, 81, 82, 84,
-      85, 86, 87, 88, 89, 90, 91, 93,
+      85, 86, 87, 88, 89, 90, 91, 94,
     ],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
@@ -87,14 +87,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       79: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       83: 'webSearch provider "openai" was replaced by "native" before it shipped in a release',
       92: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      93: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   dynamicTool: {
-    current: 87,
+    current: 88,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 31, 32, 33, 52, 54,
       60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84,
-      85, 87,
+      85, 88,
     ],
     dropped: {
       21: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -133,13 +134,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       71: "AI SDK evaluation models became decision models; auto() accepts decision models only",
       74: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       86: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      87: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   channel: {
-    current: 62,
+    current: 63,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 29, 31, 36, 37, 38, 39, 40, 41, 42,
-      43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 62,
+      43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 63,
     ],
     dropped: {
       12: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -160,26 +162,28 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       35: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       53: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       61: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      62: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   schedule: {
-    current: 34,
+    current: 35,
     supported: [
       1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
-      29, 30, 31, 32, 34,
+      29, 30, 31, 32, 35,
     ],
     dropped: {
       5: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
       16: 'Background task delivery was removed: sends no longer accept taskDeliveryPolicy and message.completed always carries text. input.resolved reports outcome "cancelled" when a workflow tool withdraws a ctx.ask() request, and stream events gained agent.started, published when a workflow run opens a ctx.agent session, and turn.waiting, which parks the open turn instead of emitting turn.completed and session.waiting.',
       17: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       33: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      34: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   subagent: {
-    current: 39,
+    current: 40,
     supported: [
       3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
-      34, 35, 36, 37, 39,
+      34, 35, 36, 37, 40,
     ],
     dropped: {
       1: "Persistent subagent sessions are now the default and the experimental opt-in was removed",
@@ -191,13 +195,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       21: 'Background task execution was removed: subagent results no longer carry backgroundTask, message.completed always carries text, and experimental.tasks is gone. input.resolved reports outcome "cancelled" when a workflow tool withdraws a ctx.ask() request, and stream events gained agent.started, published when a workflow run opens a ctx.agent session, and turn.waiting, which parks the open turn instead of emitting turn.completed and session.waiting.',
       22: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       38: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      39: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   connection: {
-    current: 51,
+    current: 52,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 32, 33, 34,
-      35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 51,
+      35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 52,
     ],
     dropped: {
       9: "Dynamic connection resolvers no longer receive conversation or channel continuation data",
@@ -211,11 +216,12 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       31: "Approval response policies now run for Cancel as well as Approve; a policy written for Approve only could reject every Cancel.",
       42: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       50: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      51: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   hook: {
-    current: 47,
-    supported: [20, 21, 22, 23, 25, 27, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 47],
+    current: 48,
+    supported: [20, 21, 22, 23, 25, 27, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 48],
     dropped: {
       1: "Model identity moved from session.started runtime metadata to step.started call attribution.",
       2: "Model identity moved from session.started runtime metadata to step.started call attribution.",
@@ -243,14 +249,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       30: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event hook events were removed; subscribe to task.started, task.settled, and agent.started.",
       40: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       46: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      47: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   skill: { current: 3, supported: [1, 2, 3], dropped: {} },
   dynamicSkill: {
-    current: 39,
+    current: 40,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30,
-      31, 32, 33, 34, 35, 36, 37, 39,
+      31, 32, 33, 34, 35, 36, 37, 40,
     ],
     dropped: {
       13: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -258,14 +265,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       23: 'Background task execution was removed: subagent results no longer carry backgroundTask and message.completed always carries text. input.resolved reports outcome "cancelled" when a workflow tool withdraws a ctx.ask() request, and stream events gained agent.started, published when a workflow run opens a ctx.agent session, and turn.waiting, which parks the open turn instead of emitting turn.completed and session.waiting.',
       24: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       38: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      39: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   instructions: { current: 2, supported: [1, 2], dropped: {} },
   dynamicInstructions: {
-    current: 40,
+    current: 41,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 26, 27, 28, 29, 30,
-      31, 32, 33, 34, 35, 36, 37, 38, 40,
+      31, 32, 33, 34, 35, 36, 37, 38, 41,
     ],
     dropped: {
       14: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -273,6 +281,7 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       24: 'Background task execution was removed: subagent results no longer carry backgroundTask and message.completed always carries text. input.resolved reports outcome "cancelled" when a workflow tool withdraws a ctx.ask() request, and stream events gained agent.started, published when a workflow run opens a ctx.agent session, and turn.waiting, which parks the open turn instead of emitting turn.completed and session.waiting.',
       25: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       39: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      40: "Restored conversation events now require the exact before-turn boundary.",
     },
   },
   config: { current: 1, supported: [1], dropped: {} },

@@ -184,7 +184,10 @@ it("captures the serialized owner's exact idle history and keeps named receipts 
       try {
         const copiedTurn = await destinationStream.nextTurn();
         expect(copiedTurn).toContainEqual(
-          expect.objectContaining({ type: "history.restored", data: { events: first.events } }),
+          expect.objectContaining({
+            type: "history.restored",
+            data: { beforeTurnId: first.beforeTurnId, events: first.events },
+          }),
         );
         expect(copiedTurn).toContainEqual(
           expect.objectContaining({
@@ -298,7 +301,10 @@ it("rejects a capture during active tool work without interrupting that work", a
       const reducer = defaultMessageReducer();
       const display = reducer.reduce(
         reducer.initial(),
-        stampMessageStreamEvent({ type: "history.restored", data: { events: finished.events } }),
+        stampMessageStreamEvent({
+          type: "history.restored",
+          data: { beforeTurnId: finished.beforeTurnId, events: finished.events },
+        }),
       );
       const parts = display.messages.flatMap((message) => message.parts);
       expect(parts).toContainEqual(

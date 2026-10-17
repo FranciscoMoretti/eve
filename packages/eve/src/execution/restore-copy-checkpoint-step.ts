@@ -33,7 +33,10 @@ export async function restoreCopyCheckpointStep(
             const sandbox = await restored.ctx.get(SandboxKey)?.get();
             if (!sandbox) throw new Error("Copied sandbox is unavailable.");
           }
-          await emit({ type: "history.restored", data: { events: checkpoint.events } });
+          await emit({
+            type: "history.restored",
+            data: { beforeTurnId: checkpoint.beforeTurnId, events: checkpoint.events },
+          });
         },
       },
     );

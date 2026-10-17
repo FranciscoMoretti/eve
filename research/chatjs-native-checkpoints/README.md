@@ -112,3 +112,8 @@ Completion is collected from `ops` after writer release, as the public contract
 requires; it does not assume the collection was complete at writable creation.
 An early all-settled observer handles eager rejections without freezing the final
 set of operations awaited for readiness.
+
+Restored history carries the retained checkpoint `beforeTurnId` together with its
+events. Application document history uses this exact boundary to recover inherited
+revision lineage without guessing from visible messages or introducing a legacy
+history decoder. The restore integration test checks the boundary and events.

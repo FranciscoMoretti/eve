@@ -881,7 +881,7 @@ export interface HistorySeededStreamEvent {
 
 export interface HistoryRestoredStreamEvent {
   readonly type: "history.restored";
-  readonly data: { readonly events: MessageStreamEvent[] };
+  readonly data: { readonly beforeTurnId: string; readonly events: MessageStreamEvent[] };
 }
 
 export type UnstampedMessageStreamEvent =
