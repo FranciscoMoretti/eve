@@ -1,0 +1,66 @@
+{
+  "upstream": "e3cea42486e7e32b7b3001bb5912e076b5443ad5",
+  "maintainedFork": "5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c",
+  "eve": "0.80.1",
+  "next": "16.3.0",
+  "node": "v24.20.0",
+  "root": "/private/var/folders/yh/gd_w4qx53yd7j9z0lypwzsk00000gn/T/eve080-next-IXNRyz",
+  "basePort": 54347,
+  "nextPort": 54349,
+  "savedRewrites": [
+    {
+      "destination": "http://127.0.0.1:54347/eve/v1/:path+",
+      "source": "/eve/primary/v1/:path+",
+      "regex": "^/eve/primary/v1(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))(?:/)?$"
+    },
+    {
+      "destination": "http://127.0.0.1:54348/eve/v1/:path+",
+      "source": "/eve/guest/v1/:path+",
+      "regex": "^/eve/guest/v1(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))(?:/)?$"
+    }
+  ],
+  "buildStartsNoWorkers": true,
+  "negativeControl": {
+    "configStartupSuppressed": true,
+    "proxyStatuses": [500, 500],
+    "workers": 0
+  },
+  "production": {
+    "proxyStatuses": [200, 200],
+    "workers": [
+      "89993 89991 /opt/homebrew/Cellar/node@24/24.20.0/bin/node /private/var/folders/yh/gd_w4qx53yd7j9z0lypwzsk00000gn/T/eve080-next-IXNRyz/primary/.output/server/index.mjs",
+      "89994 89991 /opt/homebrew/Cellar/node@24/24.20.0/bin/node /private/var/folders/yh/gd_w4qx53yd7j9z0lypwzsk00000gn/T/eve080-next-IXNRyz/guest/.output/server/index.mjs"
+    ],
+    "repeatedConcurrentConfigLoads": 3,
+    "rewritesNotCalledAtStartup": true
+  },
+  "retry": {
+    "earlyChildFailureRejected": true,
+    "sameProcessRetry": true,
+    "healthyAgents": [200, 200],
+    "workers": [
+      "90017 90015 /opt/homebrew/Cellar/node@24/24.20.0/bin/node /private/var/folders/yh/gd_w4qx53yd7j9z0lypwzsk00000gn/T/eve080-next-IXNRyz/guest/.output/server/index.mjs",
+      "90018 90015 /opt/homebrew/Cellar/node@24/24.20.0/bin/node /private/var/folders/yh/gd_w4qx53yd7j9z0lypwzsk00000gn/T/eve080-next-IXNRyz/primary/.output/server/index.mjs"
+    ],
+    "duplicateConfigLoads": 3
+  },
+  "commands": [
+    {
+      "label": "build-primary",
+      "exitCode": 0
+    },
+    {
+      "label": "build-guest",
+      "exitCode": 0
+    },
+    {
+      "label": "next-build",
+      "exitCode": 0
+    },
+    {
+      "label": "retry",
+      "exitCode": 0
+    }
+  ],
+  "scope": "Two minimal authored agents and real local Next production host; not full ChatJS, hosted deployment, sandbox or multi-host process deduplication"
+}
