@@ -2,7 +2,10 @@
 
 This candidate starts at upstream **eve 0.80.1**,
 [`e3cea42486e7e32b7b3001bb5912e076b5443ad5`](https://github.com/vercel/eve/commit/e3cea42486e7e32b7b3001bb5912e076b5443ad5).
-Its review base is `codex/chatjs-eve080-base`, pinned to that commit.
+The umbrella branch `codex/chatjs-eve080-upgrade` targets the maintained
+`francisco/chatjs-package` branch. Its full diff includes the upstream version
+upgrade and is not the residual ChatJS patch. Inspect the residual patch against
+`codex/chatjs-eve080-base`, pinned to the exact upstream commit above.
 The maintained `francisco/chatjs-package` runtime remains at
 [`5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`](https://github.com/FranciscoMoretti/eve/commit/5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c).
 This candidate is **not ready for ChatJS adoption**. Starting from upstream does
@@ -15,7 +18,32 @@ patch to upstream behavior and exercises two minimal agents with real local
 maintained runtime. Its ten-group inventory becomes nine only when this verified
 startup replacement is adopted in an integrated candidate.
 
-### Remaining inventory dispositions
+### Review order and implementation status
+
+1. Review [startup proof #8](https://github.com/FranciscoMoretti/eve/pull/8)
+   against `codex/chatjs-eve080-base`. This aggregate already includes its two commits.
+2. Review the streaming proof against `codex/eve080-next-startup`, then the
+   approval consumer proof against the streaming slice. These are planned stacked
+   review slices; neither is complete or included here yet.
+3. Review each necessary retained extension as a narrow slice against its declared
+   dependency. Aggregate only reviewed, evidenced behavior. Check the final residual
+   diff against the exact upstream base before considering the umbrella for merge.
+4. Integrate both ChatJS agents after the independent
+   [dependency prerequisite #847](https://github.com/FranciscoMoretti/chat-js/pull/847),
+   then validate fresh-session ownership, correlation, copy, accounting and recovery.
+
+**Implemented retained extensions: none.** This branch currently contains upstream
+0.80.1 plus startup proof and upgrade documentation. Required fork-only behavior is
+missing. The branch is **incomplete and nondeployable** until the remaining contracts
+and application integration pass. No published package or production app pin has
+been changed by our candidate commits.
+
+**Upstream replacements:** native Next startup is proven for the minimal local
+fixture. Streams and approval receipts remain conditional replacement candidates;
+the table identifies their remaining consumer gates. Existing fork PRs #1, #2 and
+#7 are not included or superseded. Their behavior must be assessed before reuse.
+
+### Pending required contracts and candidate decisions
 
 | Group                                 | Candidate disposition and remaining gate                                                                   |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -35,6 +63,23 @@ No application pin changes, release, deployment, old-session continuation, or ol
 billing import are part of this candidate. Authority, exact correlation, ownership,
 best-effort accounting, and no automatic resend remain required. The application's
 PostgreSQL consumed-prefix patch and abrupt-crash recovery gate remain separate.
+
+
+### Next minimal port plan
+
+First complete stream proxy/security and approval consumer proofs to decide whether
+those runtime patches can be omitted. Then inspect native event metadata and create
+dedupe against exact operation correlation and read-only recovery. Port only a
+missing observable contract; keep display metadata and policy decisions in ChatJS.
+Next evaluate native checkpoint/session APIs for trusted new-conversation copy,
+projection and owned attachment staging as one contract with separately reviewable
+changes. Finally verify sandbox identity/lifecycle and packaged exports. None of
+these pending contracts is implemented merely because it appears in this plan.
+
+The maintained inventory is the requirements input, not a patch queue. Each row
+must end with native evidence, a proven app-owned alternative, or the smallest
+necessary runtime port. Old-session continuity, credential fallback and wholesale
+history replay are not substitute proofs for fresh-session ownership and copy.
 
 ---
 
