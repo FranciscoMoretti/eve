@@ -47,6 +47,61 @@ const metadataState = vi.hoisted(() => ({
   writeSessionMetadata: vi.fn(),
 }));
 
+it("reconnects the source after failed immutable capture and never substitutes a newer snapshot after an uncertain lookup", async () => {
+  const sandbox = createMockMicrosandbox();
+  const start = vi.fn(async () => sandbox);
+  const snapshot = vi.fn(async () => {
+    throw new Error("snapshot failed");
+  });
+  const lookup = vi.fn(async () => {
+    throw new Error("snapshot not found");
+  });
+  const module = {
+    Sandbox: { start, get: async () => ({ stopWithTimeout: async () => {}, snapshot }) },
+    Snapshot: { get: lookup },
+  };
+  const vm = new MicrosandboxVm(
+    {
+      module: module as never,
+      options: resolveMicrosandboxOptions(undefined),
+      sessionKey: "source",
+    },
+    sandbox as never,
+    "source-vm",
+    undefined,
+  );
+  await expect(vm.captureFork("boundary")).rejects.toThrow("snapshot failed");
+  expect(start).toHaveBeenCalledWith("source-vm");
+  lookup.mockRejectedValueOnce(new Error("snapshot store unavailable"));
+  await expect(vm.captureFork("boundary")).rejects.toThrow("snapshot store unavailable");
+  expect(snapshot).toHaveBeenCalledOnce();
+});
+
+it("does not finish stopping until the persisted VM has stopped, so resume cannot reconnect to a draining process", async () => {
+  let finishStop!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    finishStop = resolve;
+  });
+  const detach = vi.fn(async () => {});
+  const stopWithTimeout = vi.fn(() => stopped);
+  const vm = new MicrosandboxVm(
+    {
+      module: { Sandbox: { get: async () => ({ stopWithTimeout }) } } as never,
+      options: resolveMicrosandboxOptions(undefined),
+      sessionKey: "source",
+    },
+    { stop: async () => {}, detach } as never,
+    "source-vm",
+    undefined,
+  );
+  const stopping = vm.stop();
+  await vi.waitFor(() => expect(stopWithTimeout).toHaveBeenCalledWith(10_000));
+  expect(detach).not.toHaveBeenCalled();
+  finishStop();
+  await stopping;
+  expect(detach).toHaveBeenCalledOnce();
+});
+
 vi.mock("#execution/sandbox/bindings/microsandbox-metadata.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("#execution/sandbox/bindings/microsandbox-metadata.js")>();

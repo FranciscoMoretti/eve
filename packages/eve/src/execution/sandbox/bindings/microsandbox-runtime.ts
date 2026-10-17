@@ -110,6 +110,26 @@ export class MicrosandboxVm {
     return this.#sandboxName;
   }
 
+  async captureFork(checkpointKey: string): Promise<string> {
+    const snapshotName = createProviderName(
+      "eve-sbx-fork",
+      `${this.#input.sessionKey}:${checkpointKey}`,
+    );
+    try {
+      await this.#input.module.Snapshot.get(snapshotName);
+      return snapshotName;
+    } catch (error) {
+      if (!isMicrosandboxNotFoundError(error)) throw error;
+    }
+    try {
+      await this.stopAndSnapshot(snapshotName);
+    } finally {
+      // A copy capture must leave the source usable, including after a failed snapshot.
+      this.#sandbox = await this.#input.module.Sandbox.start(this.#sandboxName);
+    }
+    return snapshotName;
+  }
+
   async captureState(optionsHash: string): Promise<MicrosandboxSessionMetadata> {
     this.#optionsHash = optionsHash;
     if (isEveDevEnvironment()) {
@@ -162,6 +182,11 @@ export class MicrosandboxVm {
 
   async stop(): Promise<void> {
     await this.#sandbox.stop();
+    // SDK stop requests shutdown; the persisted handle waits for it. Reconnecting
+    // before that wait can attach to the old process just as it exits.
+    await (
+      await this.#input.module.Sandbox.get(this.#sandboxName)
+    ).stopWithTimeout(MICROSANDBOX_STOP_TIMEOUT_MS);
     await this.detach();
   }
 

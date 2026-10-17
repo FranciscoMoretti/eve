@@ -28,4 +28,11 @@ Pass `networkPolicy` to `open()`. The policy applies to the live VM, not the pre
 
 Session creation uses the recorded snapshot and image directly. Writable VM state persists through the provider's session snapshot lifecycle.
 
+The provider also supports immutable fork artifacts through its optional provider
+`fork` capability. Capturing reconnects the source VM; restoring allocates a
+destination-owned VM with the destination's open options. Fork artifacts have a
+separate lifetime from session resume state and survive either session's cleanup.
+The checkpoint owner must retain and eventually release them. This provider
+capability alone does not expose a conversation checkpoint or fork endpoint.
+
 See the [sandbox overview](/docs/sandbox) for managed workspace, skills, parent inheritance, and custom providers.

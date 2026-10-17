@@ -72,6 +72,11 @@ hard to port or absent from this upstream-based branch.
 
 ### Pending required contracts
 
+The local [immutable resource slice](research/chatjs-native-checkpoints/README.md)
+adds provider capture/restore and microsandbox resource isolation. It does not yet
+wire conversation checkpoints or restore history. SDK 0.6.18 integration remains
+unverified; the native provider probe uses the package's 0.5.5 dependency.
+
 | Group                                 | Smallest next decision                                                                                                                       |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Message metadata and identity         | Test native events against exact operation correlation/replay IDs; keep display metadata app-owned and port only missing correlation         |

@@ -12,11 +12,19 @@ export interface SandboxSessionState {
 
 export interface SandboxState {
   readonly session: SandboxSessionState | null;
+  readonly fork?: SandboxForkSnapshot;
+}
+
+export interface SandboxForkSnapshot {
+  readonly providerName: string;
+  readonly stateProtocolVersion: number;
+  readonly artifact: SandboxPreparedArtifact;
 }
 
 export interface SandboxAccess {
   readonly environment?: SandboxEnvironmentIdentity;
   captureState(): Promise<SandboxState>;
+  captureFork?(checkpointKey: string): Promise<SandboxForkSnapshot | null>;
   delete?(options?: SandboxDeleteOptions): Promise<void>;
   get(): Promise<SandboxSession | null>;
   stop(): Promise<void>;

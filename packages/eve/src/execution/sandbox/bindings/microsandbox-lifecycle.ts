@@ -377,6 +377,17 @@ function requirePreparedMicrosandboxTemplate(
   };
 }
 
+const forkSources = new WeakMap<SandboxProviderHandle, MicrosandboxVm>();
+
+export async function captureMicrosandboxFork(
+  handle: SandboxProviderHandle,
+  checkpointKey: string,
+): Promise<string> {
+  const source = forkSources.get(handle);
+  if (source === undefined) throw new Error("Microsandbox fork source is unavailable.");
+  return await source.captureFork(checkpointKey);
+}
+
 function createHandle(
   sandbox: MicrosandboxVm,
   _optionsHash: string,
@@ -388,7 +399,7 @@ function createHandle(
       await sandbox.setNetworkPolicy(policy);
     },
   );
-  return {
+  const handle: SandboxProviderHandle<NetworkPolicySandboxSession> = {
     sandbox: session,
     async onSandboxDelete() {
       await sandbox.shutdown();
@@ -404,6 +415,8 @@ function createHandle(
       await sandbox.shutdown();
     },
   };
+  forkSources.set(handle, sandbox);
+  return handle;
 }
 
 function createMicrosandboxInternalSession(sandbox: MicrosandboxVm): InternalSandboxSession {

@@ -82,13 +82,23 @@ export async function ensureSandboxAccess(
   let persisted: SandboxSessionState | null =
     input.state?.session?.providerName === undefined ? null : input.state.session;
   let opened: OpenedSandbox | undefined;
+  let pendingFork = input.state?.fork;
+  if (pendingFork !== undefined && persisted !== null)
+    throw new Error("A sandbox cannot hold both live state and a pending copy.");
   let opening: Promise<SandboxProviderHandle> | undefined;
   let requiring: Promise<SandboxProviderHandle> | undefined;
   const appRoot =
     getRuntimeCompiledArtifactsSandboxAppRoot(input.compiledArtifactsSource) ?? process.cwd();
   const registered = input.registry.sandbox;
   if (registered === null) {
+    if (pendingFork !== undefined)
+      throw new Error("A copied sandbox requires its destination provider.");
     return {
+      async captureFork() {
+        if (persisted !== null)
+          throw new Error("Sandbox provider cannot capture an immutable copy.");
+        return null;
+      },
       async captureState() {
         return { session: persisted };
       },
@@ -141,7 +151,24 @@ export async function ensureSandboxAccess(
       storagePath: resolveSandboxCacheDirectory(appRoot),
     };
     const createHandle = async () => {
-      const result = await provider.implementation.start(context, options, artifact);
+      if (
+        pendingFork !== undefined &&
+        (input.ownsSandbox === false ||
+          provider.implementation.fork === undefined ||
+          pendingFork.providerName !== provider.providerName ||
+          pendingFork.stateProtocolVersion !== provider.stateProtocolVersion)
+      ) {
+        throw new Error("Sandbox provider cannot restore this immutable copy.");
+      }
+      const result =
+        pendingFork === undefined
+          ? await provider.implementation.start(context, options, artifact)
+          : await provider.implementation.fork!.restore(
+              context,
+              options,
+              artifact,
+              pendingFork.artifact,
+            );
       if (!isSandboxPreparedArtifact(result.state)) {
         throw new Error(
           `Sandbox provider "${provider.providerName}" returned non-serializable session state.`,
@@ -326,6 +353,7 @@ export async function ensureSandboxAccess(
 
     if (opened === undefined)
       throw new Error(`Sandbox "${definition.logicalPath}" did not open a provider handle.`);
+    pendingFork = undefined;
     trackActiveSandboxHandle({
       handle: opened.handle,
       providerName: opened.providerName,
@@ -349,7 +377,29 @@ export async function ensureSandboxAccess(
     environment: activeDefinition.kind === "independent" ? activeDefinition.environment : undefined,
     async captureState() {
       if (opening !== undefined) await opening;
-      return { session: persisted };
+      return { session: persisted, ...(pendingFork === undefined ? {} : { fork: pendingFork }) };
+    },
+    async captureFork(checkpointKey) {
+      if (opening !== undefined) await opening;
+      if (input.ownsSandbox === false)
+        throw new Error("Only the sandbox owner can capture a copy.");
+      if (pendingFork !== undefined) return pendingFork;
+      if (persisted === null) return null;
+      if (activeDefinition.kind !== "independent")
+        throw new Error("Sandbox has no independent provider.");
+      const provider = getSandboxEnvironmentRuntime(activeDefinition.environment);
+      if (provider.implementation.fork === undefined)
+        throw new Error("Sandbox provider cannot capture an immutable copy.");
+      const artifact = await provider.implementation.fork.capture(
+        await requireHandle(),
+        checkpointKey,
+      );
+      if (!isSandboxPreparedArtifact(artifact)) throw new Error("Invalid sandbox fork artifact.");
+      return {
+        providerName: provider.providerName,
+        stateProtocolVersion: provider.stateProtocolVersion,
+        artifact,
+      };
     },
     async delete(deleteOptions) {
       if (input.ownsSandbox === false)
