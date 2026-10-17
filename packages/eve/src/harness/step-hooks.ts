@@ -1,9 +1,10 @@
-import { modelUsageEvidence } from "#harness/model-usage.js";
 import type {
   ContentPart,
   GenerateTextOnStepStartCallback,
+  LanguageModelUsage,
   ModelMessage,
   PrepareStepFunction,
+  ProviderMetadata,
   StepResult,
   ToolSet,
   ToolResultPart,
@@ -14,6 +15,7 @@ import {
   createActionResultEvent,
   createActionsRequestedEvent,
   createStepCompletedEvent,
+  type StepCompletedProviderMetadata,
 } from "#protocol/message.js";
 import {
   createRuntimeToolResultFromToolError,
@@ -337,10 +339,14 @@ export async function emitStepActions(
   await emitFn(
     createStepCompletedEvent({
       finishReason: normalizeAssistantStepFinishReason(step.finishReason),
+      providerMetadata: extractStepProviderMetadata(step.providerMetadata),
       sequence: state.sequence,
       stepIndex: state.stepIndex,
       turnId: state.turnId,
-      ...modelUsageEvidence(step),
+      usage: extractStepUsage({
+        costUsd: extractGatewayCostUsd(step.providerMetadata),
+        usage: step.usage,
+      }),
     }),
   );
 }
@@ -419,4 +425,81 @@ function extractToolResultParts(messages: readonly ModelMessage[]): ToolResultPa
   }
 
   return parts;
+}
+
+/**
+ * Projects the AI SDK's `LanguageModelUsage` into the flat `step.completed`
+ * event usage shape. Returns `undefined` when the SDK reports no usage.
+ */
+function extractStepUsage(input: {
+  readonly costUsd: number | undefined;
+  readonly usage: LanguageModelUsage | undefined;
+}):
+  | {
+      costUsd?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    }
+  | undefined {
+  const result: {
+    costUsd?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } = {};
+
+  if (input.costUsd !== undefined) result.costUsd = input.costUsd;
+
+  const usage = input.usage;
+  if (usage === undefined) {
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  if (usage.inputTokens !== undefined) result.inputTokens = usage.inputTokens;
+  if (usage.outputTokens !== undefined) result.outputTokens = usage.outputTokens;
+  if (usage.inputTokenDetails?.cacheReadTokens !== undefined) {
+    result.cacheReadTokens = usage.inputTokenDetails.cacheReadTokens;
+  }
+  if (usage.inputTokenDetails?.cacheWriteTokens !== undefined) {
+    result.cacheWriteTokens = usage.inputTokenDetails.cacheWriteTokens;
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function extractStepProviderMetadata(
+  providerMetadata: ProviderMetadata | undefined,
+): StepCompletedProviderMetadata | undefined {
+  const generationId = readGatewayGenerationId(providerMetadata);
+  return generationId === undefined ? undefined : { gateway: { generationId } };
+}
+
+function extractGatewayCostUsd(providerMetadata: ProviderMetadata | undefined): number | undefined {
+  const gateway = readGatewayMetadata(providerMetadata);
+  const cost = gateway?.cost;
+  if (typeof cost === "number" && Number.isFinite(cost)) {
+    return cost;
+  }
+  if (typeof cost === "string") {
+    const parsed = Number(cost);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+export function readGatewayGenerationId(
+  providerMetadata: ProviderMetadata | undefined,
+): string | undefined {
+  const generationId = readGatewayMetadata(providerMetadata)?.generationId;
+  return typeof generationId === "string" && generationId.length > 0 ? generationId : undefined;
+}
+
+function readGatewayMetadata(
+  providerMetadata: ProviderMetadata | undefined,
+): ProviderMetadata[string] | undefined {
+  const gateway = providerMetadata?.gateway;
+  return gateway && typeof gateway === "object" && !Array.isArray(gateway) ? gateway : undefined;
 }
