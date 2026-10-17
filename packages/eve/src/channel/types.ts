@@ -440,6 +440,8 @@ export interface SessionCapabilities {
  */
 export interface RunInput {
   /** Trusted server-resolved fresh-root transcript, never a request payload. */
+  readonly copyCheckpoints?: boolean;
+  readonly copyCheckpoint?: import("#execution/copy-checkpoint.js").CopyCheckpointRecord;
   readonly seed?: import("#execution/session-transcript-seed.js").SessionTranscriptSeed;
   /**
    * @internal Set by the server after it authorizes tool stubs.

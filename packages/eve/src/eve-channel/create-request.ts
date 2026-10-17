@@ -7,6 +7,9 @@ import type { ToolStub } from "#tool-stubs/types.js";
 
 export interface ParsedCreateBody {
   seed?: true;
+  fork?:
+    | { readonly sessionId: string; readonly beforeTurnId: string; readonly checkpointId: string }
+    | { readonly sessionId: string; readonly beforeMessageId: string };
   stubs?: readonly ToolStub[];
   callback?: SessionCallback;
   capabilities?: SessionCapabilities;

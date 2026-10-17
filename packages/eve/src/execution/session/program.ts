@@ -1,4 +1,5 @@
 import { STUB_CONTEXT_KEY, type StubScope } from "#tool-stubs/types.js";
+import { captureCopyCheckpointStep } from "#execution/capture-copy-checkpoint-step.js";
 import { withStubPlayback } from "#execution/tool-stubs/playback.js";
 import type { DeliverHookPayload, SessionCapabilities, TurnCaller } from "#channel/types.js";
 import type { AgentWorkflowRetentionDefinition } from "#shared/agent-definition.js";
@@ -229,15 +230,23 @@ async function runSessionLoop(
   const sessionTimeout = boot.sessionTimeoutControl;
 
   const nextParkedActivity = async (): Promise<
-    Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" }>
+    Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" | "copy-checkpoint" }>
   > => {
     while (true) {
+      if (cursor.serializedContext["eve.copyCheckpoints"] === true)
+        await cursor.advanceWithHistory(captureCopyCheckpointStep);
       const next = await nextTurnDelivery({
         cursor,
         hasWorkingTasks: () => workingTasks(sessionTaskTable(cursor)).length > 0,
         inbox,
         queue,
       });
+      if (next.kind === "copy-checkpoint") {
+        await cursor.advanceWithHistory((state) =>
+          captureCopyCheckpointStep({ ...state, request: next.request }),
+        );
+        continue;
+      }
       if (next.kind === "workflow") {
         await execution.handleWorkflowMessage(next.message);
         continue;
@@ -261,6 +270,8 @@ async function runSessionLoop(
     const control = turnControl;
     turnControl = undefined;
     progress.turnId = `turn_${String(turnIndex++)}`;
+    if (cursor.serializedContext["eve.copyCheckpoints"] === true)
+      await cursor.advanceWithHistory(captureCopyCheckpointStep);
     const outcome = await execution.runTurn(payload, { caller, control });
     if (outcome.caller !== undefined) progress.caller = outcome.caller;
     if (outcome.compacted === true) compactionHandoffDue = true;

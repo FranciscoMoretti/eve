@@ -1,7 +1,13 @@
+---
+issue: https://github.com/FranciscoMoretti/eve/pull/9
+status: local-integration
+last_updated: "2026-10-17"
+---
+
 # Immutable checkpoint resources
 
-This slice adds the resource boundary needed by the pending native conversation
-checkpoint implementation. It does not expose a working conversation fork route.
+This slice combines immutable sandbox resources with source-owned conversation
+checkpoints and authorized fresh-session fork routes.
 
 Provider `fork.capture` returns an immutable artifact with a lifetime independent
 of both sessions. `fork.restore` creates a destination-owned resource under the
@@ -48,9 +54,16 @@ the shutdown fix. The affected provider/access suites pass 49 unit tests; packag
 TypeScript, targeted lint, docs validation and build pass. The stop regression was
 run red before the fix. The temporary probe's remaining VMs were cleaned up.
 
-Owner serialization, active-work exclusion, named checkpoint rejection, exact
-turn boundaries, history restoration and source authorization remain the next
-runtime slice. Admission/recovery remains held separately. No complete-copy or
+The local owner slice now covers serialization, active-work exclusion, named
+checkpoint rejection, exact turn boundaries, history restoration and source
+authorization in actual in-memory owner integration tests. Imported-message forks
+retain the trusted seed privately and restore only an exact user-message prefix,
+without decoding display history or replaying historical tools. The dedicated
+required checkpoint hook propagates app persistence failures before readiness;
+ordinary event hooks still log failures and continue. The actual ChatJS hook is
+separately verified against PGlite, including immutable document manifests on retry.
+Combined owner/provider resource restoration and abrupt process restart remain
+unproven; these tests do not expand the provider probe's evidence boundary. Admission is app-owned; permanently unknown sends are accepted and never automatically resent. No complete-copy or
 deployment readiness claim follows from the resource tests.
 
 SDK-alignment validation: 23 affected runtime/cleanup unit tests and package
@@ -58,3 +71,9 @@ TypeScript pass, including later-page cleanup and foreign-owner exclusion. The
 confirmed-shutdown wait remains the provider's stop contract; it is not a
 version-dependent compatibility path. No app dependency change or production
 cutover was made.
+
+Owner-slice validation: 59 affected request, reducer and hook unit tests plus 17
+owner, seed and hook-lifecycle integration tests pass. Package TypeScript, targeted
+lint, documentation and framework invariant checks pass. Changed extension
+capability epochs are regenerated with fresh-start requirements; no new legacy
+compatibility fixtures were added.

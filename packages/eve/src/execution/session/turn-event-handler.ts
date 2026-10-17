@@ -45,6 +45,7 @@ const HOOK_CANCELLABLE_EVENTS = {
   "session.started": true,
   "session.waiting": false,
   "step.completed": true,
+  "history.restored": false,
   "history.seeded": false,
   "step.failed": false,
   "step.started": true,

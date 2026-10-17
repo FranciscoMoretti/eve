@@ -1,3 +1,6 @@
+import { initialSessionProjection } from "#protocol/session-projection.js";
+import { SESSION_PROJECTION_STATE_KEY } from "#harness/session-machine/view.js";
+import type { CopyCheckpointRecord } from "#execution/copy-checkpoint.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import {
   type DurableCompiledArtifactsSource,
@@ -11,7 +14,7 @@ import {
   prepareSessionTranscriptSeed,
   type SessionTranscriptSeed,
 } from "#execution/session-transcript-seed.js";
-import { markSeedAttachmentsPending } from "#harness/seed-attachments.js";
+import { markSeedAttachmentsPending, restoreSeedFileDigests } from "#harness/seed-attachments.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSession } from "#execution/session.js";
 import { resolveInheritedTokenLimit } from "#execution/run-session-limits.js";
@@ -39,6 +42,7 @@ export interface CreateSessionStepResult {
  */
 export async function createSessionStep(input: {
   readonly seed?: SessionTranscriptSeed;
+  readonly copyCheckpoint?: CopyCheckpointRecord;
   readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
   readonly continuationToken: string;
   readonly dynamicSubagentAgentConfig?: DynamicSubagentAgentConfig;
@@ -51,7 +55,7 @@ export async function createSessionStep(input: {
   "use step";
 
   if (
-    input.seed !== undefined &&
+    (input.seed !== undefined || input.copyCheckpoint !== undefined) &&
     (input.rootSessionId !== undefined || input.nodeId !== undefined)
   ) {
     throw new Error("Transcript seeds require a fresh root session.");
@@ -69,7 +73,7 @@ export async function createSessionStep(input: {
   // Both token axes resolve tighter-wins against the cap inherited from the
   // delegating parent: a child may narrow what its parent granted, never widen
   // it. Root runs have no inherited limits, so their configured values apply.
-  const session = createSession({
+  let session = createSession({
     compactionOverrides: {
       thresholdPercent: effectiveAgent.thresholdPercent,
     },
@@ -97,6 +101,26 @@ export async function createSessionStep(input: {
     turnAgent: effectiveAgent.turnAgent,
   });
 
+  const checkpoint = input.copyCheckpoint;
+  if (checkpoint !== undefined) {
+    if (input.seed !== undefined || "rejected" in checkpoint)
+      throw new Error("Invalid checkpoint restoration.");
+    session = {
+      ...session,
+      history: checkpoint.history,
+      state: {
+        [SESSION_PROJECTION_STATE_KEY]: {
+          ...initialSessionProjection(),
+          nextSequence: Number(checkpoint.beforeTurnId.slice(5)),
+        },
+      },
+      ...(checkpoint.sandbox === null
+        ? {}
+        : { sandboxState: { session: null, fork: checkpoint.sandbox } }),
+    };
+  }
+  if (checkpoint !== undefined && !("rejected" in checkpoint))
+    session = restoreSeedFileDigests(session, checkpoint.seedFileDigests ?? {});
   const seeded =
     prepared === undefined
       ? session

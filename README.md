@@ -35,28 +35,27 @@ upstream supplies equivalent trusted initialization and strict resource semantic
 
 Focused route, creation/projection, attachment and turn-step checks cover this
 slice. Full ChatJS copy is still gated by checkpoint/fork source revisions,
-sandbox lifecycle isolation, and creation recovery/admission. No copy-ready claim.
+sandbox lifecycle isolation, and app journal integration. No copy-ready claim.
 App integration `3a192e621` owns plan validation; 11 pre-seed authenticated-source
 diagnostics remained. The local runtime slice must be packed and selected before
 that count can be updated; the app still uses candidate `6869c350` at this point.
 
-**Implemented runtime extension: authenticated read-only creation-operation lookup.**
-It reuses upstream creation token derivation and owner resolution without sending
-or creating. Ten focused route/create tests and package type checking pass; the
-packaged integrated recovery gate is still pending. Missing aliases return 409
-`eve_operation_unresolved`, never a not-found permission to recreate. Native
-allocation can return a run ID before its alias hook exists, and releasing an
-alias also loses lookup identity. Full recovery needs a durable allocation
-binding; the current extension safely exposes known bindings only. Immutable
-intent remains app-owned through the persisted initial request/content hash and
-matching checks before dispatch. Changed-content and allocation-gap recovery
-still need integrated evidence.
+**Admission is app-owned; unresolved sends are an accepted limitation.**
+The human chose a durable ChatJS intent journal and no automatic resend. A lost
+response may remain unknown permanently. The local native GET operation lookup
+extension has been removed; no native admission ledger is added. ChatJS owns a
+positive-only route using upstream `resolveSession`, with a small adapter pinned
+to 0.80.1's internal (not public) auth-scoped create-token derivation. Lookup
+absence never proves nonacceptance and never authorizes dispatch. This route is
+needed by existing tool-scope reconciliation when a native owner starts before
+the app receives and binds the creation response.
 
-Removal criterion: upstream provides authenticated read-only operation lookup
-with durable allocated identity (including before alias claim/after release),
-and ChatJS proves immutable-intent verification and recovery without resending. Other required contracts below
-remain missing.
-The absence of old fork code is not proof that its requirements work upstream.
+The app journal commits an operation before its sole native dispatch and retains
+known response bindings. Unknown entries remain reserved across later requests.
+This does not promise exact recovery after native acceptance and response loss.
+The adapter has a parity check against the installed candidate; future eve
+upgrades must rerun it. Full app integration and process-crash verification remain
+separate from the focused database/helper and proxy tests.
 
 | Original inventory group | Replacement evidence                                                                                                                           | Remaining integration gate                                                |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -73,8 +72,10 @@ hard to port or absent from this upstream-based branch.
 ### Pending required contracts
 
 The local [immutable resource slice](research/chatjs-native-checkpoints/README.md)
-adds provider capture/restore and microsandbox resource isolation. It does not yet
-wire conversation checkpoints or restore history. The actual provider lifecycle
+adds provider capture/restore and microsandbox resource isolation. The current local
+owner slice adds serialized turn checkpoints, authorized fork creation and history
+restoration. Imported-message forks select exact user prefixes from privately retained
+trusted seed input; actual owner/VM integration still needs validation. The actual provider lifecycle
 passes with SDK 0.6.18, matching ChatJS. The package now declares dev dependency
 `0.6.18`, optional peer `^0.6.18`, and automatic install `microsandbox@0.6.18`.
 Development cleanup uses its paginated list builder and checks exact run labels.
@@ -82,7 +83,7 @@ Development cleanup uses its paginated list builder and checks exact run labels.
 | Group                                 | Smallest next decision                                                                                                                       |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Message metadata and identity         | Test native events against exact operation correlation/replay IDs; keep display metadata app-owned and port only missing correlation         |
-| Creation-operation lookup             | Use native create dedupe where sufficient; prove authenticated read-only recovery without resend                                             |
+| Creation-operation lookup             | App-owned journal and positive-only native resolver; permanently unknown sends accepted, no redispatch                                       |
 | Checkpoints and forks                 | Evaluate native session/checkpoint APIs against new-conversation boundaries and owned resource isolation; port only missing guarantees       |
 | History import and projection         | Evaluate trusted new-conversation seed/projection without tool replay or billing import; missing exports currently block authenticated build |
 | Attachment staging                    | Preserve owned seed staging and complete retry semantics through native APIs or a minimal necessary extension                                |
@@ -95,6 +96,29 @@ runtime port. No old-session continuity or historical billing import is required
 Authority, exact correlation, ownership, quota/balance, best-effort accounting,
 independent tool charging and no automatic resend remain mandatory. The PostgreSQL
 consumed-prefix patch and abrupt-crash recovery gate remain separate.
+
+### Required checkpoint persistence gap
+
+Upstream 0.80.1 catches and logs stream-hook failures. Waiting for a
+`session.waiting` subscriber therefore cannot prove that ChatJS saved its document
+manifest. The local `defineHook({ checkpoint })` callback is specific to checkpoint
+commit: the serialized source owner awaits it before writing a ready receipt.
+Failure leaves that capture unresolved and the source able to accept later turns.
+Ordinary stream, billing and logging hooks keep their existing best-effort behavior.
+
+Checkpoint callbacks must be idempotent by source session, checkpoint ID and exact
+boundary. ChatJS stores its document manifest transactionally and returns the
+original manifest on retry; a reused ID at a different boundary fails. This handles
+a callback that committed before a later failure prevented the native receipt.
+Remove this extension when upstream supplies a serialized checkpoint commit hook
+that propagates required persistence failure and preserves the same retry contract.
+Do not replace it with a general strict-stream-hook switch.
+
+Validation distinguishes actual in-memory owner execution, the actual ChatJS hook
+against PGlite, and the separate actual microsandbox provider probe. A controlled
+failure between app persistence and native receipt writing is not abrupt process
+termination or a real native storage outage. Combined app/owner/VM and restart
+proof remain outstanding.
 
 ### Integrated ChatJS progress
 

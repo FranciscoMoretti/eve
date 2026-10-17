@@ -1,3 +1,9 @@
+---
+issue: https://github.com/FranciscoMoretti/eve/pull/9
+status: local-integration
+last_updated: "2026-10-17"
+---
+
 # Native Next startup retirement evidence
 
 This slice tests the supported startup replacement for the maintained ChatJS fork patch. It does not rebase the maintained branch or port its other contracts.

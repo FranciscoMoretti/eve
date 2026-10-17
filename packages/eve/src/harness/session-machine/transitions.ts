@@ -1,3 +1,4 @@
+import type { EveMessage } from "#client/message-reducer-types.js";
 import type { ModelMessage, ToolCallPart, UserContent } from "ai";
 
 import type {
@@ -229,6 +230,23 @@ function failedEvents(
 /** The session waits for its next delivery. */
 export function idle(view: SessionView): Transition {
   return unchanged(view, [createSessionWaitingEvent(view.usage)]);
+}
+
+/** A fresh imported transcript is idle before its first delivery. */
+export function seededTranscript(view: SessionView, messages: EveMessage[]): Transition {
+  return unchanged(view, [
+    { type: "history.seeded", data: { messages } },
+    createSessionWaitingEvent(view.usage),
+  ]);
+}
+
+/** An idle source has durably captured its application and runtime boundary. */
+export function checkpointReady(
+  view: SessionView,
+  checkpoint: { readonly checkpointId: string; readonly beforeTurnId: string },
+): Transition {
+  const event = createSessionWaitingEvent(view.usage);
+  return unchanged(view, [{ ...event, data: { ...event.data, checkpoint } }]);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 ---
 issue: https://github.com/FranciscoMoretti/eve/pull/9
 status: validated-proxy-replacement-pending-integration
-last_updated: 2026-10-17
+last_updated: "2026-10-17"
 ---
 
 # Native resumable streams through ChatJS

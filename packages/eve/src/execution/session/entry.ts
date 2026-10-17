@@ -1,3 +1,6 @@
+import { retainSessionTranscriptSeedStep } from "#execution/retain-session-transcript-seed-step.js";
+import { restoreCopyCheckpointStep } from "#execution/restore-copy-checkpoint-step.js";
+import { applySessionStateDelta } from "#execution/session/state-delta.js";
 import { emitSessionTranscriptSeedStep } from "#execution/emit-session-transcript-seed-step.js";
 import { readSerializedSessionSchedule } from "#context/session-schedule.js";
 import { failSession, runPreparedSession, type SessionBoot } from "#execution/session/program.js";
@@ -170,6 +173,7 @@ export async function bootInitialOwner(
   try {
     const sessionCreationPromise = createSessionStep({
       seed: input.seed,
+      copyCheckpoint: input.copyCheckpoint,
       compiledArtifactsSource: serializedBundle.source,
       continuationToken,
       dynamicSubagentAgentConfig: serializedContext["eve.dynamicSubagentAgentConfig"] as
@@ -210,7 +214,17 @@ export async function bootInitialOwner(
       return undefined;
     }
     const caller = unwrapSettled(callerResolution);
+    let values = { serializedContext, history: created.history, sessionState: created.state };
+    if (input.copyCheckpoint !== undefined) {
+      const restored = await restoreCopyCheckpointStep({
+        ...values,
+        sessionWritable,
+        checkpoint: input.copyCheckpoint,
+      });
+      values = applySessionStateDelta(values, restored.stateDelta);
+    }
     if (input.seed !== undefined) {
+      await retainSessionTranscriptSeedStep({ ...values, seed: input.seed, sessionWritable });
       await emitSessionTranscriptSeedStep({ seed: input.seed, writable: sessionWritable });
     }
     return {
@@ -220,16 +234,16 @@ export async function bootInitialOwner(
         caller,
         capabilities: serializedContext["eve.capabilities"] as SessionCapabilities | undefined,
         deploymentId: input.ownerDeploymentId,
-        history: created.history,
+        history: values.history,
         start:
           input.input.message === undefined
             ? { kind: "first-message" }
             : { input: createInitialDelivery(input, serializedContext), kind: "turn" },
         initialTurnControl: prepared.turnControl,
         retention: input.retention,
-        serializedContext,
+        serializedContext: values.serializedContext,
         sessionId,
-        sessionState: created.state,
+        sessionState: values.sessionState,
         sessionTimeoutControl: prepared.timeoutControl,
         sessionTimeoutMs,
         sessionTimeoutDeadline: deadline,

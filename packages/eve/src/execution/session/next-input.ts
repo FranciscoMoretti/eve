@@ -12,6 +12,10 @@ import type { SessionStateCursor } from "#execution/session/state-cursor.js";
 import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.js";
 
 export type NextTurnInstruction =
+  | {
+      readonly kind: "copy-checkpoint";
+      readonly request: import("#execution/copy-checkpoint.js").CopyCheckpointRequest;
+    }
   | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
   | { readonly kind: SessionControl }
   | { readonly kind: "closed" }
@@ -55,6 +59,7 @@ export async function nextTurnDelivery(input: {
     if (payload === undefined) return { kind: "closed" };
 
     const admitted = await admitSessionInboxPayload(payload, input);
+    if (admitted.kind === "copy-checkpoint") return admitted;
     freshSequence =
       wasIdle && admitted.kind === "delivery" ? admitted.admission.sequence : undefined;
     if (admitted.kind === "workflow") return { kind: "workflow", message: admitted.message };

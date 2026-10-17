@@ -23,6 +23,7 @@ export interface SessionFailurePayload {
 }
 
 export type SessionInboxPayload =
+  | import("#execution/copy-checkpoint.js").CopyCheckpointRequest
   | SessionFailurePayload
   | HookPayload
   | SessionCommand

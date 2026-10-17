@@ -111,6 +111,22 @@ function reduceContent(data: EveMessageData, event: EveAgentReducerEvent): EveMe
         event.data.turnId,
       );
 
+    case "history.restored": {
+      const restored = event.data.events.reduce(
+        reduceMessageData,
+        withConversationProjection({ messages: [] }, initialSessionProjection()),
+      );
+      return {
+        ...data,
+        messages: [
+          ...restored.messages,
+          ...data.messages.filter(
+            (message) => !restored.messages.some((copied) => copied.id === message.id),
+          ),
+        ],
+      };
+    }
+
     case "history.seeded":
       return {
         ...data,

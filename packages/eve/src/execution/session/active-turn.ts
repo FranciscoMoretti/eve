@@ -1,4 +1,5 @@
 import type { DeliverHookPayload, TurnCaller } from "#channel/types.js";
+import { captureCopyCheckpointStep } from "#execution/capture-copy-checkpoint-step.js";
 import { mapHeldInputResponsesStep } from "#execution/proxied-deliver-step.js";
 import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
 import { admitSessionInboxPayload } from "#execution/session/admission.js";
@@ -271,6 +272,18 @@ export class ActiveTurn {
   private async admit(value: SessionInboxPayload): Promise<boolean> {
     const admitted = await admitSessionInboxPayload(value, this.input);
     switch (admitted.kind) {
+      case "copy-checkpoint":
+        // An active model/tool step still owns the cursor. Record only the
+        // rejection; never adopt a competing session delta or wait for idle.
+        await captureCopyCheckpointStep({
+          serializedContext: this.input.cursor.serializedContext,
+          sessionState: this.input.cursor.sessionState,
+          history: this.input.cursor.history,
+          sessionWritable: this.input.cursor.sessionWritable,
+          request: admitted.request,
+          active: true,
+        });
+        return false;
       case "delivery":
         this.admitted.add(admitted.admission.sequence);
         return true;

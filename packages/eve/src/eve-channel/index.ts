@@ -1,4 +1,10 @@
+import {
+  COPY_SEED_NAMESPACE,
+  copyCheckpointPrincipal,
+  readCopyCheckpoint,
+} from "#execution/copy-checkpoint.js";
 import { parseSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
+import { copyCheckpointHandler } from "#eve-channel/copy-checkpoint.js";
 import { InvalidToolStubTargetError } from "#tool-stubs/validate-targets.js";
 import { readStubFailure, readMatchedStubRules } from "#execution/tool-stubs/steps.js";
 import { getRun } from "#internal/workflow/runtime.js";
@@ -125,44 +131,12 @@ export function eveChannel(input: EveChannelInput): EveChannel {
       GET(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
       HEAD(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
 
-      GET(`${EVE_ROUTE_PREFIX}/operation/:operationId`, async (req, { params, resolveSession }) => {
-        const auth = await routeAuth(req, input.auth);
-        if (auth instanceof Response) return auth;
-        const query = new URL(req.url).searchParams;
-        const kind = query.get("kind");
-        if (
-          auth.principalType === "anonymous" ||
-          !params.operationId ||
-          [...query.keys()].some((key) => key !== "kind") ||
-          query.getAll("kind").length > 1 ||
-          (kind !== null && kind !== "seed")
-        ) {
-          return Response.json(
-            {
-              error:
-                "Operation lookup requires an authenticated principal, an operation id and a supported operation kind.",
-              ok: false,
-            },
-            { status: 400, headers: { "cache-control": "no-store" } },
-          );
-        }
-        const token = await deriveOperationContinuationToken({
-          auth,
-          operationId: params.operationId,
-          kind: kind === "seed" ? "seed" : undefined,
-        });
-        const session = await resolveSession(token);
-        return session === undefined
-          ? Response.json(
-              {
-                error: "Operation ownership is unresolved. Do not redispatch based on this lookup.",
-                code: "eve_operation_unresolved",
-              },
-              { status: 409, headers: { "cache-control": "no-store" } },
-            )
-          : Response.json({ sessionId: session.id }, { headers: { "cache-control": "no-store" } });
-      }),
-
+      GET(`${EVE_ROUTE_PREFIX}/session/:sessionId/checkpoint`, copyCheckpointHandler(input)),
+      POST(`${EVE_ROUTE_PREFIX}/session/:sessionId/checkpoint`, copyCheckpointHandler(input)),
+      GET(
+        `${EVE_ROUTE_PREFIX}/session/:sessionId/checkpoint/:checkpointId`,
+        copyCheckpointHandler(input),
+      ),
       GET(EVE_INFO_ROUTE_PATH, async (req, args) => {
         const authResult = await routeAuth(req, input.auth);
         if (authResult instanceof Response) return authResult;
@@ -391,6 +365,54 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             );
           }
         }
+        let copyCheckpoint: Awaited<ReturnType<typeof readCopyCheckpoint>>;
+        if (body.fork !== undefined) {
+          if (
+            parent !== undefined ||
+            forwarded.auth.principalType === "anonymous" ||
+            !input.authorizeFork ||
+            !(await input.authorizeFork({
+              auth: forwarded.auth,
+              sourceSessionId: body.fork.sessionId,
+            }))
+          )
+            return Response.json(
+              { error: "Source checkpoint is unavailable.", ok: false },
+              { status: 403 },
+            );
+          try {
+            const source =
+              "beforeMessageId" in body.fork
+                ? await readCopyCheckpoint(body.fork.sessionId, "seed", COPY_SEED_NAMESPACE)
+                : await readCopyCheckpoint(body.fork.sessionId, body.fork.checkpointId);
+            if (
+              !source ||
+              "rejected" in source ||
+              source.principalId !== forwarded.auth.principalId ||
+              source.principalIdentity !== copyCheckpointPrincipal(forwarded.auth) ||
+              messageResult.auth?.principalId !== forwarded.auth.principalId
+            )
+              throw new Error("Checkpoint is unavailable.");
+            if ("beforeMessageId" in body.fork) {
+              const index = Number(body.fork.beforeMessageId.slice("seed_message_".length));
+              if (!source.seed || source.seed.messages[index]?.role !== "user")
+                throw new Error("Imported boundary is unavailable.");
+              seed = parseSessionTranscriptSeed({
+                attachments: "channel",
+                messages: source.seed.messages.slice(0, index),
+              });
+            } else {
+              if (source.beforeTurnId !== body.fork.beforeTurnId)
+                throw new Error("Checkpoint is unavailable.");
+              copyCheckpoint = source;
+            }
+          } catch {
+            return Response.json(
+              { error: "Source checkpoint is unavailable.", ok: false },
+              { status: 409 },
+            );
+          }
+        }
         let handle: Awaited<ReturnType<typeof createSession>>;
         try {
           handle = await agentDelegation.receive(
@@ -405,6 +427,8 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             ({ conversationId, parentTraceContext: inheritedTrace }) => {
               return createSession({
                 seed,
+                copyCheckpoint,
+                copyCheckpoints: input.authorizeFork !== undefined,
                 audienceAuth: auth,
                 toolStubs:
                   body.stubs === undefined

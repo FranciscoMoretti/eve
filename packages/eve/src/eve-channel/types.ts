@@ -95,6 +95,11 @@ export function defaultEveAuth(ctx: EveMessageContext): SessionAuthContext | nul
  * `uploadPolicy`, `onMessage`, and `events` refine the default HTTP behavior.
  */
 export interface EveChannelInput {
+  /** Authorize access to a source conversation before checkpoint or fork work. */
+  readonly authorizeFork?: (input: {
+    readonly auth: SessionAuthContext;
+    readonly sourceSessionId: string;
+  }) => boolean | Promise<boolean>;
   /** Resolve an accepted destination transcript for an authenticated seed-only create. Never accepts browser transcript data. */
   readonly resolveSeed?: (input: {
     readonly auth: SessionAuthContext;

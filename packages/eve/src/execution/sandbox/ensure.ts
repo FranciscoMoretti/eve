@@ -377,7 +377,7 @@ export async function ensureSandboxAccess(
     environment: activeDefinition.kind === "independent" ? activeDefinition.environment : undefined,
     async captureState() {
       if (opening !== undefined) await opening;
-      return { session: persisted, ...(pendingFork === undefined ? {} : { fork: pendingFork }) };
+      return { session: persisted, fork: pendingFork };
     },
     async captureFork(checkpointKey) {
       if (opening !== undefined) await opening;

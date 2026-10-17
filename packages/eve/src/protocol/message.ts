@@ -826,6 +826,7 @@ export interface SessionWaitingStreamEvent {
      */
     usage?: TokenUsage;
     wait: "next-user-message";
+    checkpoint?: { readonly checkpointId: string; readonly beforeTurnId: string };
   };
   type: "session.waiting";
 }
@@ -878,7 +879,13 @@ export interface HistorySeededStreamEvent {
   };
 }
 
+export interface HistoryRestoredStreamEvent {
+  readonly type: "history.restored";
+  readonly data: { readonly events: MessageStreamEvent[] };
+}
+
 export type UnstampedMessageStreamEvent =
+  | HistoryRestoredStreamEvent
   | HistorySeededStreamEvent
   | ActionInputAppendedStreamEvent
   | AgentStartedStreamEvent

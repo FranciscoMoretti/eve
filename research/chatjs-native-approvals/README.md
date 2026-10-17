@@ -1,7 +1,7 @@
 ---
 issue: https://github.com/FranciscoMoretti/eve/pull/9
 status: consumer-proof-passed-integration-pending
-last_updated: 2026-10-17
+last_updated: "2026-10-17"
 ---
 
 # Native approval receipts at actual ChatJS consumers

@@ -68,6 +68,16 @@ export async function dispatchStreamEventHooks(input: {
   dispatching = false;
 }
 
+/** Required source-owned application snapshot work, before checkpoint readiness. */
+export async function dispatchCheckpointHooks(
+  ctx: ContextContainer,
+  checkpoint: { readonly checkpointId: string; readonly beforeTurnId: string },
+): Promise<void> {
+  const context = buildHookContext(ctx);
+  for (const hook of ctx.require(BundleKey).hookRegistry.checkpointHooks ?? [])
+    await hook(checkpoint, context);
+}
+
 /** Builds the {@link HookContext} fields shared by every handler of one event. */
 function buildHookContext(ctx: ContextContainer): Omit<HookContext, "cancel"> {
   const bundle = ctx.require(BundleKey);

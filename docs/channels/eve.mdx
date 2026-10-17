@@ -91,7 +91,6 @@ The default eve channel inspects the agent, creates sessions, accepts callbacks 
 - `GET /eve/v1/health` (check whether the application is reachable)
 - `GET /eve/v1/info` (inspect the agent)
 - `POST /eve/v1/session` (create a session, optionally sending its first message)
-- `GET /eve/v1/operation/:operationId` (recover a creation operation without dispatching)
 - `POST /eve/v1/session/:sessionId` (send a follow-up)
 - `POST /eve/v1/session/:sessionId/cancel` (cancel the in-flight turn)
 - `POST /eve/v1/session/:sessionId/clear` (clear the session's model history)
@@ -355,23 +354,15 @@ For scripts, server-to-server calls, evals, tests, and custom clients, use the [
 - [Auth & route protection](../guides/auth-and-route-protection): the route auth policy
 - [Sessions, runs & streaming](../concepts/sessions-runs-and-streaming): the routes this channel exposes
 
-## Recovering an uncertain creation
+## Uncertain creation outcomes
 
-An authenticated creation can include `operationId`. If its response is lost,
-read `GET /eve/v1/operation/:operationId` with the same authenticated principal.
-A successful lookup returns `{ "sessionId": "..." }`. An unresolved operation returns
-409 with `code: "eve_operation_unresolved"`. Responses use `Cache-Control: no-store`.
-The lookup never creates a session, sends a message, or resumes an agent.
-An unresolved result covers absent, allocated-before-hook and released-alias
-states; it cannot certify that a creation was never dispatched. Never turn it
-into an automatic POST retry.
-
-The operation identity uses the same authenticator, issuer, principal type and
-principal ID as creation. Another principal cannot retrieve the operation by
-knowing its ID. Anonymous callers and unsupported query parameters are rejected. Use `?kind=seed`
-for a trusted copy operation; its identity is separate from normal creation. A transport
-failure is not evidence that the operation is absent; preserve the original
-operation and reconcile it before deciding whether another dispatch is allowed.
+Upstream creation operation IDs resolve an active owner through a continuation
+alias. They do not establish a durable admission ledger or an HTTP operation
+lookup API. A missing alias cannot distinguish an undispatched request from
+allocation before alias binding or a released alias. Applications that require
+no duplicate dispatch should journal intent before calling the runtime, retain
+known responses, and leave lost-response operations unresolved. Do not infer
+permission to resend from a lookup miss.
 
 ## Trusted copy initialization
 
@@ -398,6 +389,41 @@ than silently replacing copied context with a text note. Ordinary uploads keep
 their existing behavior.
 
 This extension does not implement user-visible checkpoint forks or a durable
-creation admission ledger. An unresolved operation lookup remains inconclusive;
+creation admission ledger. An unresolved continuation lookup remains inconclusive;
 applications must not infer permission to redispatch from it. The integrated
 ChatJS copy lifecycle still requires checkpoint and resource-isolation validation.
+
+## Serialized copy checkpoints
+
+Channels that configure `authorizeFork({ auth, sourceSessionId })` enable root
+session checkpoint capture. The callback must authorize the current principal
+against that exact source. The runtime also checks the original principal identity;
+anonymous sessions and child sessions cannot provide copy checkpoints.
+
+`POST /eve/v1/session/:sessionId/checkpoint` accepts `{ beforeTurnId,
+checkpointId? }` and returns `202` after enqueueing the request. Read its state with
+`GET /eve/v1/session/:sessionId/checkpoint/:checkpointId?beforeTurnId=turn_N`.
+An absent receipt returns `404`; a rejected boundary returns `409`; only a ready
+receipt returns `200`. GET never captures a checkpoint. Omitting the ID selects a
+stable ID derived from the source and turn boundary.
+
+Create a new conversation using `fork: { sessionId, beforeTurnId, checkpointId }`
+in the session POST. The new owner restores model and display history and an
+independent immutable sandbox snapshot. Current destination configuration supplies
+authority and limits. Active tasks, approvals and usage are not restored.
+Initialized providers without immutable capture/restore fail closed.
+
+For an imported user message, use `fork: { sessionId, beforeMessageId:
+"seed_message_N" }`. This selects the exact prefix before that user message from
+the source's privately retained trusted seed. A missing or non-user boundary is
+rejected. The destination stages only retained prefix attachments through its
+current authenticated channel; source runtime workspace changes are not part of
+an imported transcript boundary. Each descendant retains only its own prefix.
+Historical tool results remain inert data.
+
+Applications that must persist related state before readiness use
+`defineHook({ checkpoint: async ({ checkpointId, beforeTurnId }, context) => ... })`.
+This callback runs within serialized source capture, before the ready receipt.
+Throwing leaves no ready receipt and does not fail the source conversation. It may
+run again after partial failure, so persist immutable results idempotently under
+the source, ID and boundary. Ordinary `events` hooks remain best-effort.

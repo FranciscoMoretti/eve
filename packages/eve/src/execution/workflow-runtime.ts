@@ -1,3 +1,4 @@
+import { CopyCheckpointsKey } from "#context/keys.js";
 import { validateToolStubTargets } from "#tool-stubs/validate-targets.js";
 import { context, trace } from "#compiled/@opentelemetry/api/index.js";
 import {
@@ -149,14 +150,13 @@ export function createWorkflowRuntime(config: {
   ): Promise<RunHandle> => {
     if (
       input.seed !== undefined &&
-      (input.input.message !== undefined ||
-        input.parent !== undefined ||
+      (input.parent !== undefined ||
         config.nodeId !== undefined ||
         input.auth === null ||
         input.auth.principalType === "anonymous" ||
         predecessor !== undefined)
     ) {
-      throw new Error("Trusted seeds require an authenticated fresh root without a first message.");
+      throw new Error("Trusted seeds require an authenticated fresh root.");
     }
     const bundle = await getCompiledRuntimeAgentBundle({
       compiledArtifactsSource: config.compiledArtifactsSource,
@@ -185,6 +185,7 @@ export function createWorkflowRuntime(config: {
       traceDecision.recordOutputs
         ? undefined
         : 0);
+    if (input.copyCheckpoints === true) ctx.set(CopyCheckpointsKey, true);
     const serializedContext = serializeContext(ctx);
     const parentLineage = readParentLineage(serializedContext);
     const workflowInput: {
@@ -193,6 +194,7 @@ export function createWorkflowRuntime(config: {
       kind: "initial",
       input: input.input,
       seed: input.seed,
+      copyCheckpoint: input.copyCheckpoint,
       ownerDeploymentId: await resolveCurrentWorkflowDeploymentId(),
       serializedContext,
     };
