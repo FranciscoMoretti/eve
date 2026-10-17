@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -8,16 +7,7 @@ import {
 } from "#execution/sandbox/bindings/docker-container.js";
 import { createDockerCli, DockerUnavailableError } from "#execution/sandbox/bindings/docker-cli.js";
 import { readSessionMetadata } from "#execution/sandbox/bindings/microsandbox-metadata.js";
-import {
-  updateMicrosandboxMaterialization,
-  withMicrosandboxResourceOperation,
-} from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
-import {
-  createProviderName,
-  loadMicrosandboxWithoutInstall,
-  removeMicrosandboxResource,
-  stopAndSnapshotMicrosandboxSandbox,
-} from "#execution/sandbox/bindings/microsandbox-runtime.js";
+import { loadMicrosandboxWithoutInstall } from "#execution/sandbox/bindings/microsandbox-runtime.js";
 import {
   EVE_DEVELOPMENT_SANDBOX_METADATA_PATH_TAG,
   EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG,
@@ -134,44 +124,14 @@ async function stopDevelopmentMicrosandboxResources(
         )
           throw new Error("Development microsandbox resource ownership is unavailable.");
 
-        log?.(`snapshotting development microsandbox session "${sandbox.name}" before shutdown`);
-        const previousStateSnapshotName = metadata.stateSnapshotName;
-        const stateSnapshotName = createProviderName(
-          "eve-sbx-state",
-          `${metadata.sandboxName}:${randomUUID()}`,
-        );
-        await withMicrosandboxResourceOperation({
-          path: metadataPath,
-          sessionId: resources.sessionId,
-          resource: { kind: "state-snapshot", name: stateSnapshotName },
-          operation: "allocate",
-          run: async () =>
-            await stopAndSnapshotMicrosandboxSandbox(
-              module,
-              sandbox.name,
-              stateSnapshotName,
-              vm.nativeId,
-            ),
-          identify: async (snapshot) => ({ nativeId: snapshot.digest, nativePath: snapshot.path }),
-        });
-        await updateMicrosandboxMaterialization(metadataPath, resources.sessionId, {
-          ...metadata,
-          stateSnapshotName,
-        });
-        if (previousStateSnapshotName !== undefined) {
-          const previous = resources.entries.find(
-            (entry) => entry.kind === "state-snapshot" && entry.name === previousStateSnapshotName,
-          );
-          if (previous === undefined)
-            throw new Error("Development microsandbox state ownership is unavailable.");
-          await withMicrosandboxResourceOperation({
-            path: metadataPath,
-            sessionId: resources.sessionId,
-            resource: previous,
-            operation: "remove",
-            run: async () => await removeMicrosandboxResource(module, previous),
-          });
-        }
+        // Development resumes the same persisted VM. Do not allocate a snapshot
+        // inside the CLI's bounded shutdown window: termination can interrupt its
+        // receipt, leaving a permanently unknown allocation on every normal exit.
+        log?.(`stopping development microsandbox session "${sandbox.name}"`);
+        const handle = await module.Sandbox.get(sandbox.name);
+        if (handle.id !== vm.nativeId) throw new Error("Microsandbox VM was replaced.");
+        await handle.stop();
+        await handle.stopWithTimeout(10_000);
       }),
   );
 }

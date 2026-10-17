@@ -8,7 +8,7 @@ import {
   writeSessionMetadata,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 
-const fixture = vi.hoisted(() => ({ path: "", snapshot: vi.fn(), remove: vi.fn() }));
+const fixture = vi.hoisted(() => ({ path: "", snapshot: vi.fn(), remove: vi.fn(), stop: vi.fn() }));
 vi.mock("#execution/sandbox/bindings/docker-cli.js", async (original) => {
   const actual = await original<typeof import("#execution/sandbox/bindings/docker-cli.js")>();
   return { ...actual, createDockerCli: () => ({ run: async () => ({ exitCode: 0, stdout: "" }) }) };
@@ -20,6 +20,7 @@ vi.mock("#execution/sandbox/bindings/microsandbox-runtime.js", async (original) 
     ...actual,
     loadMicrosandboxWithoutInstall: async () => ({
       Sandbox: {
+        get: async () => ({ id: "local:42", stop: fixture.stop, stopWithTimeout: async () => {} }),
         listWith: async () => ({
           sandboxes: [
             {
@@ -48,7 +49,7 @@ afterEach(async () => {
   await rm(app, { recursive: true, force: true });
 });
 
-it("retains ownership and immutable fork receipts when development shutdown captures state", async () => {
+it("retains ownership and immutable fork receipts when development shutdown stops the persisted VM", async () => {
   vi.stubEnv("MSB_BACKEND", "local");
   app = await realpath(await mkdtemp(join(tmpdir(), "eve-dev-owned-")));
   const authority = join(app, ".eve/sandbox-cache/microsandbox");
@@ -93,15 +94,13 @@ it("retains ownership and immutable fork receipts when development shutdown capt
     borrowedForkSnapshot: "parent-fork",
   });
   expect(metadata?.resources?.entries).toContainEqual(fork);
-  expect(metadata?.resources?.entries).toContainEqual({
-    kind: "state-snapshot",
-    name: metadata?.stateSnapshotName,
-    phase: "live",
-    nativeId: "sha256:new",
-    nativePath: "/fixture/new",
-  });
+  expect(metadata?.stateSnapshotName).toBe("old-state");
+  expect(metadata?.resources?.entries).toHaveLength(3);
   expect(metadata?.resources?.entries.find((entry) => entry.name === "old-state")?.phase).toBe(
-    "removed",
+    "live",
   );
+  expect(fixture.snapshot).not.toHaveBeenCalled();
+  expect(fixture.remove).not.toHaveBeenCalled();
+  expect(fixture.stop).toHaveBeenCalledOnce();
   expect(metadata?.image).toBe("debian:bookworm-slim");
 });

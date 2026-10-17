@@ -2,4 +2,4 @@
 "eve": patch
 ---
 
-Preserve local session ownership and immutable snapshot receipts during development shutdown. Track state snapshot allocation and removal, reject mismatched cache or VM identity, and respect session retirement before creating snapshots.
+Preserve local session ownership and immutable snapshot receipts during development shutdown. Stop the same persisted VM after verifying cache and native identity, without allocating new snapshots inside the bounded CLI shutdown window.
