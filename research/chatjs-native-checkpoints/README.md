@@ -144,3 +144,12 @@ consumer retention, source VM removal, and failed snapshot removal followed by
 confirmed retry. The harness explicitly removes its own returned VM after the
 lost-response assertion; this is fixture teardown, not an automatic reconciliation
 policy. It leaves metadata in the printed temporary directory for inspection.
+
+Stable native identity receipts accompany resource names: VM IDs and snapshot
+digests plus artifact paths come from successful SDK allocation results. Cleanup
+refuses a replacement that reused a name. Snapshot absence is checked at its
+recorded artifact path, because the SDK snapshot index is rebuildable; snapshot
+removal also keeps native child/dependency protection enabled. Fork artifact
+version 2 retains the captured digest, resolves its indexed path and verifies the
+manifest before restore. Mutable state snapshot restoration performs the same
+identity check. Earlier name-only fork/resource records are unsupported.

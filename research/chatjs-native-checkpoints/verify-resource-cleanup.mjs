@@ -26,6 +26,7 @@ const storagePath = join(appRoot, ".eve/sandbox-cache");
 const route = {};
 attachLocalSandboxAppRoot(route, appRoot);
 const id = "resource-" + randomUUID();
+console.log(JSON.stringify({ appRoot, id, status: "started" }));
 const host = { resolveProjectPath: (p) => join(appRoot, p), loadOptionalPackage: async () => sdk };
 const context = (sessionId) => ({
   host,
@@ -58,7 +59,7 @@ const artifact = await provider.prepare({
     },
   },
 });
-let source, child, checkpoint;
+let source, child, checkpoint, ownedReplacementVm, ownedReplacementSnapshot;
 try {
   await assert.rejects(
     manage(route, { sessionId: id + "-wrong", expectedAppRoot: "/tmp/wrong", action: "retire" }),
@@ -106,6 +107,65 @@ try {
   assert.ok(!(await sdk.Snapshot.list()).some((s) => s.name === checkpoint.snapshotName));
   checkpoint = undefined;
   console.log("PASS failed actual snapshot removal stays pending; retry confirms provider absence");
+  const replacedSession = id + "-replacement";
+  const original = await provider.start(context(replacedSession), undefined, artifact);
+  await original.handle.sandbox.writeTextFile({ path: "identity.txt", content: "original" });
+  const originalCheckpoint = await provider.fork.capture(original.handle, "identity");
+  const originalSnapshot = await sdk.Snapshot.get(originalCheckpoint.snapshotName);
+  await original.handle.sandbox.writeTextFile({ path: "identity.txt", content: "replacement" });
+  await original.handle.onRuntimeShutdown();
+  const originalMetadata = JSON.parse(
+    await readFile(
+      join(storagePath, "microsandbox/sessions", original.state.sessionIdentity, "metadata.json"),
+      "utf8",
+    ),
+  );
+  const originalVm = await sdk.Sandbox.get(originalMetadata.sandboxName);
+  await originalVm.stopWithTimeout(10000);
+  await sdk.Snapshot.remove(originalSnapshot.digest);
+  const replacementSnapshot = await sdk.Snapshot.builder(originalCheckpoint.snapshotName)
+    .fromSandbox(originalMetadata.sandboxName)
+    .create();
+  ownedReplacementSnapshot = replacementSnapshot;
+  const replacedCopy = id + "-replacement-copy";
+  await assert.rejects(
+    provider.fork.restore(context(replacedCopy), undefined, artifact, originalCheckpoint),
+    /template|snapshot|provisioned/i,
+  );
+  await control(replacedCopy, "retire");
+  assert.notEqual(replacementSnapshot.digest, originalSnapshot.digest);
+  await originalVm.remove();
+  const replacementVm = await sdk.Sandbox.builder(originalMetadata.sandboxName)
+    .fromSnapshot(artifact.snapshotName)
+    .memory(256)
+    .detached(true)
+    .create();
+  ownedReplacementVm = replacementVm;
+  assert.notEqual(replacementVm.id, originalVm.id);
+  await control(replacedSession, "retire");
+  await assert.rejects(control(replacedSession, "purge", false), /VM was replaced/);
+  assert.equal((await sdk.Sandbox.get(originalMetadata.sandboxName)).id, replacementVm.id);
+  await replacementVm.stop();
+  await replacementVm.detach();
+  const replacementHandle = await sdk.Sandbox.get(originalMetadata.sandboxName);
+  await replacementHandle.stopWithTimeout(10000);
+  await replacementHandle.remove();
+  ownedReplacementVm = undefined;
+  try {
+    await control(replacedSession, "purge", true);
+  } catch (error) {
+    assert.match(error.message, /snapshot was replaced/);
+  }
+  assert.equal(
+    (await sdk.Snapshot.get(originalCheckpoint.snapshotName)).digest,
+    replacementSnapshot.digest,
+  );
+  await sdk.Snapshot.remove(replacementSnapshot.digest);
+  ownedReplacementSnapshot = undefined;
+  assert.equal((await control(replacedSession, "purge", true)).remaining, 0);
+  console.log(
+    "PASS stable VM ID and snapshot digest protect cleanup and immutable restore from replacements reusing owned names",
+  );
   const originalBuilder = sdk.Sandbox.builder;
   const entered = Promise.withResolvers(),
     finish = Promise.withResolvers();
@@ -147,6 +207,16 @@ try {
   );
   console.log(JSON.stringify({ appRoot, id, status: "passed" }));
 } finally {
+  if (ownedReplacementVm !== undefined) {
+    await ownedReplacementVm.stop();
+    await ownedReplacementVm.detach();
+    const handle = await sdk.Sandbox.get(ownedReplacementVm.name);
+    assert.equal(handle.id, ownedReplacementVm.id);
+    await handle.stopWithTimeout(10000);
+    await handle.remove();
+  }
+  if (ownedReplacementSnapshot !== undefined)
+    await sdk.Snapshot.remove(ownedReplacementSnapshot.digest);
   await source?.handle.onSandboxDelete();
   await child?.handle.onSandboxDelete();
   if (checkpoint) await sdk.Snapshot.remove(checkpoint.snapshotName, { force: true });

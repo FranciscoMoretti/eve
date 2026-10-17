@@ -156,12 +156,17 @@ export async function withMicrosandboxResourceOperation<T>(input: {
   readonly sessionId: string;
   readonly resource: Readonly<Pick<MicrosandboxResourceFact, "kind" | "name">>;
   readonly operation: "allocate" | "remove";
-  readonly run: (previouslyLive: boolean) => Promise<T>;
+  readonly run: (previouslyLive: boolean, nativeId: string | undefined) => Promise<T>;
+  readonly identify?: (
+    result: T,
+  ) => Promise<Pick<MicrosandboxResourceFact, "nativeId" | "nativePath">>;
 }): Promise<T> {
+  if (input.operation === "allocate" && input.identify === undefined)
+    throw new Error("Microsandbox allocation requires a native identity receipt.");
   const pending = input.operation === "allocate" ? "allocating" : "removing";
   const matches = (entry: MicrosandboxResourceFact) =>
     entry.kind === input.resource.kind && entry.name === input.resource.name;
-  const previouslyLive = await withMicrosandboxSessionLock(
+  const previous = await withMicrosandboxSessionLock(
     providerRootForMetadata(input.path),
     input.sessionId,
     async (authority, retired) => {
@@ -185,14 +190,32 @@ export async function withMicrosandboxResourceOperation<T>(input: {
           ...resources,
           entries: [
             ...resources.entries.filter((entry) => !matches(entry)),
-            { ...input.resource, phase: pending },
+            {
+              ...input.resource,
+              phase: pending,
+              nativeId: existing?.nativeId,
+              nativePath: existing?.nativePath,
+            },
           ],
         },
       });
-      return existing?.phase === "live";
+      return {
+        live: existing?.phase === "live",
+        nativeId: existing?.nativeId,
+        nativePath: existing?.nativePath,
+      };
     },
   );
-  const result = await input.run(previouslyLive);
+  const result = await input.run(previous.live, previous.nativeId);
+  const receipt = input.operation === "allocate" ? await input.identify?.(result) : previous;
+  const nativeId = receipt?.nativeId;
+  if (
+    typeof nativeId !== "string" ||
+    nativeId.length === 0 ||
+    (previous.nativeId !== undefined && nativeId !== previous.nativeId) ||
+    (previous.nativePath !== undefined && receipt?.nativePath !== previous.nativePath)
+  )
+    throw new Error("Microsandbox native resource identity is unconfirmed.");
   await withMicrosandboxSessionLock(
     providerRootForMetadata(input.path),
     input.sessionId,
@@ -207,7 +230,12 @@ export async function withMicrosandboxResourceOperation<T>(input: {
           ...resources,
           entries: resources.entries.map((entry) =>
             matches(entry)
-              ? { ...entry, phase: input.operation === "allocate" ? "live" : "removed" }
+              ? {
+                  ...entry,
+                  nativeId,
+                  nativePath: receipt?.nativePath,
+                  phase: input.operation === "allocate" ? "live" : "removed",
+                }
               : entry,
           ),
         },

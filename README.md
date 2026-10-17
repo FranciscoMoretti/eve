@@ -2,7 +2,7 @@
 
 **Integration remains incomplete and nondeployable.** Guest and authenticated create/send/reconnect/cancel, app crash fencing, checkpoint restart/copy, and local resource cleanup have evidence. Full authenticated approval/document/attachment flows and final integrated review remain.
 
-The sections below retain earlier checkpoints; current runtime resource candidate is `43e9d7d3`.
+The sections below retain earlier checkpoints; the resource slice began at `43e9d7d3` and now includes stable identity receipts. The paired app lockfile records the exact packed candidate.
 [Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets the maintained
 `francisco/chatjs-package` branch, baseline
 `5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`. This candidate starts at exact upstream
@@ -357,3 +357,12 @@ Please do not open public issues for security vulnerabilities. Instead, follow
 
 eve is currently in beta and subject to the [Vercel beta terms](https://vercel.com/docs/release-phases/public-beta-agreement);
 the framework, APIs, documentation, and behavior may change before general availability.
+
+Stable native identity receipts accompany resource names: VM IDs and snapshot
+digests plus artifact paths come from successful SDK allocation results. Cleanup
+refuses a replacement that reused a name. Snapshot absence is checked at its
+recorded artifact path, because the SDK snapshot index is rebuildable; snapshot
+removal also keeps native child/dependency protection enabled. Fork artifact
+version 2 retains the captured digest, resolves its indexed path and verifies the
+manifest before restore. Mutable state snapshot restoration performs the same
+identity check. Earlier name-only fork/resource records are unsupported.

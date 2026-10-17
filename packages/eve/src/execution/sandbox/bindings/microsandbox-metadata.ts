@@ -31,6 +31,8 @@ export interface MicrosandboxResourceFact {
   readonly kind: "sandbox" | "state-snapshot" | "fork-snapshot";
   readonly name: string;
   readonly phase: "allocating" | "live" | "removing" | "removed";
+  readonly nativeId?: string;
+  readonly nativePath?: string;
 }
 
 /** Local provider facts, independent of application retention policy. */
@@ -46,6 +48,9 @@ function isResourceFact(value: unknown): value is MicrosandboxResourceFact {
   return (
     isRecord(value) &&
     ["sandbox", "state-snapshot", "fork-snapshot"].includes(String(value.kind)) &&
+    (value.phase === "allocating" ||
+      (typeof value.nativeId === "string" && value.nativeId.length > 0)) &&
+    (value.nativePath === undefined || typeof value.nativePath === "string") &&
     typeof value.name === "string" &&
     value.name.length > 0 &&
     ["allocating", "live", "removing", "removed"].includes(String(value.phase))

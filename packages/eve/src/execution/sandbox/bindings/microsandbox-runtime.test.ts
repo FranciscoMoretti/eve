@@ -233,6 +233,20 @@ describe.skipIf(process.platform === "win32")("connectMicrosandbox", () => {
       optionsHash: "options-hash",
       sandboxName: "eve-sbx-ses-old",
       stateSnapshotName: "eve-sbx-state-existing",
+      resources: {
+        version: 1,
+        sessionId: "session-key",
+        authority: "/fixture",
+        entries: [
+          {
+            kind: "state-snapshot",
+            name: "eve-sbx-state-existing",
+            phase: "live",
+            nativeId: "state-digest",
+            nativePath: "/snapshots/eve-sbx-state-existing",
+          },
+        ],
+      },
       version: 2,
     };
 
@@ -244,7 +258,7 @@ describe.skipIf(process.platform === "win32")("connectMicrosandbox", () => {
       sessionKey: "session-key",
     });
 
-    expect(runtime.createdFromSnapshot).toBe("eve-sbx-state-existing");
+    expect(runtime.createdFromSnapshot).toBe("/snapshots/eve-sbx-state-existing");
     expect(metadataState.writeSessionMetadata).toHaveBeenLastCalledWith(
       "/tmp/eve-microsandbox-session/metadata.json",
       expect.objectContaining({
@@ -710,6 +724,7 @@ function createMockMicrosandboxModule(
     async remove() {},
     async snapshot(snapshotName: string) {
       createdFromSnapshot = snapshotName;
+      snapshots.add(snapshotName);
     },
     async stopWithTimeout() {},
   };
@@ -732,8 +747,11 @@ function createMockMicrosandboxModule(
       },
     },
     Snapshot: {
+      async open() {
+        return { digest: "state-digest" };
+      },
       async list() {
-        return [];
+        return [...snapshots].map((name) => ({ name, digest: name }));
       },
       async get(snapshotName: string) {
         if (!snapshots.has(snapshotName)) {
@@ -743,6 +761,7 @@ function createMockMicrosandboxModule(
       },
       async remove(snapshotName: string) {
         removedSnapshots.push(snapshotName);
+        snapshots.delete(snapshotName);
       },
     },
   };

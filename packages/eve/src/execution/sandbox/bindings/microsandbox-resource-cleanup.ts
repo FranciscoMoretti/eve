@@ -128,7 +128,7 @@ export async function manageLocalMicrosandboxResources(
         sessionId: input.sessionId,
         resource,
         operation: "remove",
-        run: () => removeMicrosandboxResource(module, resource),
+        run: (_live, nativeId) => removeMicrosandboxResource(module, { ...resource, nativeId }),
       });
     }
   }

@@ -3,7 +3,7 @@ import {
   withMicrosandboxResourceOperation,
 } from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { posix } from "node:path";
 
 import { shellQuote } from "#execution/sandbox/shell-quote.js";
@@ -22,6 +22,7 @@ import {
   MICROSANDBOX_METADATA_VERSION,
   type MicrosandboxSessionMetadata,
   type MicrosandboxResourceFact,
+  readSessionMetadata,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
   assertMicrosandboxPlatformCandidate,
@@ -47,10 +48,12 @@ import {
   isMicrosandboxNotFoundError,
   isMicrosandboxSnapshotSourceRunningError,
   isMicrosandboxStillRunningError,
-  removeSnapshotIfExists,
   snapshotExists,
 } from "#execution/sandbox/bindings/microsandbox-provider-state.js";
-import type { Sandbox as MicrosandboxSandbox } from "microsandbox";
+import type {
+  Sandbox as MicrosandboxSandbox,
+  Snapshot as MicrosandboxSnapshot,
+} from "microsandbox";
 
 export {
   isMicrosandboxNotFoundError,
@@ -114,7 +117,9 @@ export class MicrosandboxVm {
     return this.#sandboxName;
   }
 
-  async captureFork(checkpointKey: string): Promise<string> {
+  async captureFork(
+    checkpointKey: string,
+  ): Promise<{ snapshotName: string; snapshotDigest: string }> {
     const snapshotName = createProviderName(
       "eve-sbx-fork",
       `${this.#input.sessionKey}:${checkpointKey}`,
@@ -125,27 +130,40 @@ export class MicrosandboxVm {
       "allocate",
       async (previouslyLive) => {
         if (previouslyLive) {
-          await this.#input.module.Snapshot.get(snapshotName);
-          return;
+          return await this.#input.module.Snapshot.get(snapshotName);
         }
         const snapshots = await this.#input.module.Snapshot.list();
         if (snapshots.some((snapshot) => snapshot.name === snapshotName)) {
           throw new Error("Microsandbox fork snapshot already exists without ownership.");
         }
         try {
-          await this.stopAndSnapshot(snapshotName);
+          return await this.stopAndSnapshot(snapshotName);
         } finally {
           // Restart is fenced independently: retirement may have raced capture.
           this.#sandbox = await this.resourceOperation(
             "sandbox",
             this.#sandboxName,
             "allocate",
-            () => this.#input.module.Sandbox.start(this.#sandboxName),
+            async (_live, nativeId) => {
+              if (nativeId === undefined)
+                return await this.#input.module.Sandbox.start(this.#sandboxName);
+              const handle = await this.#input.module.Sandbox.get(this.#sandboxName);
+              if (handle.id !== nativeId) throw new Error("Microsandbox VM was replaced.");
+              return await handle.startDetached();
+            },
           );
         }
       },
     );
-    return snapshotName;
+    const metadata =
+      this.#metadataPath === undefined ? null : await readSessionMetadata(this.#metadataPath);
+    const snapshotDigest = metadata?.resources?.entries.find(
+      (entry) =>
+        entry.kind === "fork-snapshot" && entry.name === snapshotName && entry.phase === "live",
+    )?.nativeId;
+    if (snapshotDigest === undefined)
+      throw new Error("Microsandbox fork identity receipt is unavailable.");
+    return { snapshotName, snapshotDigest };
   }
 
   async captureState(optionsHash: string): Promise<MicrosandboxSessionMetadata> {
@@ -314,9 +332,14 @@ export class MicrosandboxVm {
     return adaptMicrosandboxExecToSandboxProcess(handle);
   }
 
-  async stopAndSnapshot(snapshotName: string): Promise<void> {
+  async stopAndSnapshot(snapshotName: string): Promise<MicrosandboxSnapshot> {
     await this.#sandbox.stop().catch(() => {});
-    await stopAndSnapshotMicrosandboxSandbox(this.#input.module, this.#sandboxName, snapshotName);
+    return await stopAndSnapshotMicrosandboxSandbox(
+      this.#input.module,
+      this.#sandboxName,
+      snapshotName,
+      this.#sandbox.id,
+    );
   }
 
   async writeFiles(
@@ -357,7 +380,7 @@ export class MicrosandboxVm {
     kind: MicrosandboxResourceFact["kind"],
     name: string,
     operation: "allocate" | "remove",
-    run: (previouslyLive: boolean) => Promise<T>,
+    run: (previouslyLive: boolean, nativeId?: string) => Promise<T>,
   ): Promise<T> {
     if (this.#metadataPath === undefined) return await run(false);
     return await withMicrosandboxResourceOperation({
@@ -366,6 +389,21 @@ export class MicrosandboxVm {
       resource: { kind, name },
       operation,
       run,
+      identify: async (result) => {
+        if (typeof result !== "object" || result === null)
+          throw new Error("Microsandbox allocation returned no identity receipt.");
+        if (kind === "sandbox" && "id" in result && typeof result.id === "string")
+          return { nativeId: result.id };
+        if (
+          kind !== "sandbox" &&
+          "digest" in result &&
+          typeof result.digest === "string" &&
+          "path" in result &&
+          typeof result.path === "string"
+        )
+          return { nativeId: result.digest, nativePath: result.path };
+        throw new Error("Microsandbox allocation returned an invalid identity receipt.");
+      },
     });
   }
 
@@ -373,8 +411,15 @@ export class MicrosandboxVm {
     kind: MicrosandboxResourceFact["kind"],
     name: string,
   ): Promise<void> {
-    await this.resourceOperation(kind, name, "remove", async () => {
-      await removeMicrosandboxResource(this.#input.module, { kind, name });
+    await this.resourceOperation(kind, name, "remove", async (_live, nativeId) => {
+      const resources =
+        this.#metadataPath === undefined || nativeId === undefined
+          ? undefined
+          : (await readSessionMetadata(this.#metadataPath))?.resources;
+      const nativePath = resources?.entries.find(
+        (entry) => entry.kind === kind && entry.name === name,
+      )?.nativePath;
+      await removeMicrosandboxResource(this.#input.module, { kind, name, nativeId, nativePath });
     });
   }
 
@@ -481,12 +526,14 @@ export async function connectMicrosandbox(input: {
     return await restoreMicrosandboxSessionSnapshot(input);
   }
 
-  const sandbox = await withMicrosandboxResourceOperation({
+  const sandbox = await withMicrosandboxResourceOperation<MicrosandboxSandbox>({
     path: input.metadataPath,
     sessionId: input.sessionKey,
     resource: { kind: "sandbox", name: input.metadata.sandboxName },
     operation: "allocate",
-    run: async (previouslyLive) => {
+    identify: async (sandbox) => ({ nativeId: sandbox.id }),
+    run: async (previouslyLive, nativeId) => {
+      if (handle.id !== nativeId) throw new Error("Microsandbox VM was replaced.");
       if (!previouslyLive) throw new Error("Microsandbox resume ownership is unavailable.");
       return handle.status === "running" || handle.status === "draining"
         ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
@@ -525,9 +572,19 @@ async function restoreMicrosandboxSessionSnapshot(input: {
     return null;
   }
 
+  const stateReceipt = input.metadata.resources?.entries.find(
+    (entry) =>
+      entry.kind === "state-snapshot" &&
+      entry.name === input.metadata.stateSnapshotName &&
+      entry.phase === "live",
+  );
+  if (stateReceipt?.nativeId === undefined || stateReceipt.nativePath === undefined)
+    throw new Error("Microsandbox state snapshot ownership is unavailable.");
+  if ((await input.module.Snapshot.open(stateReceipt.nativePath)).digest !== stateReceipt.nativeId)
+    throw new Error("Microsandbox state snapshot was replaced.");
   const sandboxName = createProviderName("eve-sbx-ses", `${input.sessionKey}:${randomUUID()}`);
   const sandbox = await createMicrosandbox({
-    fromSnapshot: input.metadata.stateSnapshotName,
+    fromSnapshot: stateReceipt.nativePath,
     metadataPath: input.metadataPath,
     sessionKey: input.sessionKey,
     module: input.module,
@@ -543,10 +600,11 @@ async function restoreMicrosandboxSessionSnapshot(input: {
     sessionId: input.sessionKey,
     resource: { kind: "sandbox", name: input.metadata.sandboxName },
     operation: "remove",
-    run: () =>
+    run: (_live, nativeId) =>
       removeMicrosandboxResource(input.module, {
         kind: "sandbox",
         name: input.metadata.sandboxName,
+        nativeId,
       }),
   });
 
@@ -692,13 +750,15 @@ export async function stopAndSnapshotMicrosandboxSandbox(
   module: MicrosandboxModule,
   sandboxName: string,
   snapshotName: string,
-): Promise<void> {
+  expectedId?: string,
+): Promise<MicrosandboxSnapshot> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const handle = await module.Sandbox.get(sandboxName);
+    if (expectedId !== undefined && handle.id !== expectedId)
+      throw new Error("Microsandbox VM was replaced.");
     await handle.stopWithTimeout(attempt === 0 ? MICROSANDBOX_STOP_TIMEOUT_MS : 0).catch(() => {});
     try {
-      await handle.snapshot(snapshotName);
-      return;
+      return await handle.snapshot(snapshotName);
     } catch (error) {
       if (!isMicrosandboxSnapshotSourceRunningError(error) || attempt === 2) {
         throw error;
@@ -707,6 +767,7 @@ export async function stopAndSnapshotMicrosandboxSandbox(
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
+  throw new Error("Microsandbox snapshot capture did not complete.");
 }
 
 export function createProviderName(prefix: string, key: string, extra = ""): string {
@@ -788,6 +849,7 @@ async function createMicrosandbox(input: {
     sessionId: input.sessionKey,
     resource: { kind: "sandbox", name: input.name },
     operation: "allocate",
+    identify: async (sandbox) => ({ nativeId: sandbox.id }),
     run: async (previouslyLive) => {
       if (previouslyLive) throw new Error("Microsandbox resource must be resumed, not replaced.");
       return await create();
@@ -836,15 +898,57 @@ function resolveMicrosandboxLabels(
 /** Confirms exact absence after removal; an SDK error message is not an absence proof. */
 export async function removeMicrosandboxResource(
   module: MicrosandboxModule,
-  resource: Pick<MicrosandboxResourceFact, "kind" | "name">,
+  resource: Pick<MicrosandboxResourceFact, "kind" | "name" | "nativeId" | "nativePath">,
 ): Promise<void> {
   if (resource.kind !== "sandbox") {
-    await removeSnapshotIfExists(module, resource.name);
-    if ((await module.Snapshot.list()).some((snapshot) => snapshot.name === resource.name))
-      throw new Error("Microsandbox snapshot removal is unconfirmed.");
+    if (resource.nativeId !== undefined) {
+      const path = resource.nativePath;
+      if (path === undefined) throw new Error("Microsandbox snapshot path receipt is unavailable.");
+      const exists = await stat(path).then(
+        () => true,
+        (error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      if (!exists) return;
+      const current = await module.Snapshot.open(path);
+      if (current.digest !== resource.nativeId)
+        throw new Error("Microsandbox snapshot was replaced.");
+      // A digest targets the receipt's artifact, and native child protection stays enabled.
+      await module.Snapshot.remove(resource.nativeId);
+      const remains = await stat(path).then(
+        () => true,
+        (error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      if (remains) throw new Error("Microsandbox snapshot removal is unconfirmed.");
+    } else {
+      // Shared template cleanup has no session ownership record.
+      await module.Snapshot.remove(resource.name);
+      if ((await module.Snapshot.list()).some((snapshot) => snapshot.name === resource.name))
+        throw new Error("Microsandbox snapshot removal is unconfirmed.");
+    }
     return;
   }
-  await removeSandboxIfExists(module, resource.name);
+  if (resource.nativeId === undefined) {
+    await removeSandboxIfExists(module, resource.name);
+  } else {
+    let handle;
+    try {
+      handle = await module.Sandbox.get(resource.name);
+    } catch (error) {
+      if (!isMicrosandboxNotFoundError(error)) throw error;
+    }
+    if (handle !== undefined) {
+      if (handle.id !== resource.nativeId || handle.backendKind !== "local")
+        throw new Error("Microsandbox VM was replaced or changed backend.");
+      await handle.stopWithTimeout(MICROSANDBOX_STOP_TIMEOUT_MS);
+      await handle.remove();
+    }
+  }
   let cursor: string | undefined;
   for (let page = 0; page < 100; page += 1) {
     const result = await module.Sandbox.listWith((builder) =>

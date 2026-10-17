@@ -44,6 +44,7 @@ it("first intent is visible before provider I/O and survives retirement during a
     sessionId,
     resource,
     operation: "allocate",
+    identify: async () => ({ nativeId: "native-vm-id" }),
     run: async () => {
       entered.resolve();
       await finish.promise;
@@ -57,7 +58,7 @@ it("first intent is visible before provider I/O and survives retirement during a
   finish.resolve();
   await allocating;
   expect((await readSessionMetadata(path))?.resources?.entries).toEqual([
-    { ...resource, phase: "live" },
+    { ...resource, phase: "live", nativeId: "native-vm-id" },
   ]);
   await expect(updateMicrosandboxMaterialization(path, sessionId, materialization)).rejects.toThrow(
     "retired",
@@ -72,7 +73,7 @@ it("first intent is visible before provider I/O and survives retirement during a
   });
   expect(remove).toHaveBeenCalledOnce();
   expect((await readSessionMetadata(path))?.resources?.entries).toEqual([
-    { ...resource, phase: "removed" },
+    { ...resource, phase: "removed", nativeId: "native-vm-id" },
   ]);
 });
 
@@ -82,10 +83,24 @@ it("an uncertain allocation cannot be retried or claimed removed", async () => {
     throw new Error("lost allocation response");
   });
   await expect(
-    withMicrosandboxResourceOperation({ path, sessionId, resource, operation: "allocate", run }),
+    withMicrosandboxResourceOperation({
+      path,
+      sessionId,
+      resource,
+      operation: "allocate",
+      identify: async () => ({ nativeId: "native-vm-id" }),
+      run,
+    }),
   ).rejects.toThrow("lost allocation");
   await expect(
-    withMicrosandboxResourceOperation({ path, sessionId, resource, operation: "allocate", run }),
+    withMicrosandboxResourceOperation({
+      path,
+      sessionId,
+      resource,
+      operation: "allocate",
+      identify: async () => ({ nativeId: "native-vm-id" }),
+      run,
+    }),
   ).rejects.toThrow("unknown");
   await expect(
     withMicrosandboxResourceOperation({ path, sessionId, resource, operation: "remove", run }),
@@ -100,6 +115,7 @@ it("failed removal remains retryable and requires the exact recorded owner and r
     sessionId,
     resource,
     operation: "allocate",
+    identify: async () => ({ nativeId: "native-vm-id" }),
     run: async () => {},
   });
   const remove = vi
