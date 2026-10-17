@@ -122,7 +122,6 @@ import {
   isNoOutputGeneratedError,
   type UpstreamRejectionSummary,
 } from "#harness/model-call-error.js";
-import { readGatewayGenerationId } from "#harness/model-usage.js";
 import { getPendingInputBatches, queueDeferredStepInput } from "#harness/pending-input-batches.js";
 import {
   applyLastToolCacheBreakpoint,
@@ -148,7 +147,12 @@ import {
   convertStaleResponsesToUserMessage,
   dropStaleSessionLimitContinuationResponses,
 } from "#harness/stale-input-responses.js";
-import { buildStepHooks, emitStepActions, type HarnessStepResult } from "#harness/step-hooks.js";
+import {
+  buildStepHooks,
+  emitStepActions,
+  readGatewayGenerationId,
+  type HarnessStepResult,
+} from "#harness/step-hooks.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import {
   getInvalidToolCallInputError,
