@@ -54,10 +54,15 @@ below (distribution). They are not an automatic queue to port old APIs.
 
 ### Exact paired package and evidence
 
-Runtime candidate: signed+DCO commit `efe221c7`.
-The app selects `.eve-upgrade/eve-0.80.1-efe221c7.tgz` in all four consumers.
-SHA-256: `3c7be9eb1e6b9b3a71633dfe31d565f1922c44fba107937977210e051db22fa9`.
-Later documentation-only commits do not change that tested runtime candidate.
+Runtime candidate: signed+DCO commit `8fb9d359`.
+The app selects `.eve-upgrade/eve-0.80.1-8fb9d359.tgz` in all four consumers.
+SHA-256: `559964f080e818519965f63d1f58bd10a1b17614665e930f97226a584fee2079`.
+Full integration checks below were recorded on `efe221c7`. The new candidate
+changes only the Microsandbox helper import to bypass hosted optional-installer
+pruning. A real Rolldown regression and the actual hosted ChatJS eve build failed
+before that correction and pass afterward. The local hosted build skips sandbox
+prewarming and is not deployment evidence. Later documentation-only commits do
+not change this runtime candidate.
 The app branch is `codex/eve080-integrated-upgrade`, based on merged main
 `c0ab1c0504bb3da73ca0f3625f66c47bf69e042e`. Its committed evidence lives in
 `apps/chat/tests/eve-upgrade/README.md` and `authenticated-evidence.json`.
