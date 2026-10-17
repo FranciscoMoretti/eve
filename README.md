@@ -24,19 +24,27 @@ both startup and streaming replacements are adopted; required unported contracts
 remain missing. The [umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9)
 targets the maintained branch and remains incomplete/nondeployable.
 
+**Approvals:** [the consumer slice](research/chatjs-native-approvals/README.md)
+adds five actual MCP/deletion request/execute scenarios to the accepted native15+3
+proof. [ChatJS #849](https://github.com/FranciscoMoretti/chat-js/pull/849) supplies
+a candidate-only response-policy patch; seven compiler diagnostics disappear, but
+the full app still fails. No credential or workflow-context equivalence is claimed.
+The conditional inventory reaches seven only on integrated adoption of all three
+replacements. Implemented retained runtime extensions remain none.
+
 ### Remaining inventory dispositions
 
-| Group                                 | Candidate disposition and remaining gate                                                                            |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Exact approval receipts               | Removal candidate; accepted 15+3 supported proof exists, actual MCP/deletion consumer integration remains.          |
-| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.                      |
-| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.              |
-| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                             |
-| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                           |
-| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                                   |
-| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.              |
-| Resumable HTTP streams                | Native replacement proven through the ChatJS GET proxy; adopt companion #848 and finish full candidate integration. |
-| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.            |
+| Group                                 | Candidate disposition and remaining gate                                                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exact approval receipts               | Native local receipts pass accepted 15+3 and five actual consumer cases; candidate response-policy adapter and full app integration remain. |
+| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.                                              |
+| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.                                      |
+| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                                                     |
+| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                                                   |
+| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                                                           |
+| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.                                      |
+| Resumable HTTP streams                | Native replacement proven through the ChatJS GET proxy; adopt companion #848 and finish full candidate integration.                         |
+| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.                                    |
 
 The application dependency prerequisite is reviewed separately in
 [ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847).
