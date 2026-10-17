@@ -160,21 +160,3 @@ it("retains custom metadata when an imported transcript is forked before a later
   expect(prefix.messages[0]?.metadata?.custom).toEqual(custom);
   expect(JSON.stringify(prefix.history)).not.toContain("selectedTool");
 });
-
-it("preserves hook annotation namespaces in imported-prefix forks", () => {
-  const annotations = { suggestions: { items: ["Next?"] } };
-  const result = prepareSessionTranscriptPrefix(
-    [
-      {
-        id: "seed_message_0",
-        role: "assistant",
-        metadata: { annotations },
-        parts: [{ type: "text", text: "answer" }],
-      },
-      { id: "seed_message_1", role: "user", parts: [{ type: "text", text: "edit" }] },
-    ],
-    "seed_message_1",
-  );
-  expect(result.messages[0]?.metadata?.annotations).toEqual(annotations);
-  expect(JSON.stringify(result.history)).not.toContain("Next?");
-});

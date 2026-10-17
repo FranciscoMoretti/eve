@@ -110,7 +110,6 @@ export type {
   ConnectionAuthorizationOutcome,
   AuthorizationRequiredStreamEvent,
   HandleMessageStreamEvent,
-  HookResultStreamEvent,
   MessageStreamEventMeta,
   InputResolution,
   InputResolutionOutcome,

@@ -56,8 +56,6 @@ export function prepareSessionTranscriptPrefix(
         parts: message.parts.map(seedPart),
       };
       if (message.metadata?.custom !== undefined) seed.metadata = message.metadata.custom;
-      if (message.metadata?.annotations !== undefined)
-        seed.annotations = message.metadata.annotations;
       if (message.role === "assistant" && message.metadata?.modelId !== undefined)
         seed.modelId = message.metadata.modelId;
       return seed;

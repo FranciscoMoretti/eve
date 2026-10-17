@@ -1,7 +1,6 @@
 import { BoundaryHookError } from "#shared/boundary-hook-error.js";
 import { getAdapterKind } from "#channel/adapter.js";
-import { createHookResultEvent } from "#context/hook-result.js";
-import type { HookResultStreamEvent, MessageStreamEvent } from "#protocol/message.js";
+import type { MessageStreamEvent } from "#protocol/message.js";
 import type { HookContext } from "#public/definitions/hook.js";
 import type { RuntimeHookRegistry } from "#runtime/hooks/registry.js";
 import { buildCallbackContext } from "#context/build-callback-context.js";
@@ -19,7 +18,6 @@ export async function dispatchStreamEventHooks(input: {
   readonly ctx: ContextContainer;
   readonly registry: RuntimeHookRegistry;
   readonly event: MessageStreamEvent;
-  readonly emitResult?: (event: HookResultStreamEvent) => Promise<void>;
 }): Promise<void> {
   const typed = input.registry.streamEventsByType.get(input.event.type) ?? [];
   const wildcard = input.registry.streamEventsWildcard;
@@ -30,17 +28,11 @@ export async function dispatchStreamEventHooks(input: {
 
   const hookCtx = buildHookContext(input.ctx);
   try {
-    for (const entry of [...typed, ...wildcard]) {
-      const result = await entry.handler(input.event, hookCtx);
-      if (result === undefined) continue;
-      if (input.event.type !== "turn.completed") {
-        throw new Error(`Hook "${entry.slug}" may return a result only for turn.completed.`);
-      }
-      const event = createHookResultEvent(entry.slug, input.event.data.turnId, result);
-      if (event === undefined) continue;
-      if (input.emitResult === undefined)
-        throw new Error("Hook results require a durable event emitter.");
-      await input.emitResult(event);
+    for (const entry of typed) {
+      await entry.handler(input.event, hookCtx);
+    }
+    for (const entry of wildcard) {
+      await entry.handler(input.event, hookCtx);
     }
   } catch (error) {
     if (input.event.type === "turn.started" || input.event.type === "step.started") {

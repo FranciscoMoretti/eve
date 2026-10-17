@@ -137,22 +137,6 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
         role: "user",
       });
 
-    case "hook.result": {
-      const annotation = event.data.responseMetadata;
-      if (annotation === undefined) return data;
-      const target = data.messages.findLast(
-        (message) => message.role === "assistant" && message.metadata?.turnId === event.data.turnId,
-      );
-      if (target === undefined) return data;
-      return upsertMessage(data, {
-        ...target,
-        metadata: {
-          ...target.metadata,
-          annotations: { ...target.metadata?.annotations, [event.data.hookId]: annotation },
-        },
-      });
-    }
-
     case "step.started":
       return updateAssistantMessage(data, event.data.turnId, (message) =>
         ensureStepStartPart(message, event.data.stepIndex),
