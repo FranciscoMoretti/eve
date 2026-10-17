@@ -31,13 +31,13 @@ describe("microsandbox package installation guidance", () => {
         host: { loadOptionalPackage, resolveProjectPath: (path) => path },
         options: resolveMicrosandboxOptions({ setup: { autoInstall: false } }),
       }),
-    ).rejects.toThrow("pnpm add -D microsandbox@0.5.5");
+    ).rejects.toThrow("pnpm add -D microsandbox@0.6.18");
     expect(loadOptionalPackage).toHaveBeenCalledWith(
       expect.objectContaining({
         autoInstall: false,
         packageName: "microsandbox",
-        installPackageName: "microsandbox@0.5.5",
-        missingMessage: expect.stringContaining("`pnpm add -D microsandbox@0.5.5`"),
+        installPackageName: "microsandbox@0.6.18",
+        missingMessage: expect.stringContaining("`pnpm add -D microsandbox@0.6.18`"),
       }),
     );
   });

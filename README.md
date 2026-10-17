@@ -74,8 +74,10 @@ hard to port or absent from this upstream-based branch.
 
 The local [immutable resource slice](research/chatjs-native-checkpoints/README.md)
 adds provider capture/restore and microsandbox resource isolation. It does not yet
-wire conversation checkpoints or restore history. SDK 0.6.18 integration remains
-unverified; the native provider probe uses the package's 0.5.5 dependency.
+wire conversation checkpoints or restore history. The actual provider lifecycle
+passes with SDK 0.6.18, matching ChatJS. The package now declares dev dependency
+`0.6.18`, optional peer `^0.6.18`, and automatic install `microsandbox@0.6.18`.
+Development cleanup uses its paginated list builder and checks exact run labels.
 
 | Group                                 | Smallest next decision                                                                                                                       |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |

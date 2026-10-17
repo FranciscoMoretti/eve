@@ -11,27 +11,44 @@ const state = vi.hoisted(() => {
   const removeSnapshotIfExists = vi.fn(async () => undefined);
   const stopAndSnapshotMicrosandboxSandbox = vi.fn(async () => undefined);
   const writeSessionMetadata = vi.fn(async () => undefined);
+  const query = {
+    labels: vi.fn((_labels: Record<string, string>) => query),
+    cursor: vi.fn((_cursor: string) => query),
+  };
   const microsandboxModule = {
     Sandbox: {
       get: vi.fn(async () => ({ stopWithTimeout: microsandboxStopWithTimeout })),
-      listWith: vi.fn(async () => [
-        {
-          configJson: JSON.stringify({
-            labels: { "eve.metadataPath": "/tmp/eve-microsandbox-session/metadata.json" },
-          }),
-          name: "msb-session",
-          status: "running",
-        },
-        {
-          configJson: JSON.stringify({ labels: {} }),
-          name: "msb-template",
-          status: "running",
-        },
-      ]),
+      listWith: vi.fn(async (configure: (list: typeof query) => unknown) => {
+        configure(query);
+        return {
+          sandboxes: [
+            {
+              configJson: JSON.stringify({
+                labels: {
+                  "eve.provider": "microsandbox",
+                  devRunId: "run-123",
+                  "eve.metadataPath": "/tmp/eve-microsandbox-session/metadata.json",
+                },
+              }),
+              name: "msb-session",
+              status: "running",
+            },
+            {
+              configJson: JSON.stringify({
+                labels: { "eve.provider": "microsandbox", devRunId: "run-123" },
+              }),
+              name: "msb-template",
+              status: "running",
+            },
+          ],
+          nextCursor: undefined as string | undefined,
+        };
+      }),
     },
   };
   return {
     dockerCli,
+    query,
     loadMicrosandboxWithoutInstall: vi.fn(async () => microsandboxModule),
     microsandboxModule,
     microsandboxStopWithTimeout,
@@ -73,6 +90,39 @@ describe("stopDevelopmentSandboxResources", () => {
     state.dockerCli.run.mockReset();
   });
 
+  it("visits later SDK pages and ignores resources owned by another development run", async () => {
+    state.dockerCli.run.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    state.microsandboxModule.Sandbox.listWith
+      .mockResolvedValueOnce({
+        sandboxes: [
+          {
+            name: "foreign",
+            status: "running",
+            configJson: JSON.stringify({
+              labels: { "eve.provider": "microsandbox", devRunId: "other-run" },
+            }),
+          },
+        ],
+        nextCursor: "second-page",
+      })
+      .mockResolvedValueOnce({
+        sandboxes: [
+          {
+            name: "owned-page-two",
+            status: "running",
+            configJson: JSON.stringify({
+              labels: { "eve.provider": "microsandbox", devRunId: "run-123" },
+            }),
+          },
+        ],
+        nextCursor: undefined,
+      });
+    await stopDevelopmentSandboxResources({ appRoot: "/tmp/app", devRunId: "run-123" });
+    expect(state.microsandboxModule.Sandbox.listWith).toHaveBeenCalledTimes(2);
+    expect(state.microsandboxModule.Sandbox.get).toHaveBeenCalledWith("owned-page-two");
+    expect(state.microsandboxModule.Sandbox.get).not.toHaveBeenCalledWith("foreign");
+  });
+
   it("stops Docker containers and snapshots microsandbox sessions tagged with the dev run id", async () => {
     state.dockerCli.run.mockImplementation(async (args: readonly string[]) => {
       if (args[0] === "ps") {
@@ -99,11 +149,9 @@ describe("stopDevelopmentSandboxResources", () => {
       "label=eve.sandbox.tag.devRunId=run-123",
     ]);
     expect(state.dockerCli.run).toHaveBeenCalledWith(["stop", "-t", "0", "docker-container"]);
-    expect(state.microsandboxModule.Sandbox.listWith).toHaveBeenCalledWith({
-      labels: {
-        "eve.provider": "microsandbox",
-        devRunId: "run-123",
-      },
+    expect(state.query.labels).toHaveBeenCalledWith({
+      "eve.provider": "microsandbox",
+      devRunId: "run-123",
     });
     expect(state.stopAndSnapshotMicrosandboxSandbox).toHaveBeenCalledWith(
       state.microsandboxModule,
@@ -131,7 +179,10 @@ describe("stopDevelopmentSandboxResources", () => {
   it("continues microsandbox cleanup when the Docker CLI is unavailable", async () => {
     const { DockerUnavailableError } = await import("#execution/sandbox/bindings/docker-cli.js");
     state.dockerCli.run.mockRejectedValue(new DockerUnavailableError());
-    state.microsandboxModule.Sandbox.listWith.mockResolvedValueOnce([]);
+    state.microsandboxModule.Sandbox.listWith.mockResolvedValueOnce({
+      sandboxes: [],
+      nextCursor: undefined,
+    });
     const log = vi.fn();
 
     await stopDevelopmentSandboxResources({
@@ -142,11 +193,6 @@ describe("stopDevelopmentSandboxResources", () => {
 
     expect(log).not.toHaveBeenCalled();
     expect(state.loadMicrosandboxWithoutInstall).toHaveBeenCalledWith("/tmp/eve-test");
-    expect(state.microsandboxModule.Sandbox.listWith).toHaveBeenCalledWith({
-      labels: {
-        "eve.provider": "microsandbox",
-        devRunId: "run-123",
-      },
-    });
+    expect(state.microsandboxModule.Sandbox.listWith).toHaveBeenCalledWith(expect.any(Function));
   });
 });

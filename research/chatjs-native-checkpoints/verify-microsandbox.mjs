@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { createMicrosandboxSandboxProvider } from "../../packages/eve/dist/src/execution/sandbox/bindings/microsandbox.js";
 const require = createRequire(new URL("../../packages/eve/package.json", import.meta.url));
-const { Snapshot } = await import(require.resolve("microsandbox"));
+const sdkEntry = require.resolve("microsandbox");
+const { Snapshot } = await import(sdkEntry);
+const sdkPackage = JSON.parse(await readFile(join(dirname(sdkEntry), "../package.json"), "utf8"));
+console.log("microsandbox SDK", sdkPackage.version);
 if (process.env.MSB_BACKEND !== "local")
   throw new Error("This verification requires MSB_BACKEND=local.");
 const storagePath = await mkdtemp(join(tmpdir(), "eve-native-fork-"));

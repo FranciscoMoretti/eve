@@ -35,10 +35,13 @@ and restore from the retained snapshot after both original resources are gone.
 It removes only resources it created. The saved red result captures the restart
 failure before the stop fix.
 
-The package's 0.5.5 SDK is the dependency used here. ChatJS currently installs
-0.6.18; this does not establish its compatibility. Local SDK 0.6.18 was separately
-probed for basic snapshot isolation and absence of source environment inheritance,
-but that SDK-only probe is not native provider evidence.
+The first provider run used SDK 0.5.5. The same actual provider lifecycle then
+passed with ChatJS's installed 0.6.18 SDK. The package now declares and installs
+0.6.18, with optional peer range `^0.6.18`; it does not retain a 0.5 compatibility
+branch. `microsandbox-sdk0618-result.txt` records the repeated run using the newly
+aligned package dependency, with the loaded SDK version printed by the probe.
+Development cleanup now traverses the SDK's paginated list builder and validates
+exact provider/development-run labels before touching returned resources.
 
 The saved `microsandbox-result.txt` records a passing actual-provider run after
 the shutdown fix. The affected provider/access suites pass 49 unit tests; package
@@ -49,3 +52,9 @@ Owner serialization, active-work exclusion, named checkpoint rejection, exact
 turn boundaries, history restoration and source authorization remain the next
 runtime slice. Admission/recovery remains held separately. No complete-copy or
 deployment readiness claim follows from the resource tests.
+
+SDK-alignment validation: 23 affected runtime/cleanup unit tests and package
+TypeScript pass, including later-page cleanup and foreign-owner exclusion. The
+confirmed-shutdown wait remains the provider's stop contract; it is not a
+version-dependent compatibility path. No app dependency change or production
+cutover was made.

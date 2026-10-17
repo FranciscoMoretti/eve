@@ -78,16 +78,32 @@ async function stopDevelopmentMicrosandboxResources(
     return;
   }
 
-  const sandboxes = await module.Sandbox.listWith({
-    labels: {
-      "eve.provider": "microsandbox",
-      [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
-    },
-  });
+  const sandboxes = [];
+  let cursor: string | undefined;
+  const cursors = new Set<string>();
+  do {
+    const page = await module.Sandbox.listWith((list) => {
+      const scoped = list.labels({
+        "eve.provider": "microsandbox",
+        [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
+      });
+      return cursor === undefined ? scoped : scoped.cursor(cursor);
+    });
+    sandboxes.push(...page.sandboxes);
+    cursor = page.nextCursor;
+    if (cursor !== undefined && cursors.has(cursor))
+      throw new Error("Microsandbox cleanup pagination did not advance.");
+    if (cursor !== undefined) cursors.add(cursor);
+  } while (cursor !== undefined);
 
   await Promise.all(
     sandboxes
-      .filter((sandbox) => sandbox.status === "running" || sandbox.status === "draining")
+      .filter(
+        (sandbox) =>
+          (sandbox.status === "running" || sandbox.status === "draining") &&
+          getMicrosandboxLabel(sandbox.configJson, "eve.provider") === "microsandbox" &&
+          getMicrosandboxLabel(sandbox.configJson, EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG) === devRunId,
+      )
       .map(async (sandbox) => {
         const metadataPath = getMicrosandboxLabel(
           sandbox.configJson,
