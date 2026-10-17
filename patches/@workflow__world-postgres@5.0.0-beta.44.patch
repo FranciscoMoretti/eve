@@ -1,0 +1,58 @@
+diff --git a/dist/queue.js b/dist/queue.js
+--- a/dist/queue.js
++++ b/dist/queue.js
+@@ -3,7 +3,7 @@
+ import { setTimeout as sleep } from 'node:timers/promises';
+ import { createWorkflowBaseUrl, createWorkflowHealthEndpoint, createWorkflowUrl, } from '@workflow/utils';
+ import { getWorkflowPort } from '@workflow/utils/get-port';
+-import { getQueueTopicPrefix, MessageId, parseQueueName, QueuePayloadSchema, resolveQueueNamespace, WorkflowInvokePayloadSchema, } from '@workflow/world';
++import { getQueueTopicPrefix, MessageId, parseQueueName, QueuePayloadSchema, resolveQueueNamespace, } from '@workflow/world';
+ import { createNodeHttpAgents, destroyNodeHttpAgents, nodeHttpFetch, } from '@workflow/world/node-http.js';
+ import { createWorld } from '@workflow/world-local';
+ import { Logger, makeWorkerUtils, run, } from 'graphile-worker';
+@@ -150,7 +150,6 @@
+     };
+     const completedMessages = new Set();
+     const inflightMessages = new Map();
+-    const inflightWorkflowRuns = new Map();
+     let workerUtils = null;
+     let runner = null;
+     let runnerStart = null;
+@@ -438,10 +437,6 @@
+             const queueName = `${queue}${messageData.id}`;
+             const body = await deserializeMessageBody(messageData.data);
+             QueuePayloadSchema.parse(body);
+-            const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
+-            const workflowRunSerializationKey = workflowInvoke.success && !workflowInvoke.data.stepId
+-                ? `workflow:${workflowInvoke.data.runId}`
+-                : undefined;
+             const executeTask = async () => {
+                 const result = await executeMessageOverHttp({
+                     queueName,
+@@ -475,23 +470,9 @@
+             };
+             const idempotencyKey = messageData.idempotencyKey;
+             if (!idempotencyKey) {
+-                if (workflowRunSerializationKey) {
+-                    // Preserve step fan-out while preventing two workflow replays from
+-                    // mutating the same run's event log at the same time.
+-                    const previous = inflightWorkflowRuns.get(workflowRunSerializationKey);
+-                    const execution = (previous ?? Promise.resolve())
+-                        .catch(() => { })
+-                        .then(() => executeTask())
+-                        .finally(() => {
+-                        if (inflightWorkflowRuns.get(workflowRunSerializationKey) ===
+-                            execution) {
+-                            inflightWorkflowRuns.delete(workflowRunSerializationKey);
+-                        }
+-                    });
+-                    inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
+-                    await execution;
+-                    return;
+-                }
++                // A wake must reach the runtime while an earlier invocation is
++                // running an inline step; serializing by run deadlocks steering
++                // and cancellation behind the work they need to interrupt.
+                 await executeTask();
+                 return;
+             }

@@ -95,6 +95,9 @@ jobs:
       - name: Test e2e fixture discovery
         run: node --test .github/scripts/discover-e2e-fixtures.test.mjs
 
+      - name: Test Postgres queue wake delivery
+        run: node --experimental-test-module-mocks --test scripts/workflow-postgres-queue.test.mjs
+
   test-integration:
     name: test-integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
