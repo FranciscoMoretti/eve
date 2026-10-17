@@ -8,7 +8,6 @@ const state = vi.hoisted(() => {
   };
   const microsandboxStopWithTimeout = vi.fn(async () => undefined);
   const readSessionMetadata = vi.fn();
-  const removeSnapshotIfExists = vi.fn(async () => undefined);
   const stopAndSnapshotMicrosandboxSandbox = vi.fn(async () => undefined);
   const writeSessionMetadata = vi.fn(async () => undefined);
   const query = {
@@ -53,7 +52,6 @@ const state = vi.hoisted(() => {
     microsandboxModule,
     microsandboxStopWithTimeout,
     readSessionMetadata,
-    removeSnapshotIfExists,
     stopAndSnapshotMicrosandboxSandbox,
     writeSessionMetadata,
   };
@@ -70,7 +68,7 @@ vi.mock("#execution/sandbox/bindings/docker-cli.js", async (importOriginal) => {
 vi.mock("#execution/sandbox/bindings/microsandbox-runtime.js", () => ({
   createProviderName: (prefix: string, key: string) => `${prefix}-${key}`,
   loadMicrosandboxWithoutInstall: state.loadMicrosandboxWithoutInstall,
-  removeSnapshotIfExists: state.removeSnapshotIfExists,
+  removeMicrosandboxResource: vi.fn(),
   stopAndSnapshotMicrosandboxSandbox: state.stopAndSnapshotMicrosandboxSandbox,
 }));
 
@@ -123,7 +121,7 @@ describe("stopDevelopmentSandboxResources", () => {
     expect(state.microsandboxModule.Sandbox.get).not.toHaveBeenCalledWith("foreign");
   });
 
-  it("stops Docker containers and snapshots microsandbox sessions tagged with the dev run id", async () => {
+  it("stops tagged Docker containers and templates without rewriting unattributed session metadata", async () => {
     state.dockerCli.run.mockImplementation(async (args: readonly string[]) => {
       if (args[0] === "ps") {
         return { exitCode: 0, stderr: "", stdout: "docker-container\n" };
@@ -153,25 +151,8 @@ describe("stopDevelopmentSandboxResources", () => {
       "eve.provider": "microsandbox",
       devRunId: "run-123",
     });
-    expect(state.stopAndSnapshotMicrosandboxSandbox).toHaveBeenCalledWith(
-      state.microsandboxModule,
-      "msb-session",
-      expect.stringMatching(/^eve-sbx-state-msb-session:/u),
-    );
-    expect(state.writeSessionMetadata).toHaveBeenCalledWith(
-      "/tmp/eve-microsandbox-session/metadata.json",
-      {
-        networkPolicy: "allow-all",
-        optionsHash: "options-hash",
-        sandboxName: "msb-session",
-        stateSnapshotName: expect.stringMatching(/^eve-sbx-state-msb-session:/u),
-        version: 2,
-      },
-    );
-    expect(state.removeSnapshotIfExists).toHaveBeenCalledWith(
-      state.microsandboxModule,
-      "old-snapshot",
-    );
+    expect(state.stopAndSnapshotMicrosandboxSandbox).not.toHaveBeenCalled();
+    expect(state.writeSessionMetadata).not.toHaveBeenCalled();
     expect(state.microsandboxModule.Sandbox.get).toHaveBeenCalledWith("msb-template");
     expect(state.microsandboxStopWithTimeout).toHaveBeenCalledWith(10_000);
   });

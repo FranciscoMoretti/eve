@@ -1,19 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import {
   DOCKER_SANDBOX_LABEL,
   stopDockerContainerIfRunning,
 } from "#execution/sandbox/bindings/docker-container.js";
 import { createDockerCli, DockerUnavailableError } from "#execution/sandbox/bindings/docker-cli.js";
+import { readSessionMetadata } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
-  MICROSANDBOX_METADATA_VERSION,
-  readSessionMetadata,
-  writeSessionMetadata,
-} from "#execution/sandbox/bindings/microsandbox-metadata.js";
+  updateMicrosandboxMaterialization,
+  withMicrosandboxResourceOperation,
+} from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 import {
   createProviderName,
   loadMicrosandboxWithoutInstall,
-  removeSnapshotIfExists,
+  removeMicrosandboxResource,
   stopAndSnapshotMicrosandboxSandbox,
 } from "#execution/sandbox/bindings/microsandbox-runtime.js";
 import {
@@ -116,11 +118,21 @@ async function stopDevelopmentMicrosandboxResources(
         }
 
         const metadata = await readSessionMetadata(metadataPath);
-        if (metadata === null || metadata.sandboxName !== sandbox.name) {
-          const handle = await module.Sandbox.get(sandbox.name);
-          await handle.stopWithTimeout(10_000).catch(() => {});
-          return;
-        }
+        const resources = metadata?.resources;
+        const authority = join(await realpath(appRoot), ".eve/sandbox-cache/microsandbox");
+        const vm = resources?.entries.find(
+          (entry) =>
+            entry.kind === "sandbox" && entry.name === sandbox.name && entry.phase === "live",
+        );
+        if (
+          metadata === null ||
+          metadata.sandboxName !== sandbox.name ||
+          resources?.authority !== authority ||
+          vm?.nativeId === undefined ||
+          dirname(dirname(dirname(metadataPath))) !== authority ||
+          (await realpath(metadataPath)) !== metadataPath
+        )
+          throw new Error("Development microsandbox resource ownership is unavailable.");
 
         log?.(`snapshotting development microsandbox session "${sandbox.name}" before shutdown`);
         const previousStateSnapshotName = metadata.stateSnapshotName;
@@ -128,16 +140,37 @@ async function stopDevelopmentMicrosandboxResources(
           "eve-sbx-state",
           `${metadata.sandboxName}:${randomUUID()}`,
         );
-        await stopAndSnapshotMicrosandboxSandbox(module, sandbox.name, stateSnapshotName);
-        await writeSessionMetadata(metadataPath, {
-          networkPolicy: metadata.networkPolicy,
-          optionsHash: metadata.optionsHash,
-          sandboxName: metadata.sandboxName,
+        await withMicrosandboxResourceOperation({
+          path: metadataPath,
+          sessionId: resources.sessionId,
+          resource: { kind: "state-snapshot", name: stateSnapshotName },
+          operation: "allocate",
+          run: async () =>
+            await stopAndSnapshotMicrosandboxSandbox(
+              module,
+              sandbox.name,
+              stateSnapshotName,
+              vm.nativeId,
+            ),
+          identify: async (snapshot) => ({ nativeId: snapshot.digest, nativePath: snapshot.path }),
+        });
+        await updateMicrosandboxMaterialization(metadataPath, resources.sessionId, {
+          ...metadata,
           stateSnapshotName,
-          version: MICROSANDBOX_METADATA_VERSION,
         });
         if (previousStateSnapshotName !== undefined) {
-          await removeSnapshotIfExists(module, previousStateSnapshotName);
+          const previous = resources.entries.find(
+            (entry) => entry.kind === "state-snapshot" && entry.name === previousStateSnapshotName,
+          );
+          if (previous === undefined)
+            throw new Error("Development microsandbox state ownership is unavailable.");
+          await withMicrosandboxResourceOperation({
+            path: metadataPath,
+            sessionId: resources.sessionId,
+            resource: previous,
+            operation: "remove",
+            run: async () => await removeMicrosandboxResource(module, previous),
+          });
         }
       }),
   );

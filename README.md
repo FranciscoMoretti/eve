@@ -1,6 +1,6 @@
 ## ChatJS 0.80.1 upgrade candidate
 
-**Integration remains incomplete and nondeployable.** Guest and authenticated create/send/reconnect/cancel, app crash fencing, checkpoint restart/copy, and local resource cleanup have evidence. Full authenticated approval/document/attachment flows and final integrated review remain.
+**Integration remains incomplete and nondeployable.** Guest and authenticated create/send/reconnect/cancel, app crash fencing, checkpoint restart/copy, local resource cleanup, and authenticated approval/document/attachment flows have evidence. Combined source-owner/VM validation and final integrated review remain.
 
 The sections below retain earlier checkpoints; the resource slice began at `43e9d7d3` and now includes stable identity receipts. The paired app lockfile records the exact packed candidate.
 [Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets the maintained
@@ -161,13 +161,16 @@ local candidate tarball. Production main's pin is unchanged.
   the existing native research harness passes adaptive research with independently
   charged search receipts and cancellation of owned children. It caught the
   structured reply rename to `eve__reply`. No provider model accounting claim.
-- Current integrated app through `45b255efd` and the pending cleanup companion
+- Current integrated app through `64117e2f1`
   passes all eight type-check tasks and root lint. Authenticated runtime, app
   SIGKILL/no-resend, native restart/retained copy, causal display metadata and
   local resource evidence are recorded in ChatJS
   `apps/chat/tests/eve-upgrade/README.md`. This supersedes the earlier compiler
-  blocker counts below; remaining gates are full approval/document/attachment
-  flows and final integrated review.
+  blocker counts below. Authenticated document creation/editing, stale-revision
+  rejection, owner approval and foreign rejection pass. Attachment upload,
+  native URL replay and Edit restoration pass with disposable Blob transport.
+  Shared transcripts retain only positively bound display selections. Remaining
+  gates are combined source-owner/VM validation and final integrated review.
 
 The published #848 route assertion was changed by autofix after its earlier green
 run; it is stale, not merge-ready. The integrated branch restores the exact mock
