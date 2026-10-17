@@ -99,9 +99,14 @@ production hosts, cache mismatch, unattributed metadata and crashed locks fail
 closed. Locks are never stolen or expired. This is not distributed fencing.
 App copy-retention policy remains separate from native borrower facts.
 
-The owner/VM proof uses a deterministic authored tool fixture; the authenticated
-ChatJS/document/database flow is separate evidence. There is no claim of a kill
-inside the native checkpoint commit window: that boundary has injected storage
+The earlier owner/VM proof uses a deterministic authored tool fixture. The
+[combined authenticated app evidence](https://github.com/FranciscoMoretti/chat-js/blob/ec381a867/apps/chat/tests/eve-upgrade/REQUIREMENTS.md)
+now also verifies document revisions, owned files and bound reservations with an
+actual immutable VM fork, plus an independently allocated saved public copy.
+Authenticated MCP checks use real connector rows, current database policy and
+owner approval receipts with disposable HTTP transport. The temporary fetch/dispatcher
+injection used for that transport does not verify live OAuth, SSRF or DNS pinning.
+There is no claim of a kill inside the native checkpoint commit window: that boundary has injected storage
 fault coverage, while actual native SIGKILL occurs after commit. Early failing
 shutdown fixtures are retained for inspection when their ownership or allocation
 receipt is unknown; final successful fixture sessions were purged.
