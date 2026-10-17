@@ -15,19 +15,28 @@ patch to upstream behavior and exercises two minimal agents with real local
 maintained runtime. Its ten-group inventory becomes nine only when this verified
 startup replacement is adopted in an integrated candidate.
 
+**HTTP streaming:** [the streaming slice](research/chatjs-native-streams/README.md)
+proves native bounded history, exact cursor reconnect, heartbeat/lease and abort
+through the actual ChatJS GET policy/relay. Its principal and database boundary
+are fixtures. [ChatJS #848](https://github.com/FranciscoMoretti/chat-js/pull/848)
+is the independent minimal query adaptation. The count becomes eight only after
+both startup and streaming replacements are adopted; required unported contracts
+remain missing. The [umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9)
+targets the maintained branch and remains incomplete/nondeployable.
+
 ### Remaining inventory dispositions
 
-| Group                                 | Candidate disposition and remaining gate                                                                   |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Exact approval receipts               | Removal candidate; accepted 15+3 supported proof exists, actual MCP/deletion consumer integration remains. |
-| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.             |
-| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.     |
-| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                    |
-| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                  |
-| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                          |
-| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.     |
-| Resumable HTTP streams                | Removal candidate; native stream semantics still need the ChatJS proxy/security proof.                     |
-| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.   |
+| Group                                 | Candidate disposition and remaining gate                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Exact approval receipts               | Removal candidate; accepted 15+3 supported proof exists, actual MCP/deletion consumer integration remains.          |
+| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.                      |
+| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.              |
+| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                             |
+| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                           |
+| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                                   |
+| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.              |
+| Resumable HTTP streams                | Native replacement proven through the ChatJS GET proxy; adopt companion #848 and finish full candidate integration. |
+| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.            |
 
 The application dependency prerequisite is reviewed separately in
 [ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847).
