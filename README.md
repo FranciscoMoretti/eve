@@ -1,105 +1,96 @@
 ## ChatJS 0.80.1 upgrade candidate
 
-This candidate starts at upstream **eve 0.80.1**,
-[`e3cea42486e7e32b7b3001bb5912e076b5443ad5`](https://github.com/vercel/eve/commit/e3cea42486e7e32b7b3001bb5912e076b5443ad5).
-The umbrella branch `codex/chatjs-eve080-upgrade` targets the maintained
-`francisco/chatjs-package` branch. Its full diff includes the upstream version
-upgrade and is not the residual ChatJS patch. Inspect the residual patch against
-`codex/chatjs-eve080-base`, pinned to the exact upstream commit above.
-The maintained `francisco/chatjs-package` runtime remains at
-[`5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`](https://github.com/FranciscoMoretti/eve/commit/5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c).
-This candidate is **not ready for ChatJS adoption**. Starting from upstream does
-not mean the remaining contracts have been ported or retired.
+**Incomplete and nondeployable: the real ChatJS agents do not compile yet.**
+[Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) targets the maintained
+`francisco/chatjs-package` branch, baseline
+`5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`. This candidate starts at exact upstream
+**eve 0.80.1**, `e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
+The full umbrella diff includes the upstream upgrade. Review the residual ChatJS
+patch against `codex/chatjs-eve080-base`, pinned to that exact upstream commit.
 
-**Next production startup:** native candidate retirement evidence is recorded in
-[the startup slice](research/chatjs-next-startup/README.md). It maps the exact old
-patch to upstream behavior and exercises two minimal agents with real local
-`next build` / `next start`. Merging this proof alone does not delete code from the
-maintained runtime. Its ten-group inventory becomes nine only when this verified
-startup replacement is adopted in an integrated candidate.
+### Review order
 
-### Review order and implementation status
+| Slice                                                            | Exact review base                           | Companion / status                                                                                                                |
+| ---------------------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| [Startup #8](https://github.com/FranciscoMoretti/eve/pull/8)     | `codex/chatjs-eve080-base` at `e3cea424`    | Minimal real Next production startup proof; included here                                                                         |
+| [Streaming #10](https://github.com/FranciscoMoretti/eve/pull/10) | `codex/eve080-next-startup` at `9b902b5a`   | [ChatJS #848](https://github.com/FranciscoMoretti/chat-js/pull/848), independently based on main `2de14d3fd`; proof included here |
+| [Approvals #11](https://github.com/FranciscoMoretti/eve/pull/11) | `codex/eve080-native-streams` at `190cb362` | [ChatJS #849](https://github.com/FranciscoMoretti/chat-js/pull/849), independently based on main `c0ab1c050`; proof included here |
 
-1. Review [startup proof #8](https://github.com/FranciscoMoretti/eve/pull/8)
-   against `codex/chatjs-eve080-base`. This aggregate already includes its two commits.
-2. Review the streaming proof against `codex/eve080-next-startup`, then the
-   approval consumer proof against the streaming slice. These are planned stacked
-   review slices; neither is complete or included here yet.
-3. Review each necessary retained extension as a narrow slice against its declared
-   dependency. Aggregate only reviewed, evidenced behavior. Check the final residual
-   diff against the exact upstream base before considering the umbrella for merge.
-4. Integrate both ChatJS agents after the independent
-   [dependency prerequisite #847](https://github.com/FranciscoMoretti/chat-js/pull/847),
-   then validate fresh-session ownership, correlation, copy, accounting and recovery.
+The fork slices are stacked in that order. The two app companions are independent
+and change no production eve pin. Dependency prerequisite
+[ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847) is merged.
+Historical fork PRs #1, #2 and #7 are neither included nor superseded.
+Each subsequent necessary extension must declare its own dependency and narrow
+review base. None of these draft proof PRs deletes maintained runtime code.
 
-**Implemented retained extensions: none.** This branch currently contains upstream
-0.80.1 plus startup proof and upgrade documentation. Required fork-only behavior is
-missing. The branch is **incomplete and nondeployable** until the remaining contracts
-and application integration pass. No published package or production app pin has
-been changed by our candidate commits.
+### Implemented retained extensions and upstream replacements
 
-**Upstream replacements:** native Next startup is proven for the minimal local
-fixture. Streams and approval receipts remain conditional replacement candidates;
-the table identifies their remaining consumer gates. Existing fork PRs #1, #2 and
-#7 are not included or superseded. Their behavior must be assessed before reuse.
+**Implemented retained runtime extensions: none.** The residual candidate changes
+are proof fixtures and documentation. Required contracts below are still missing.
+The absence of old fork code is not proof that its requirements work upstream.
 
-### Pending required contracts and candidate decisions
+| Original inventory group | Replacement evidence                                                                                                                           | Remaining integration gate                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Next production startup  | [Two agents, real build/start, negative control, concurrency and failure/retry](research/chatjs-next-startup/README.md)                        | Full ChatJS startup after compiler blockers are resolved                  |
+| Resumable HTTP streams   | [Six actual GET policy/relay to native HTTP scenarios](research/chatjs-native-streams/README.md), including exact cursor, real lease and abort | Adopt exact `follow=false` app allowlist; real full-app integration       |
+| Exact approval receipts  | [Accepted 15+3 runtime cases and five actual MCP/deletion consumer scenarios](research/chatjs-native-approvals/README.md)                      | Candidate response-policy accessor patch; real catalog/DB/app integration |
 
-| Group                                 | Candidate disposition and remaining gate                                                                   |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Exact approval receipts               | Removal candidate; accepted 15+3 supported proof exists, actual MCP/deletion consumer integration remains. |
-| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.             |
-| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.     |
-| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                    |
-| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                  |
-| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                          |
-| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.     |
-| Resumable HTTP streams                | Removal candidate; native stream semantics still need the ChatJS proxy/security proof.                     |
-| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.   |
+Streaming's principal/database boundary and approvals' database/MCP persistence
+boundary are fixtures. No credential/getToken or workflow-context equivalence is
+claimed. Only integrated adoption of these three replacements reduces the original
+ten-group inventory to seven. Required behavior is never dropped because it is
+hard to port or absent from this upstream-based branch.
 
-The application dependency prerequisite is reviewed separately in
-[ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847).
-No application pin changes, release, deployment, old-session continuation, or old
-billing import are part of this candidate. Authority, exact correlation, ownership,
-best-effort accounting, and no automatic resend remain required. The application's
-PostgreSQL consumed-prefix patch and abrupt-crash recovery gate remain separate.
+### Pending required contracts
+
+| Group                                 | Smallest next decision                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Message metadata and identity         | Test native events against exact operation correlation/replay IDs; keep display metadata app-owned and port only missing correlation         |
+| Creation-operation lookup             | Use native create dedupe where sufficient; prove authenticated read-only recovery without resend                                             |
+| Checkpoints and forks                 | Evaluate native session/checkpoint APIs against new-conversation boundaries and owned resource isolation; port only missing guarantees       |
+| History import and projection         | Evaluate trusted new-conversation seed/projection without tool replay or billing import; missing exports currently block authenticated build |
+| Attachment staging                    | Preserve owned seed staging and complete retry semantics through native APIs or a minimal necessary extension                                |
+| Sandbox lifecycle                     | Verify identity, cleanup, snapshot and Microsandbox 0.6 ownership; no silent backend downgrade                                               |
+| Distribution and protocol integration | Validate all retained contracts, packaged exports, both agents and fresh-session runtime before adoption                                     |
+
+The maintained inventory is requirements input, not an automatic patch queue.
+Each row needs native evidence, an app-owned alternative or the smallest necessary
+runtime port. No old-session continuity or historical billing import is required.
+Authority, exact correlation, ownership, quota/balance, best-effort accounting,
+independent tool charging and no automatic resend remain mandatory. The PostgreSQL
+consumed-prefix patch and abrupt-crash recovery gate remain separate.
 
 ### Exact candidate integration checkpoint
 
-**Not yet compatible with real ChatJS.** Candidate
-`aab691297a59cc8c325b8f8c584a472495aed9ce` was built and packed successfully,
-then consumed by tracked ChatJS main `c0ab1c0504bb3da73ca0f3625f66c47bf69e042e`
-(including merged #847). Both real agent builds fail: authenticated at missing
-`eve/transcript`, guest at removed `inputResponseSchema`. Authenticated types have
-56 diagnostics in eight groups; guest has one. Thirty focused app tests pass, but
-full startup/send/stream/cancel/approval/copy/sandbox flows remain blocked.
+Candidate `aab691297a59cc8c325b8f8c584a472495aed9ce` built and packed successfully
+and was consumed by tracked ChatJS main
+`c0ab1c0504bb3da73ca0f3625f66c47bf69e042e` (merged #847).
+The authenticated agent has 56 diagnostics in eight groups and fails its build
+at missing `eve/transcript`; guest has one diagnostic and fails at removed
+`inputResponseSchema`. Thirty focused app tests pass, but full startup/send/stream/
+reconnect/cancel/approval/copy/attachment/sandbox flows remain blocked or unexecuted.
 
-[Committed matrix, root causes and reproduction](https://github.com/FranciscoMoretti/chat-js/blob/355553f0b/experiments/eve080-candidate-verification/README.md)
-distinguish app adaptations from missing required runtime contracts. An initial
-extra MCP schema diagnostic was a fixture dependency-topology artifact and was
-removed without modifying application or runtime code. This documentation update
-changes no runtime source; the tested commit remains the exact SHA above.
+[Committed matrix, root causes and reproduction](https://github.com/FranciscoMoretti/chat-js/blob/d5b789589/experiments/eve080-candidate-verification/README.md)
+record the exact tested head. A fixture SDK peer-tree artifact initially added one
+MCP diagnostic; correcting the installation topology removed it without a source fix.
 
-Streaming evidence is now [fork #10](https://github.com/FranciscoMoretti/eve/pull/10),
-stacked on #8, with independent [ChatJS #848](https://github.com/FranciscoMoretti/chat-js/pull/848).
-It is not yet incorporated into this aggregate. Its fixture proof does not override
-the real-app compiler failures.
+The candidate-only response-policy patch in #849 separately removes all seven MCP
+registration/deletion-definition diagnostics (56 to49). Full compilation still fails.
+It reads native `response.principal`; execution keeps `approval.responder` and
+current owner/policy checks. This patch is not applied to production app sources.
+Later commits here change only README/research evidence; runtime/package source
+is unchanged from the exact tested candidate. No later full-app pass is claimed.
 
-### Next minimal port plan
+### Next minimal integration work
 
-First complete stream proxy/security and approval consumer proofs to decide whether
-those runtime patches can be omitted. Then inspect native event metadata and create
-dedupe against exact operation correlation and read-only recovery. Port only a
-missing observable contract; keep display metadata and policy decisions in ChatJS.
-Next evaluate native checkpoint/session APIs for trusted new-conversation copy,
-projection and owned attachment staging as one contract with separately reviewable
-changes. Finally verify sandbox identity/lifecycle and packaged exports. None of
-these pending contracts is implemented merely because it appears in this plan.
-
-The maintained inventory is the requirements input, not a patch queue. Each row
-must end with native evidence, a proven app-owned alternative, or the smallest
-necessary runtime port. Old-session continuity, credential fallback and wholesale
-history replay are not substitute proofs for fresh-session ownership and copy.
+First replace the removed app input validator using an exact supported/app-owned
+schema, and adopt the proven response-policy adapter only in candidate integration.
+Then resolve native metadata/create recovery and copy/checkpoint/projection contracts
+with evidence before choosing ports. Update progress and event consumers without
+weakening accounting. Finish owned attachments, sandbox and distribution validation.
+This plan does not authorize a wholesale port or imply that missing behavior works.
+No maintained merge, release, deployment, live DB or production app pin cutover has
+occurred.
 
 ---
 
