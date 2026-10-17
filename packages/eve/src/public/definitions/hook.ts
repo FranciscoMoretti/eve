@@ -1,4 +1,3 @@
-import type { LanguageModelUsage, ProviderMetadata } from "ai";
 import type { JsonObject } from "#shared/json.js";
 import type { HandleMessageStreamEvent } from "../../protocol/message.js";
 import type { SessionContext } from "./callback-context.js";
@@ -26,7 +25,6 @@ export interface HookEventMap {
   readonly "actions.requested": ProtocolEvent<"actions.requested">;
   readonly "authorization.completed": ProtocolEvent<"authorization.completed">;
   readonly "authorization.required": ProtocolEvent<"authorization.required">;
-  readonly "compaction.usage": ProtocolEvent<"compaction.usage">;
   readonly "compaction.completed": ProtocolEvent<"compaction.completed">;
   readonly "compaction.requested": ProtocolEvent<"compaction.requested">;
   readonly "context.cleared": ProtocolEvent<"context.cleared">;
@@ -92,18 +90,9 @@ export interface HookContext extends SessionContext {
  * infers it from the event key. The typed event is the first argument, `ctx`
  * is the last.
  */
-export interface HookModelCall {
-  /** Request failed before completed usage was available. */
-  readonly failed?: boolean;
-  readonly modelId: string;
-  readonly usage?: LanguageModelUsage;
-  readonly providerMetadata?: ProviderMetadata;
-}
-
-/** Durable display annotations and auxiliary model costs; never model context. */
+/** Durable display annotations; never model context. */
 export interface TurnCompletedHookResult {
   readonly responseMetadata?: JsonObject;
-  readonly modelCalls?: readonly HookModelCall[];
 }
 
 type HookReturn<TEvent> = TEvent extends { readonly type: "turn.completed" }

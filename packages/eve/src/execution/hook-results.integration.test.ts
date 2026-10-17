@@ -19,14 +19,6 @@ it("persists completion annotations before waiting and preserves them through na
             events: {
               "turn.completed": () => ({
                 responseMetadata: { items: ["annotation-only-marker"] },
-                modelCalls: [
-                  {
-                    modelId: "auxiliary",
-                    providerMetadata: {
-                      gateway: { cost: "0.001", generationId: "aux-1", secret: "hidden" },
-                    },
-                  },
-                ],
               }),
             },
           }),

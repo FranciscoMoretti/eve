@@ -655,7 +655,7 @@ describe("final request envelope compaction", () => {
   });
 });
 it.each(["summary", ""])(
-  "emits compaction usage before checkpoint validation (%j)",
+  "preserves compaction checkpoints without billing events (%j)",
   async (text) => {
     vi.mocked(generateText, { partial: true }).mockResolvedValue({
       text,
@@ -699,18 +699,8 @@ it.each(["summary", ""])(
     const events = handleEvent.mock.calls.map(([event]) => event);
     expect(events.map((event) => event.type)).toEqual([
       "compaction.requested",
-      "compaction.usage",
       ...(text ? ["compaction.completed"] : []),
       "session.waiting",
     ]);
-    expect(events[1]).toMatchObject({
-      type: "compaction.usage",
-      data: {
-        sessionId: "test-session",
-        turnId: "turn_0",
-        usage: { costUsd: 0.004, inputTokens: 30, outputTokens: 5 },
-        providerMetadata: { gateway: { generationId: "compact-generation" } },
-      },
-    });
   },
 );

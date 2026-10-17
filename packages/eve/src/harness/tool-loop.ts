@@ -198,7 +198,6 @@ import {
   createAuthorizationRequiredEvent,
   createCompactionCompletedEvent,
   createCompactionRequestedEvent,
-  createCompactionUsageEvent,
   createContextClearedEvent,
   createInputRequestedEvent,
   createInputResolvedEvent,
@@ -3354,17 +3353,6 @@ async function maybeCompact(input: {
                 getRequestEnvelopeTokens(session),
               ) - requestEnvelopeTokens,
             ),
-        async (evidence) => {
-          await emit?.(
-            createCompactionUsageEvent({
-              ...evidence,
-              modelId: formatLanguageModelGatewayId(compaction.model),
-              sequence: emissionState.sequence,
-              sessionId: session.sessionId,
-              turnId: emissionState.turnId,
-            }),
-          );
-        },
       )
     : [...ordinary];
   messages = validateHarnessModelMessages([...canonical.memory, ...compactedOrdinary]);

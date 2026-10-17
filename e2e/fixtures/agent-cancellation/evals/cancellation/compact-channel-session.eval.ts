@@ -86,19 +86,17 @@ export default defineEval({
     const compacted = await liveCompaction.result();
     compacted.event("compaction.requested", { count: 1 });
     compacted.event("compaction.completed", { count: 1 });
-    compacted.event("compaction.usage", { count: 1 });
     const replay = await t.target
       .watchTurn(sessionId, {
         startIndex: initial.events.length,
       })
       .result();
     await t.require(
-      replay.events.filter((event) => event.type === "compaction.usage"),
-      equals(compacted.events.filter((event) => event.type === "compaction.usage")),
+      replay.events.filter((event) => event.type === "compaction.completed"),
+      equals(compacted.events.filter((event) => event.type === "compaction.completed")),
     );
     compacted.eventOrder([
       { type: "compaction.requested" },
-      { type: "compaction.usage" },
       { type: "compaction.completed" },
       { type: "session.waiting" },
     ]);

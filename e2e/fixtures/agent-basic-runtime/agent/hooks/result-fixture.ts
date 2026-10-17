@@ -11,7 +11,6 @@ export default defineHook({
       if (!requested.get()) return;
       return {
         responseMetadata: { suggestions: ["Fixture next step"] },
-        modelCalls: [{ modelId: "fixture-uncompleted", failed: true }],
       };
     },
   },
