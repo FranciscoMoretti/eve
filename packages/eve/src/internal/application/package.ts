@@ -291,6 +291,19 @@ export function resolvePackageSourceDirectoryPath(relativeSourcePath: string): s
 }
 
 export function resolvePackageDependencyPath(specifier: string): string {
+  if (specifier === EVE_PACKAGE_NAME || specifier.startsWith(`${EVE_PACKAGE_NAME}/`)) {
+    const packageRoot = tryResolvePackageRoot();
+    if (packageRoot !== undefined) {
+      const manifestPath = join(packageRoot, "package.json");
+      const packageInfo = tryReadInstalledPackageInfo(manifestPath);
+      if (packageInfo?.name === "@chat-js/eve") {
+        // Node self references use the manifest name, not the consumer's npm alias.
+        return createRequire(manifestPath).resolve(
+          `${packageInfo.name}${specifier.slice(EVE_PACKAGE_NAME.length)}`,
+        );
+      }
+    }
+  }
   try {
     return packageRequire.resolve(specifier);
   } catch (error) {
