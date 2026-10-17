@@ -12,10 +12,6 @@ import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.
 
 /** One canonical admission result, after wire decoding but before turn policy. */
 type SessionAdmission =
-  | {
-      readonly kind: "copy-checkpoint";
-      readonly request: import("#execution/copy-checkpoint.js").CopyCheckpointRequest;
-    }
   | { readonly admission: DeliveryAdmission; readonly kind: "delivery" }
   | { readonly kind: "cancel" }
   | { readonly kind: "consumed" }
@@ -33,7 +29,6 @@ export async function admitSessionInboxPayload(
     readonly queue: SessionInputQueue;
   },
 ): Promise<SessionAdmission> {
-  if (value.kind === "copy-checkpoint") return { kind: "copy-checkpoint", request: value };
   if (value.kind === "session-failure") throw new Error(value.error);
   if (value.kind === "runtime-action-result")
     return { kind: "runtime-action-result", payload: value };

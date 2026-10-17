@@ -240,15 +240,6 @@ export function seededTranscript(view: SessionView, messages: EveMessage[]): Tra
   ]);
 }
 
-/** An idle source has durably captured its application and runtime boundary. */
-export function checkpointReady(
-  view: SessionView,
-  checkpoint: { readonly checkpointId: string; readonly beforeTurnId: string },
-): Transition {
-  const event = createSessionWaitingEvent(view.usage);
-  return unchanged(view, [{ ...event, data: { ...event.data, checkpoint } }]);
-}
-
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

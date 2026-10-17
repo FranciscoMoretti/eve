@@ -388,42 +388,13 @@ calls, including after compaction. Missing or changed bytes cause failure rather
 than silently replacing copied context with a text note. Ordinary uploads keep
 their existing behavior.
 
-This extension does not implement user-visible checkpoint forks or a durable
-creation admission ledger. An unresolved continuation lookup remains inconclusive;
-applications must not infer permission to redispatch from it. The integrated
-ChatJS copy lifecycle still requires checkpoint and resource-isolation validation.
+Copies start with a fresh sandbox. Installed packages, arbitrary filesystem contents,
+and running processes are not copied. The application must capture a completed
+conversation consistently with its document revisions and send-admission fence;
+active turns, pending approvals and unresolved dispatches cannot be copied.
+Historical boundary requests are rejected. The runtime does not retain historical
+copy checkpoints or restore source sandbox snapshots.
 
-## Serialized copy checkpoints
-
-Channels that configure `authorizeFork({ auth, sourceSessionId })` enable root
-session checkpoint capture. The callback must authorize the current principal
-against that exact source. The runtime also checks the original principal identity;
-anonymous sessions and child sessions cannot provide copy checkpoints.
-
-`POST /eve/v1/session/:sessionId/checkpoint` accepts `{ beforeTurnId,
-checkpointId? }` and returns `202` after enqueueing the request. Read its state with
-`GET /eve/v1/session/:sessionId/checkpoint/:checkpointId?beforeTurnId=turn_N`.
-An absent receipt returns `404`; a rejected boundary returns `409`; only a ready
-receipt returns `200`. GET never captures a checkpoint. Omitting the ID selects a
-stable ID derived from the source and turn boundary.
-
-Create a new conversation using `fork: { sessionId, beforeTurnId, checkpointId }`
-in the session POST. The new owner restores model and display history and an
-independent immutable sandbox snapshot. Current destination configuration supplies
-authority and limits. Active tasks, approvals and usage are not restored.
-Initialized providers without immutable capture/restore fail closed.
-
-For an imported user message, use `fork: { sessionId, beforeMessageId:
-"seed_message_N" }`. This selects the exact prefix before that user message from
-the source's privately retained trusted seed. A missing or non-user boundary is
-rejected. The destination stages only retained prefix attachments through its
-current authenticated channel; source runtime workspace changes are not part of
-an imported transcript boundary. Each descendant retains only its own prefix.
-Historical tool results remain inert data.
-
-Applications that must persist related state before readiness use
-`defineHook({ checkpoint: async ({ checkpointId, beforeTurnId }, context) => ... })`.
-This callback runs within serialized source capture, before the ready receipt.
-Throwing leaves no ready receipt and does not fail the source conversation. It may
-run again after partial failure, so persist immutable results idempotently under
-the source, ID and boundary. Ordinary `events` hooks remain best-effort.
+Creation responses return the native session ID. Applications journal immutable
+intent before dispatch and retain that positive receipt. Interrupted requests may
+remain unresolved; a missing receipt never authorizes redispatch.

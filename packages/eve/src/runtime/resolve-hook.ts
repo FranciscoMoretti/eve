@@ -2,7 +2,7 @@ import type { CompiledHookDefinition } from "../compiler/manifest.js";
 import type { CompiledModuleMap } from "../compiler/module-map.js";
 import { expectFunction, expectObjectRecord } from "../internal/authored-module.js";
 import type { MessageStreamEvent } from "../protocol/message.js";
-import type { CheckpointHook, StreamEventHook } from "../public/definitions/hook.js";
+import type { StreamEventHook } from "../public/definitions/hook.js";
 import { toErrorMessage } from "../shared/errors.js";
 import { loadResolvedModuleExport, ResolveAgentError } from "./resolve-helpers.js";
 import type { ResolvedHookDefinition } from "./types.js";
@@ -52,13 +52,6 @@ export async function resolveHookDefinition(
     }
 
     return {
-      checkpoint:
-        resolvedRecord.checkpoint === undefined
-          ? undefined
-          : (expectFunction(
-              resolvedRecord.checkpoint,
-              describe(definition, "to provide a checkpoint function"),
-            ) as CheckpointHook),
       events,
       exportName: definition.exportName,
       logicalPath: definition.logicalPath,

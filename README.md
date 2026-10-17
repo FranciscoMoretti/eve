@@ -1,73 +1,54 @@
 ## ChatJS eve 0.80.1 integration candidate
 
-This draft retains the runtime contracts needed by ChatJS on eve 0.80.1.
-[Umbrella #9](https://github.com/FranciscoMoretti/eve/pull/9) includes the upstream
-upgrade and targets `francisco/chatjs-package`. Review the residual fork against
-exact upstream 0.80.1, `e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
+[Draft #9](https://github.com/FranciscoMoretti/eve/pull/9) upgrades the maintained
+fork to eve 0.80.1. Review the residual changes against exact upstream commit
+`e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
 
-### Retained runtime contracts
+### Retained contracts
 
-| Contract                                        | Why it remains                                                                                                                                                                                                                              | Removal criterion                                                                                      |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Trusted fresh-copy seeds                        | Authenticated channel resolution supplies an accepted destination reservation. History is installed before first input without replaying historical model/tool work. Copied files use strict destination staging and digest verification.   | Upstream supplies equivalent trusted initialization, projection and attachment ownership.              |
-| Serialized copy checkpoints                     | The source owner captures an exact idle turn boundary. Private durable receipts precede readiness; authorized forks restore the retained history and immutable sandbox artifact. Imported seed prefixes are bounded and privately retained. | Upstream supplies equivalent exact-boundary capture, authorization and immutable restore.              |
-| Required checkpoint callback                    | ChatJS must commit its document manifest before a checkpoint becomes ready. The dedicated callback propagates failure; ordinary stream/billing/logging hooks remain best effort.                                                            | Upstream offers a serialized commit callback with required persistence and idempotent retry semantics. |
-| Immutable local sandbox resources               | Existing session metadata retains owner/cache identity, stable VM IDs, snapshot digest/path receipts, borrowed artifacts and allocation/removal phases. Retirement fences new allocation; cleanup requires confirmed native absence.        | Upstream supplies equivalent provider ownership, retirement and confirmed removal.                     |
-| Microsandbox SDK alignment and development stop | SDK 0.6.18 matches ChatJS. Development shutdown stops the same verified persisted VM and preserves its receipts, without starting snapshot allocation inside the CLI's bounded exit window.                                                 | Upstream supports the same SDK lifecycle and ownership guarantees.                                     |
+| Contract                                  | Purpose                                                                                                                                                                               | Removal criterion                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Trusted transcript seeds                  | An authenticated channel resolves accepted app reservations. Fresh sessions import completed conversation content and stage explicit attachments without replaying historical tools.  | Equivalent upstream trusted initialization and attachment ownership. |
+| Local resource ownership and deletion     | Persisted VM IDs and state snapshot digest/path receipts bind resources to their owner and canonical cache. Retirement fences allocation; deletion requires confirmed native absence. | Equivalent upstream ownership, retirement, and confirmed removal.    |
+| Microsandbox SDK and development shutdown | SDK 0.6.18 and verified VM shutdown preserve normal session resume state within the CLI exit window.                                                                                  | Equivalent upstream SDK lifecycle.                                   |
+| Scoped package resolution                 | Compiler lookups support the published `@chat-js/eve` package and its self references through an `eve` dependency alias.                                                              | Equivalent upstream scoped publication support.                      |
 
-No native admission ledger or create/send recovery lookup is retained. The stale
-lookup changeset was removed. ChatJS owns immutable dispatch intent and keeps
-only positively known response bindings. Lost-response creates or sends may
-remain unknown permanently; absence never authorizes another dispatch.
-The separate accepted-seed/copy resolver uses upstream `resolveSession`, with an
-app adapter pinned to 0.80.1's auth-scoped token derivation and parity coverage.
+Copies start with fresh sandboxes. They retain conversation history, documents,
+and explicit attachments; installed packages, arbitrary files, and running
+processes are not copied. Historical turn checkpoints, sandbox fork snapshots,
+borrower retention, and required document checkpoint hooks are removed. ChatJS
+captures the current completed conversation under its own admission and document
+locks. No custom native operation lookup or admission ledger remains. Interrupted
+create/copy/send operations can stay unresolved and are never redispatched on
+missing evidence.
 
-Message selection and logical display identity are app-owned projections of
-exact native event/delivery bindings. Unknown, foreign, ambiguous or inherited
-bindings acquire no new metadata. Sharing sanitizes the projected transcript.
-No legacy decoder, old-session migration or historical billing import is added.
+### Distribution and evidence
 
-### Upstream replacements and companion review
+ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.1`.
+That published package corresponds to `d2349a800d7ec62a99ace2078250c6ffdcb94faa`
+and uses the `chatjs` tag; `latest` remains unchanged. The removals in this draft
+are subsequent, **unreleased** changes. The app's narrowed copy behavior uses the
+existing trusted-seed API and does not require publishing these removals. A future
+package release remains a separate decision.
 
-Native Next startup, resumable streams and exact approval receipts replace the
-corresponding maintained patches. Their focused evidence remains in
-[Startup #8](https://github.com/FranciscoMoretti/eve/pull/8),
-[Streaming #10](https://github.com/FranciscoMoretti/eve/pull/10) and
-[Approvals #11](https://github.com/FranciscoMoretti/eve/pull/11), in that order.
-All three are included here. Historical fork #1, #2 and #7 are not superseded.
-[ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847) is merged.
-The old independent app proof PRs #848/#849 are not the integrated app branch;
-#848's published route assertion is stale. The integrated branch corrects it.
+[ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
+app review. Historical evidence and upstream replacement reviews remain linked
+in [startup #8](https://github.com/FranciscoMoretti/eve/pull/8),
+[streams #10](https://github.com/FranciscoMoretti/eve/pull/10), and
+[approvals #11](https://github.com/FranciscoMoretti/eve/pull/11).
+Their results apply to their recorded commits, not automatically to this head.
 
-The remaining original inventory groups map to the retained contracts above
-(checkpoints/forks, history import, attachments, sandbox lifecycle), app-owned
-alternatives (message metadata, admission), and package distribution. They are not an automatic queue to port old APIs.
+### Authority limits
 
-### Resource authority and adoption limits
-
-Resource retirement requires `MSB_BACKEND=local`, one canonical cache,
-matching HOME/MSB_HOME, and an absolute MSB_HOME when set. Remote or production
-hosts, cache mismatch, unattributed metadata and crashed locks fail closed.
-Locks are never stolen or expired. App copy-retention policy remains separate
-from native borrower facts; this is not distributed fencing.
-
-Stable native identity receipts accompany resource names: VM IDs and snapshot
-digests plus artifact paths come from successful SDK allocation results. Cleanup
-refuses a replacement that reused a name. Snapshot absence is checked at its
-recorded artifact path, because the SDK snapshot index is rebuildable; removal
-keeps native child/dependency protection enabled. Fork artifact version 2 retains
-the captured digest and verifies its manifest before restore. Mutable state
-snapshot restoration performs the same identity check. Earlier name-only
-fork/resource records are unsupported.
-
-Fresh extensions must use the current checkpoint, sandbox and protocol contract
-versions. No legacy session or billing import is supported.
-
-The fork is published as `@chat-js/eve@0.80.1-chatjs.0`. ChatJS preserves the
-`eve` import name with the exact dependency alias
-`npm:@chat-js/eve@0.80.1-chatjs.0`. Prereleases use the `chatjs` dist-tag;
-consumers should pin an exact version. Production resource authority still
-requires separate validation before adoption.
+Resource retirement requires `MSB_BACKEND=local`, one canonical cache, matching
+HOME/MSB_HOME, and an absolute MSB_HOME when set. Remote hosts, cache mismatches,
+unattributed metadata, and crashed locks fail closed. Locks are never stolen.
+State snapshot restoration verifies its recorded digest and artifact path;
+cleanup refuses replacement resources that reuse names. Old fork-resource
+records are unsupported and fail closed. This is not distributed fencing or
+production cutover validation. Extension contract history remains immutable;
+removed APIs require current extension epochs. No legacy session or billing
+import is provided.
 
 ---
 

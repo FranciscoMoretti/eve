@@ -28,7 +28,7 @@ export interface MicrosandboxSessionMetadata {
 }
 
 export interface MicrosandboxResourceFact {
-  readonly kind: "sandbox" | "state-snapshot" | "fork-snapshot";
+  readonly kind: "sandbox" | "state-snapshot";
   readonly name: string;
   readonly phase: "allocating" | "live" | "removing" | "removed";
   readonly nativeId?: string;
@@ -40,14 +40,13 @@ export interface MicrosandboxResourceMetadata {
   readonly version: 1;
   readonly sessionId: string;
   readonly authority: string;
-  readonly borrowedForkSnapshot?: string;
   readonly entries: readonly MicrosandboxResourceFact[];
 }
 
 function isResourceFact(value: unknown): value is MicrosandboxResourceFact {
   return (
     isRecord(value) &&
-    ["sandbox", "state-snapshot", "fork-snapshot"].includes(String(value.kind)) &&
+    ["sandbox", "state-snapshot"].includes(String(value.kind)) &&
     (value.phase === "allocating" ||
       (typeof value.nativeId === "string" && value.nativeId.length > 0)) &&
     (value.nativePath === undefined || typeof value.nativePath === "string") &&
@@ -65,7 +64,6 @@ function isResourceMetadata(value: unknown): value is MicrosandboxResourceMetada
     value.sessionId.length > 0 &&
     typeof value.authority === "string" &&
     value.authority.length > 0 &&
-    (value.borrowedForkSnapshot === undefined || typeof value.borrowedForkSnapshot === "string") &&
     Array.isArray(value.entries) &&
     value.entries.every(isResourceFact) &&
     new Set(value.entries.map((entry) => `${entry.kind}:${entry.name}`)).size ===

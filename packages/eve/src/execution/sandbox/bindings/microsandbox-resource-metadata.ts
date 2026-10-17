@@ -97,7 +97,6 @@ export async function initializeMicrosandboxResourceMetadata(input: {
   readonly path: string;
   readonly sessionId: string;
   readonly metadata: MicrosandboxSessionMetadata;
-  readonly borrowedForkSnapshot?: string;
 }): Promise<void> {
   await withMicrosandboxSessionLock(
     providerRootForMetadata(input.path),
@@ -106,10 +105,8 @@ export async function initializeMicrosandboxResourceMetadata(input: {
       if (retired) throw new Error("Microsandbox session resources are retired.");
       const existing = await readSessionMetadata(input.path);
       if (existing !== null) {
-        const resources = requireResources(existing, authority, input.sessionId);
-        if (resources.borrowedForkSnapshot !== input.borrowedForkSnapshot) {
-          throw new Error("Microsandbox retained artifact changed.");
-        }
+        requireResources(existing, authority, input.sessionId);
+
         return;
       }
       const occupied = await stat(input.path).then(
@@ -126,7 +123,6 @@ export async function initializeMicrosandboxResourceMetadata(input: {
           version: 1,
           authority,
           sessionId: input.sessionId,
-          borrowedForkSnapshot: input.borrowedForkSnapshot,
           entries: [],
         },
       });

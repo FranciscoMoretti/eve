@@ -1,4 +1,3 @@
-import { CopyCheckpointsKey } from "#context/keys.js";
 import { validateToolStubTargets } from "#tool-stubs/validate-targets.js";
 import { context, trace } from "#compiled/@opentelemetry/api/index.js";
 import {
@@ -185,7 +184,6 @@ export function createWorkflowRuntime(config: {
       traceDecision.recordOutputs
         ? undefined
         : 0);
-    if (input.copyCheckpoints === true) ctx.set(CopyCheckpointsKey, true);
     const serializedContext = serializeContext(ctx);
     const parentLineage = readParentLineage(serializedContext);
     const workflowInput: {
@@ -194,7 +192,6 @@ export function createWorkflowRuntime(config: {
       kind: "initial",
       input: input.input,
       seed: input.seed,
-      copyCheckpoint: input.copyCheckpoint,
       ownerDeploymentId: await resolveCurrentWorkflowDeploymentId(),
       serializedContext,
     };

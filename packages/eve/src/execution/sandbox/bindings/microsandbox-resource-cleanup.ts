@@ -9,7 +9,6 @@ import {
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
   retireMicrosandboxResourceOwner,
-  withMicrosandboxSessionLock,
   withMicrosandboxResourceOperation,
 } from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 import {
@@ -46,8 +45,7 @@ async function readResourceOwners(
 
 /**
  * Local worker resource control. The application must authorize the session and
- * fence admission before calling. Release fork snapshots only after its retained
- * checkpoints and accepted, pending and live copy references are retired.
+ * fence admission before calling. Copies allocate independent sandbox resources.
  *
  * Supported only by the local development host with explicit MSB_BACKEND=local.
  * expectedAppRoot verifies locality; it never selects the worker's cache.
@@ -59,7 +57,6 @@ export async function manageLocalMicrosandboxResources(
     readonly sessionId: string;
     readonly expectedAppRoot: string;
     readonly action: "retire" | "purge";
-    readonly releaseForkSnapshots?: boolean;
   },
 ): Promise<{
   readonly appRoot: string;
@@ -94,33 +91,6 @@ export async function manageLocalMicrosandboxResources(
       if (resource.phase === "removed") continue;
       if (resource.phase === "allocating")
         throw new Error("Microsandbox allocation remains unknown; retain its resources.");
-      if (resource.kind === "fork-snapshot") {
-        if (input.releaseForkSnapshots !== true) {
-          remaining += 1;
-          continue;
-        }
-        let retained = false;
-        for (const borrower of owners.filter(
-          ({ resources }) => resources.borrowedForkSnapshot === resource.name,
-        )) {
-          retained ||= await withMicrosandboxSessionLock(
-            providerRoot,
-            borrower.resources.sessionId,
-            async (_authority, retired) => {
-              const current = await readSessionMetadata(borrower.path);
-              if (current?.resources === undefined)
-                throw new Error("Microsandbox consumer ownership disappeared.");
-              return (
-                !retired || current.resources.entries.some((entry) => entry.phase !== "removed")
-              );
-            },
-          );
-        }
-        if (retained) {
-          remaining += 1;
-          continue;
-        }
-      }
       if (module === null)
         throw new Error("Microsandbox runtime is unavailable; removal is unconfirmed.");
       await withMicrosandboxResourceOperation({

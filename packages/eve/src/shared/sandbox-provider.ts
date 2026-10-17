@@ -134,19 +134,6 @@ export interface SandboxProviderImplementation<
   SessionState,
   Session extends SandboxSession = SandboxSession,
 > {
-  /** Immutable copy artifacts have a lifetime independent of either session. */
-  readonly fork?: {
-    capture(
-      handle: SandboxProviderHandle<Session>,
-      checkpointKey: string,
-    ): Promise<SandboxPreparedArtifact>;
-    restore(
-      context: SandboxProviderSessionContext,
-      options: Readonly<OpenOptions> | undefined,
-      artifact: Readonly<PreparedArtifact>,
-      snapshot: SandboxPreparedArtifact,
-    ): Promise<{ readonly handle: SandboxProviderHandle<Session>; readonly state: SessionState }>;
-  };
   /**
    * Permanently releases resources owned by a durable session after its terminal outcome.
    * Implementations must be idempotent because the cleanup step may retry.

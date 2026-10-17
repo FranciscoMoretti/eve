@@ -1,7 +1,3 @@
-import {
-  boundaryCopyCheckpointId,
-  validateCopyCheckpointRequest,
-} from "#execution/copy-checkpoint.js";
 import { parseToolStubs } from "#tool-stubs/rules.js";
 import type { FilePart, TextPart, UserContent } from "ai";
 
@@ -153,50 +149,13 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
     }
   }
   if (payload.fork !== undefined) {
-    let fork: JsonObject;
-    try {
-      fork = parseJsonObject(payload.fork);
-    } catch {
-      return Response.json({ error: "Invalid checkpoint fork.", ok: false }, { status: 400 });
-    }
-    if (
-      typeof fork.sessionId !== "string" ||
-      fork.sessionId.length === 0 ||
-      fork.sessionId.length > 200
-    )
-      return Response.json({ error: "Invalid fork source.", ok: false }, { status: 400 });
-    if (typeof fork.beforeMessageId === "string") {
-      if (
-        !/^seed_message_(0|[1-9][0-9]{0,3})$/u.test(fork.beforeMessageId) ||
-        Object.keys(fork).some((key) => !["sessionId", "beforeMessageId"].includes(key))
-      )
-        return Response.json({ error: "Invalid imported boundary.", ok: false }, { status: 400 });
-      result.fork = { sessionId: fork.sessionId, beforeMessageId: fork.beforeMessageId };
-    } else {
-      if (
-        typeof fork.beforeTurnId !== "string" ||
-        Object.keys(fork).some(
-          (key) => !["sessionId", "beforeTurnId", "checkpointId"].includes(key),
-        )
-      )
-        return Response.json({ error: "Invalid checkpoint fork.", ok: false }, { status: 400 });
-      const checkpointId =
-        fork.checkpointId ?? boundaryCopyCheckpointId(fork.sessionId, fork.beforeTurnId);
-      if (typeof checkpointId !== "string")
-        return Response.json({ error: "Invalid checkpoint identity.", ok: false }, { status: 400 });
-      try {
-        validateCopyCheckpointRequest({
-          kind: "copy-checkpoint",
-          principalId: "validation",
-          principalIdentity: "validation",
-          checkpointId,
-          beforeTurnId: fork.beforeTurnId,
-        });
-      } catch {
-        return Response.json({ error: "Invalid checkpoint identity.", ok: false }, { status: 400 });
-      }
-      result.fork = { sessionId: fork.sessionId, beforeTurnId: fork.beforeTurnId, checkpointId };
-    }
+    return Response.json(
+      {
+        error: "Historical forks are unsupported. Create a trusted current transcript seed.",
+        ok: false,
+      },
+      { status: 400 },
+    );
   }
   if (payload.seed === true) result.seed = true;
   if (message !== undefined) result.message = message;

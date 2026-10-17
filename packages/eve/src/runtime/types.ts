@@ -217,7 +217,6 @@ export type ResolvedToolDefinition = Readonly<
  * the resolved maps.
  */
 export interface ResolvedHookDefinition extends ResolvedModuleSourceRef {
-  readonly checkpoint?: import("#public/definitions/hook.js").CheckpointHook;
   /**
    * Path-relative slug used for diagnostics and ordering.
    */

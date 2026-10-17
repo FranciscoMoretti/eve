@@ -47,34 +47,6 @@ const metadataState = vi.hoisted(() => ({
   writeSessionMetadata: vi.fn(),
 }));
 
-it("reconnects the source after failed immutable capture and never substitutes a newer snapshot after an uncertain lookup", async () => {
-  const sandbox = createMockMicrosandbox();
-  const start = vi.fn(async () => sandbox);
-  const snapshot = vi.fn(async () => {
-    throw new Error("snapshot failed");
-  });
-  const lookup = vi.fn(async () => []);
-  const module = {
-    Sandbox: { start, get: async () => ({ stopWithTimeout: async () => {}, snapshot }) },
-    Snapshot: { list: lookup },
-  };
-  const vm = new MicrosandboxVm(
-    {
-      module: module as never,
-      options: resolveMicrosandboxOptions(undefined),
-      sessionKey: "source",
-    },
-    sandbox as never,
-    "source-vm",
-    undefined,
-  );
-  await expect(vm.captureFork("boundary")).rejects.toThrow("snapshot failed");
-  expect(start).toHaveBeenCalledWith("source-vm");
-  lookup.mockRejectedValueOnce(new Error("snapshot store unavailable"));
-  await expect(vm.captureFork("boundary")).rejects.toThrow("snapshot store unavailable");
-  expect(snapshot).toHaveBeenCalledOnce();
-});
-
 it("does not finish stopping until the persisted VM has stopped, so resume cannot reconnect to a draining process", async () => {
   let finishStop!: () => void;
   const stopped = new Promise<void>((resolve) => {

@@ -15,7 +15,6 @@ type ProtocolEvent<TType extends HandleMessageStreamEvent["type"]> = Extract<
  * until eve exposes them here.
  */
 export interface HookEventMap {
-  readonly "history.restored": ProtocolEvent<"history.restored">;
   readonly "history.seeded": ProtocolEvent<"history.seeded">;
   readonly "action.input.appended": ProtocolEvent<"action.input.appended">;
   readonly "action.partial": ProtocolEvent<"action.partial">;
@@ -121,16 +120,8 @@ export type StreamEventHooks<TKey extends HookEventKey = HookEventKey> = {
  * contribute runtime model messages, use `defineDynamic` +
  * `defineInstructions` in `agent/instructions/`.
  */
-/** Required application snapshot work, serialized with the source checkpoint. */
-export type CheckpointHook = (
-  checkpoint: { readonly checkpointId: string; readonly beforeTurnId: string },
-  context: Omit<HookContext, "cancel">,
-) => void | Promise<void>;
-
 export interface HookDefinition<TKey extends HookEventKey = HookEventKey> {
   readonly events?: StreamEventHooks<TKey>;
-  /** Failure prevents a ready checkpoint receipt; ordinary event hooks remain best-effort. */
-  readonly checkpoint?: CheckpointHook;
 }
 
 type DefinedHookEventKeys<TDefinition extends HookDefinition> = Extract<

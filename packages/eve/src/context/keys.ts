@@ -84,7 +84,6 @@ export interface Session {
 
 export const AuthKey = new ContextKey<SessionAuthContext | null>("eve.auth");
 export const ToolStubsKey = new ContextKey<StubScope>(STUB_CONTEXT_KEY);
-export const CopyCheckpointsKey = new ContextKey<boolean>("eve.copyCheckpoints");
 
 export const InitiatorAuthKey = new ContextKey<SessionAuthContext | null>("eve.initiatorAuth");
 export const SessionIdKey = new ContextKey<string>("eve.sessionId");

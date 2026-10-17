@@ -21,7 +21,6 @@ interface RuntimeStreamEventHookEntry {
  * without scanning every entry.
  */
 export interface RuntimeHookRegistry {
-  readonly checkpointHooks?: readonly NonNullable<ResolvedHookDefinition["checkpoint"]>[];
   readonly streamEventsByType: ReadonlyMap<string, readonly RuntimeStreamEventHookEntry[]>;
   readonly streamEventsWildcard: readonly RuntimeStreamEventHookEntry[];
 }
@@ -54,9 +53,6 @@ export function createRuntimeHookRegistry(
   }
 
   return {
-    checkpointHooks: resolvedHooks.flatMap((hook) =>
-      hook.checkpoint === undefined ? [] : [hook.checkpoint],
-    ),
     streamEventsByType,
     streamEventsWildcard,
   };

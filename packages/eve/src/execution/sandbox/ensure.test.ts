@@ -7,10 +7,7 @@ import { importConversation, readLegacySnapshot } from "#execution/legacy-sessio
 import { ensureSandboxAccess } from "#execution/sandbox/ensure.js";
 import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 import { defineParentSandbox, defineSandbox } from "#public/definitions/sandbox.js";
-import {
-  defineSandboxProvider,
-  type SandboxProviderImplementation,
-} from "#shared/sandbox-provider.js";
+import { defineSandboxProvider } from "#shared/sandbox-provider.js";
 import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import type { RuntimeSandboxRegistry } from "#runtime/sandbox/registry.js";
 import { loadSandboxPreparedArtifact } from "#runtime/sandbox/prepared-artifacts.js";
@@ -19,12 +16,7 @@ vi.mock("#runtime/sandbox/prepared-artifacts.js", () => ({
   loadSandboxPreparedArtifact: vi.fn(async () => null),
 }));
 
-function fixture(
-  setup?: () => void,
-  returnCopy = false,
-  onSessionEnd?: () => Promise<void>,
-  fork?: SandboxProviderImplementation<undefined, null, null>["fork"],
-) {
+function fixture(setup?: () => void, returnCopy = false, onSessionEnd?: () => Promise<void>) {
   const deleteSandbox = vi.fn(async () => {});
   const stopSandbox = vi.fn(async () => {});
   const shutdownSandbox = vi.fn(async () => {});
@@ -42,7 +34,6 @@ function fixture(
     name: "test",
     environment: () => {
       const implementation = {
-        fork,
         prepare: async () => null,
         resume: create,
         start,
@@ -105,66 +96,6 @@ async function open(
     return { access, sandbox: await access.get() };
   });
 }
-it("rejects initialized unsupported providers and borrowed capture without allocating resources", async () => {
-  const value = fixture();
-  const access = await ensureSandboxAccess({
-    compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
-    nodeId: "__root__",
-    registry: value.registry,
-    sessionId: "source",
-    state: null,
-  });
-  expect(await access.captureFork?.("checkpoint")).toBeNull();
-  await access.get();
-  await expect(access.captureFork?.("checkpoint")).rejects.toThrow("cannot capture");
-  await expect(
-    open(value.registry, "destination", {
-      session: null,
-      fork: { providerName: "test", stateProtocolVersion: 1, artifact: "snapshot" },
-    }),
-  ).rejects.toThrow("cannot restore");
-  expect(value.start).toHaveBeenCalledOnce();
-  const borrowed = await ensureSandboxAccess({
-    compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
-    nodeId: "__root__",
-    registry: value.registry,
-    sessionId: "source",
-    ownsSandbox: false,
-    state: { session: { providerName: "test", stateProtocolVersion: 1, state: null } },
-  });
-  await expect(borrowed.captureFork?.("checkpoint")).rejects.toThrow("Only the sandbox owner");
-});
-
-it("keeps failed restoration pending and never falls back to an empty destination sandbox", async () => {
-  const sandbox = mockSandbox();
-  const handle = {
-    sandbox: sandbox.session,
-    onSandboxDelete: async () => {},
-    onSandboxStop: async () => {},
-    onRuntimeShutdown: async () => {},
-  };
-  const restore = vi
-    .fn(async () => ({ handle, state: null }))
-    .mockRejectedValueOnce(new Error("snapshot unavailable"));
-  const value = fixture(undefined, false, undefined, { capture: async () => "immutable", restore });
-  const fork = { providerName: "test", stateProtocolVersion: 1, artifact: "immutable" };
-  const access = await ensureSandboxAccess({
-    compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
-    nodeId: "__root__",
-    registry: value.registry,
-    sessionId: "destination",
-    state: { session: null, fork },
-  });
-  await expect(access.get()).rejects.toThrow("snapshot unavailable");
-  expect(await access.captureState()).toEqual({ session: null, fork });
-  await access.get();
-  expect(restore).toHaveBeenCalledTimes(2);
-  expect(value.start).not.toHaveBeenCalled();
-  expect(await access.captureState()).toEqual({
-    session: { providerName: "test", stateProtocolVersion: 1, state: null },
-  });
-});
-
 function inheritingChildRegistry(rootRegistry: RuntimeSandboxRegistry): RuntimeSandboxRegistry {
   const parent = rootRegistry.sandbox;
   if (parent === null) throw new Error("Root registry has no sandbox.");

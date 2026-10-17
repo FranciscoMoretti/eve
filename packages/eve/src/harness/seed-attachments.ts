@@ -13,16 +13,6 @@ export function markSeedAttachmentsPending(session: HarnessSession): HarnessSess
   return { ...session, state: { ...session.state, [PENDING]: true } };
 }
 
-/** Installs verified copied bytes without inheriting other source execution state. */
-export function restoreSeedFileDigests(
-  session: HarnessSession,
-  digests: Record<string, string>,
-): HarnessSession {
-  const state: Record<string, unknown> = { ...session.state, [STRICT]: digests };
-  delete state[PENDING];
-  return { ...session, state };
-}
-
 export function seedFileDigests(session: Pick<HarnessSession, "state">): Record<string, string> {
   const value = session.state?.[STRICT];
   if (value === undefined) return {};

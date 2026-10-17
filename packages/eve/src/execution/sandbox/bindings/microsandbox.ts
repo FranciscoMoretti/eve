@@ -6,7 +6,6 @@ type NetworkPolicySandboxSession = SandboxSession & {
 import { enrichMicrosandboxError } from "#execution/sandbox/bindings/microsandbox-create.js";
 import {
   createMicrosandboxHandle,
-  captureMicrosandboxFork,
   type MicrosandboxPreparedArtifact,
   prewarmMicrosandboxTemplate,
 } from "#execution/sandbox/bindings/microsandbox-lifecycle.js";
@@ -33,8 +32,6 @@ export { pruneMicrosandboxTemplates } from "#execution/sandbox/bindings/microsan
 export const MICROSANDBOX_PROVIDER_NAME = "microsandbox";
 
 export type MicrosandboxProviderSessionState = {
-  readonly forkSnapshotName?: string;
-  readonly forkSnapshotDigest?: string;
   readonly optionsHash: string;
   readonly sessionIdentity: string;
   readonly version: 3;
@@ -56,47 +53,6 @@ export function createMicrosandboxSandboxProvider(
   );
 
   return {
-    fork: {
-      async capture(handle, checkpointKey) {
-        return {
-          version: 2,
-          optionsHash,
-          ...(await captureMicrosandboxFork(handle, checkpointKey)),
-        };
-      },
-      async restore(context, runtimeOptions, artifactValue, snapshot) {
-        const artifact = requireArtifact(artifactValue);
-        if (
-          !isSandboxPreparedArtifactRecord(snapshot) ||
-          snapshot.version !== 2 ||
-          snapshot.optionsHash !== optionsHash ||
-          typeof snapshot.snapshotName !== "string" ||
-          typeof snapshot.snapshotDigest !== "string" ||
-          !/^sha256:[a-f0-9]{64}$/u.test(snapshot.snapshotDigest) ||
-          !/^eve-sbx-fork-[a-f0-9]{32}$/u.test(snapshot.snapshotName)
-        ) {
-          throw new Error("Invalid microsandbox fork artifact.");
-        }
-        const result = await createMicrosandboxHandle({
-          artifact: { ...artifact, snapshotName: snapshot.snapshotName },
-          expectedSnapshotDigest: snapshot.snapshotDigest,
-          borrowedForkSnapshot: snapshot.snapshotName,
-          context,
-          options,
-          optionsHash,
-          providerName: MICROSANDBOX_PROVIDER_NAME,
-          runtimeOptions,
-        });
-        return {
-          handle: result.handle,
-          state: {
-            ...result.state,
-            forkSnapshotName: snapshot.snapshotName,
-            forkSnapshotDigest: snapshot.snapshotDigest,
-          },
-        };
-      },
-    },
     async prepare(context) {
       const dockerfile = await materializeSandboxDockerfile({
         files: context.files,
@@ -124,12 +80,8 @@ export function createMicrosandboxSandboxProvider(
       }
     },
     async resume(context, artifactValue, stateValue) {
-      const prepared = requireArtifact(artifactValue);
+      const artifact = requireArtifact(artifactValue);
       const state = requireState(stateValue);
-      const artifact =
-        state.forkSnapshotName === undefined
-          ? prepared
-          : { ...prepared, snapshotName: state.forkSnapshotName };
       if (
         state.optionsHash !== optionsHash ||
         artifact.optionsHash !== optionsHash ||
@@ -142,8 +94,6 @@ export function createMicrosandboxSandboxProvider(
         artifact,
         context,
         createIfMissing: false,
-        borrowedForkSnapshot: state.forkSnapshotName,
-        expectedSnapshotDigest: state.forkSnapshotDigest,
         sessionIdentity: state.sessionIdentity,
         options,
         optionsHash,
@@ -200,14 +150,7 @@ function requireState(state: unknown): MicrosandboxProviderSessionState {
     !isSandboxPreparedArtifactRecord(state) ||
     state.version !== 3 ||
     typeof state.optionsHash !== "string" ||
-    typeof state.sessionIdentity !== "string" ||
-    (state.forkSnapshotName === undefined) !== (state.forkSnapshotDigest === undefined) ||
-    (state.forkSnapshotDigest !== undefined &&
-      (typeof state.forkSnapshotDigest !== "string" ||
-        !/^sha256:[a-f0-9]{64}$/u.test(state.forkSnapshotDigest))) ||
-    (state.forkSnapshotName !== undefined &&
-      (typeof state.forkSnapshotName !== "string" ||
-        !/^eve-sbx-fork-[a-f0-9]{32}$/u.test(state.forkSnapshotName)))
+    typeof state.sessionIdentity !== "string"
   ) {
     throw new Error("Invalid microsandbox session state.");
   }
@@ -215,11 +158,5 @@ function requireState(state: unknown): MicrosandboxProviderSessionState {
     optionsHash: state.optionsHash,
     sessionIdentity: state.sessionIdentity,
     version: 3,
-    ...(typeof state.forkSnapshotDigest === "string"
-      ? { forkSnapshotDigest: state.forkSnapshotDigest }
-      : {}),
-    ...(typeof state.forkSnapshotName === "string"
-      ? { forkSnapshotName: state.forkSnapshotName }
-      : {}),
   };
 }

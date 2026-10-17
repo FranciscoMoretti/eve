@@ -21,8 +21,6 @@ export async function compileHookEntry(
     }),
     `Expected the hook export "${source.exportName ?? "default"}" from "${source.logicalPath}" to return an object.`,
   );
-  if (loaded.checkpoint !== undefined)
-    expectFunction(loaded.checkpoint, "Expected a checkpoint hook function.");
   const events =
     loaded.events === undefined
       ? {}

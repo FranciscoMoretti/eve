@@ -22,10 +22,10 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 94,
+    current: 95,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 76, 77, 78, 80, 81, 82, 84,
-      85, 86, 87, 88, 89, 90, 91, 94,
+      85, 86, 87, 88, 89, 90, 91, 95,
     ],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
@@ -88,14 +88,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       83: 'webSearch provider "openai" was replaced by "native" before it shipped in a release',
       92: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       93: "Restored conversation events now require the exact before-turn boundary.",
+      94: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   dynamicTool: {
-    current: 88,
+    current: 89,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 31, 32, 33, 52, 54,
       60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84,
-      85, 88,
+      85, 89,
     ],
     dropped: {
       21: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -135,13 +136,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       74: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       86: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       87: "Restored conversation events now require the exact before-turn boundary.",
+      88: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   channel: {
-    current: 63,
+    current: 64,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 29, 31, 36, 37, 38, 39, 40, 41, 42,
-      43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 63,
+      43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 64,
     ],
     dropped: {
       12: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -163,13 +165,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       53: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       61: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       62: "Restored conversation events now require the exact before-turn boundary.",
+      63: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   schedule: {
-    current: 35,
+    current: 36,
     supported: [
       1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
-      29, 30, 31, 32, 35,
+      29, 30, 31, 32, 36,
     ],
     dropped: {
       5: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -177,13 +180,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       17: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       33: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       34: "Restored conversation events now require the exact before-turn boundary.",
+      35: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   subagent: {
-    current: 40,
+    current: 41,
     supported: [
       3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
-      34, 35, 36, 37, 40,
+      34, 35, 36, 37, 41,
     ],
     dropped: {
       1: "Persistent subagent sessions are now the default and the experimental opt-in was removed",
@@ -196,13 +200,14 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       22: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       38: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       39: "Restored conversation events now require the exact before-turn boundary.",
+      40: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   connection: {
-    current: 52,
+    current: 53,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 32, 33, 34,
-      35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 52,
+      35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 49, 53,
     ],
     dropped: {
       9: "Dynamic connection resolvers no longer receive conversation or channel continuation data",
@@ -217,11 +222,12 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       42: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       50: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       51: "Restored conversation events now require the exact before-turn boundary.",
+      52: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   hook: {
-    current: 48,
-    supported: [20, 21, 22, 23, 25, 27, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 48],
+    current: 49,
+    supported: [20, 21, 22, 23, 25, 27, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 49],
     dropped: {
       1: "Model identity moved from session.started runtime metadata to step.started call attribution.",
       2: "Model identity moved from session.started runtime metadata to step.started call attribution.",
@@ -250,14 +256,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       40: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       46: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       47: "Restored conversation events now require the exact before-turn boundary.",
+      48: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   skill: { current: 3, supported: [1, 2, 3], dropped: {} },
   dynamicSkill: {
-    current: 40,
+    current: 41,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 25, 26, 27, 28, 29, 30,
-      31, 32, 33, 34, 35, 36, 37, 40,
+      31, 32, 33, 34, 35, 36, 37, 41,
     ],
     dropped: {
       13: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -266,14 +273,15 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       24: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       38: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       39: "Restored conversation events now require the exact before-turn boundary.",
+      40: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   instructions: { current: 2, supported: [1, 2], dropped: {} },
   dynamicInstructions: {
-    current: 41,
+    current: 42,
     supported: [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 26, 27, 28, 29, 30,
-      31, 32, 33, 34, 35, 36, 37, 38, 41,
+      31, 32, 33, 34, 35, 36, 37, 38, 42,
     ],
     dropped: {
       14: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -282,17 +290,19 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       25: "Stream events gained task.started and task.settled, and input.requested, authorization events, and agent.started carry the taskId of the task they come from. The subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed; agent calls report task.started, task.settled, and agent.started.",
       39: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
       40: "Restored conversation events now require the exact before-turn boundary.",
+      41: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
   config: { current: 1, supported: [1], dropped: {} },
   state: {
-    current: 14,
-    supported: [1, 2, 3, 4, 5, 7, 9, 10, 12, 14],
+    current: 15,
+    supported: [1, 2, 3, 4, 5, 7, 9, 10, 12, 15],
     dropped: {
       6: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
       8: "SandboxSession no longer exposes setNetworkPolicy; pass the configured environment to ctx.getSandbox(environment) to access network policy capabilities",
       11: "Sandbox provider handle hooks were renamed to onSandboxStop and onSandboxDelete.",
       13: "Fresh-start ChatJS 0.80.1 candidate requires the current checkpoint, sandbox and protocol contracts.",
+      14: "Fresh copies remove historical checkpoint and sandbox fork APIs.",
     },
   },
 } as const satisfies Record<string, ExtensionCapabilityContract>;

@@ -115,55 +115,6 @@ export class MicrosandboxVm {
     return this.#sandboxName;
   }
 
-  async captureFork(
-    checkpointKey: string,
-  ): Promise<{ snapshotName: string; snapshotDigest: string }> {
-    const snapshotName = createProviderName(
-      "eve-sbx-fork",
-      `${this.#input.sessionKey}:${checkpointKey}`,
-    );
-    await this.resourceOperation(
-      "fork-snapshot",
-      snapshotName,
-      "allocate",
-      async (previouslyLive) => {
-        if (previouslyLive) {
-          return await this.#input.module.Snapshot.get(snapshotName);
-        }
-        const snapshots = await this.#input.module.Snapshot.list();
-        if (snapshots.some((snapshot) => snapshot.name === snapshotName)) {
-          throw new Error("Microsandbox fork snapshot already exists without ownership.");
-        }
-        try {
-          return await this.stopAndSnapshot(snapshotName);
-        } finally {
-          // Restart is fenced independently: retirement may have raced capture.
-          this.#sandbox = await this.resourceOperation(
-            "sandbox",
-            this.#sandboxName,
-            "allocate",
-            async (_live, nativeId) => {
-              if (nativeId === undefined)
-                return await this.#input.module.Sandbox.start(this.#sandboxName);
-              const handle = await this.#input.module.Sandbox.get(this.#sandboxName);
-              if (handle.id !== nativeId) throw new Error("Microsandbox VM was replaced.");
-              return await handle.startDetached();
-            },
-          );
-        }
-      },
-    );
-    const metadata =
-      this.#metadataPath === undefined ? null : await readSessionMetadata(this.#metadataPath);
-    const snapshotDigest = metadata?.resources?.entries.find(
-      (entry) =>
-        entry.kind === "fork-snapshot" && entry.name === snapshotName && entry.phase === "live",
-    )?.nativeId;
-    if (snapshotDigest === undefined)
-      throw new Error("Microsandbox fork identity receipt is unavailable.");
-    return { snapshotName, snapshotDigest };
-  }
-
   async captureState(optionsHash: string): Promise<MicrosandboxSessionMetadata> {
     this.#optionsHash = optionsHash;
     if (isEveDevEnvironment()) {

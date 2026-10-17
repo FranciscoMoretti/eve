@@ -49,18 +49,11 @@ afterEach(async () => {
   await rm(app, { recursive: true, force: true });
 });
 
-it("retains ownership and immutable fork receipts when development shutdown stops the persisted VM", async () => {
+it("retains ownership and state receipts when development shutdown stops the persisted VM", async () => {
   vi.stubEnv("MSB_BACKEND", "local");
   app = await realpath(await mkdtemp(join(tmpdir(), "eve-dev-owned-")));
   const authority = join(app, ".eve/sandbox-cache/microsandbox");
   fixture.path = join(authority, "sessions/identity/metadata.json");
-  const fork = {
-    kind: "fork-snapshot" as const,
-    name: "retained-fork",
-    phase: "live" as const,
-    nativeId: "sha256:fork",
-    nativePath: "/fixture/fork",
-  };
   await writeSessionMetadata(fixture.path, {
     version: 2,
     optionsHash: "options",
@@ -71,7 +64,6 @@ it("retains ownership and immutable fork receipts when development shutdown stop
       version: 1,
       authority,
       sessionId: "owned",
-      borrowedForkSnapshot: "parent-fork",
       entries: [
         { kind: "sandbox", name: "owned-vm", phase: "live", nativeId: "local:42" },
         {
@@ -81,7 +73,6 @@ it("retains ownership and immutable fork receipts when development shutdown stop
           nativeId: "sha256:old",
           nativePath: "/fixture/old",
         },
-        fork,
       ],
     },
   });
@@ -91,11 +82,9 @@ it("retains ownership and immutable fork receipts when development shutdown stop
   expect(metadata?.resources).toMatchObject({
     authority,
     sessionId: "owned",
-    borrowedForkSnapshot: "parent-fork",
   });
-  expect(metadata?.resources?.entries).toContainEqual(fork);
   expect(metadata?.stateSnapshotName).toBe("old-state");
-  expect(metadata?.resources?.entries).toHaveLength(3);
+  expect(metadata?.resources?.entries).toHaveLength(2);
   expect(metadata?.resources?.entries.find((entry) => entry.name === "old-state")?.phase).toBe(
     "live",
   );

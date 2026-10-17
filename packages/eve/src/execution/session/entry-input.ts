@@ -12,7 +12,6 @@ export const SESSION_HANDOFF_VERSION = 2;
  * and deserialized at each `"use step"` boundary.
  */
 export interface InitialWorkflowEntryInput {
-  readonly copyCheckpoint?: import("#execution/copy-checkpoint.js").CopyCheckpointRecord;
   readonly seed?: RunInput["seed"];
   readonly continuationConflictCommand?: Extract<SessionCommand, { readonly kind: "send" }>;
   readonly input: RunInput["input"];

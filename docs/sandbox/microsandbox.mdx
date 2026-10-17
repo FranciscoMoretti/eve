@@ -28,12 +28,8 @@ Pass `networkPolicy` to `open()`. The policy applies to the live VM, not the pre
 
 Session creation uses the recorded snapshot and image directly. Writable VM state persists through the provider's session snapshot lifecycle.
 
-The provider also supports immutable fork artifacts through its optional provider
-`fork` capability. Capturing reconnects the source VM; restoring allocates a
-destination-owned VM with the destination's open options. Fork artifacts have a
-separate lifetime from session resume state and survive either session's cleanup.
-The checkpoint owner must retain and eventually release them. This provider
-capability alone does not expose a conversation checkpoint or fork endpoint.
+Conversation copies allocate a fresh sandbox. Only explicitly supplied attachments
+are staged; source packages, workspace state and processes are not inherited.
 
 See the [sandbox overview](/docs/sandbox) for managed workspace, skills, parent inheritance, and custom providers.
 
@@ -47,13 +43,10 @@ ownership facts cannot be resumed by this fork.
 
 Applications can import `manageLocalMicrosandboxResources` from
 `eve/sandbox/microsandbox` inside an authenticated local channel route. Pass the
-route context and `{ sessionId, expectedAppRoot, action: "retire" | "purge",
-releaseForkSnapshots }`. Authorize the exact session and fence application
-admission first. Retire all relevant sessions before purging; remove consumer
-resources before releasing their source snapshots. Only set
-`releaseForkSnapshots` after application checkpoint and pending/accepted copy
-references are retired. A nonzero `remaining` result means resources are retained;
-an error never confirms cleanup.
+route context and `{ sessionId, expectedAppRoot, action: "retire" | "purge" }`.
+Authorize the exact session and fence application admission first. Retire all
+relevant sessions before purging. A nonzero `remaining` result means resources
+are retained; an error never confirms cleanup.
 
 The worker selects its actual cache; `expectedAppRoot` only checks locality.
 This operation is supported only by the local development host with one shared
@@ -65,7 +58,6 @@ Stable native identity receipts accompany resource names: VM IDs and snapshot
 digests plus artifact paths come from successful SDK allocation results. Cleanup
 refuses a replacement that reused a name. Snapshot absence is checked at its
 recorded artifact path, because the SDK snapshot index is rebuildable; snapshot
-removal also keeps native child/dependency protection enabled. Fork artifact
-version 2 retains the captured digest, resolves its indexed path and verifies the
-manifest before restore. Mutable state snapshot restoration performs the same
-identity check. Earlier name-only fork/resource records are unsupported.
+removal also keeps native child/dependency protection enabled. Mutable state
+snapshot restoration verifies the recorded identity. Earlier name-only resource
+records and historical copy snapshot records are unsupported.

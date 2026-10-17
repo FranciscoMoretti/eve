@@ -7,7 +7,6 @@
  */
 
 export {
-  type CheckpointHook,
   type HookContext,
   type HookDefinition,
   type HookEvent,

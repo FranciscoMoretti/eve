@@ -231,8 +231,6 @@ export async function createMicrosandboxHandle(input: {
   readonly providerName: string;
   readonly runtimeOptions?: MicrosandboxSandboxRuntimeOptions;
   readonly sessionIdentity?: string;
-  readonly borrowedForkSnapshot?: string;
-  readonly expectedSnapshotDigest?: string;
 }): Promise<{
   readonly handle: SandboxProviderHandle<NetworkPolicySandboxSession>;
   readonly state: {
@@ -263,7 +261,6 @@ export async function createMicrosandboxHandle(input: {
   await initializeMicrosandboxResourceMetadata({
     path: metadataPath,
     sessionId: input.context.session.id,
-    borrowedForkSnapshot: input.borrowedForkSnapshot,
     metadata: {
       version: MICROSANDBOX_METADATA_VERSION,
       optionsHash: input.optionsHash,
@@ -325,12 +322,7 @@ export async function createMicrosandboxHandle(input: {
     });
   }
   let fromSnapshot = preparedTemplate.snapshotName;
-  if (input.expectedSnapshotDigest !== undefined) {
-    const snapshot = await module.Snapshot.get(input.expectedSnapshotDigest);
-    if ((await module.Snapshot.open(snapshot.path)).digest !== input.expectedSnapshotDigest)
-      throw new Error("Microsandbox fork snapshot was replaced.");
-    fromSnapshot = snapshot.path;
-  }
+
   const sandbox = await createPreparedMicrosandbox({
     fromSnapshot,
     metadataPath,
@@ -401,15 +393,6 @@ function requirePreparedMicrosandboxTemplate(
 }
 
 const forkSources = new WeakMap<SandboxProviderHandle, MicrosandboxVm>();
-
-export async function captureMicrosandboxFork(
-  handle: SandboxProviderHandle,
-  checkpointKey: string,
-): ReturnType<MicrosandboxVm["captureFork"]> {
-  const source = forkSources.get(handle);
-  if (source === undefined) throw new Error("Microsandbox fork source is unavailable.");
-  return await source.captureFork(checkpointKey);
-}
 
 function createHandle(
   sandbox: MicrosandboxVm,
