@@ -245,19 +245,13 @@ it("retains custom metadata in imported messages without granting framework fiel
   expect(JSON.stringify(prepared.history)).not.toContain("never-a-prompt");
 });
 
-it("preserves validated per-hook annotations in seed display only", () => {
-  const annotations = { suggestions: { items: ["annotation-only-marker"] } };
-  const prepared = prepareSessionTranscriptSeed({
-    messages: [{ role: "assistant", annotations, parts: [{ type: "text", text: "answer" }] }],
-  });
-  expect(prepared.messages[0]?.metadata?.annotations).toEqual(annotations);
-  expect(JSON.stringify(prepared.history)).not.toContain("annotation-only-marker");
+it("rejects retired completion annotations in transcript imports", () => {
   expect(() =>
     prepareSessionTranscriptSeed({
       messages: [
         {
           role: "assistant",
-          annotations: { suggestions: [] },
+          annotations: { suggestions: { items: ["Next?"] } },
           parts: [{ type: "text", text: "answer" }],
         },
       ],

@@ -95,14 +95,7 @@ export function createSessionEventSink(input: SessionEventSinkInput): SessionEve
     });
     void observeSessionActivity({ ctx, event: emitted.event, sessionId: input.sessionId });
     if (!emitted.suppressed) {
-      await dispatchStreamEventHooks({
-        ctx,
-        registry: bundle.hookRegistry,
-        event: emitted.event,
-        emitResult: async (result) => {
-          await emit(result);
-        },
-      });
+      await dispatchStreamEventHooks({ ctx, registry: bundle.hookRegistry, event: emitted.event });
     }
     if (emitted.event.type !== "step.started") {
       await dispatchDynamicModelEvent({

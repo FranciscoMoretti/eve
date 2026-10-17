@@ -32,8 +32,6 @@ export interface EveMessage {
 export interface EveMessageMetadata {
   /** Durable application data, separate from framework lifecycle and authorization. */
   readonly custom?: JsonObject;
-  /** Framework-owned result namespaces keyed by authored hook slug. */
-  readonly annotations?: Readonly<Record<string, JsonObject>>;
   /** Informational provider/model reference retained by imported assistant history. */
   readonly modelId?: string;
   readonly optimistic?: true;

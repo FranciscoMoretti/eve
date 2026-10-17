@@ -134,20 +134,3 @@ it("never substitutes an ordinary turn boundary for a named checkpoint", async (
   ).rejects.toThrow("named checkpoint boundary");
   expect(output).toEqual([]);
 });
-
-it("inherits hook annotations through history restoration", async () => {
-  const { writable, output } = setup([
-    {
-      type: "hook.result",
-      data: {
-        hookId: "suggestions",
-        turnId: "turn_0",
-        responseMetadata: { items: ["Next?"] },
-      },
-    },
-    createTurnStartedEvent({ sequence: 1, turnId: "turn_1" }),
-  ]);
-  await restoreSessionHistory({ fork, writable });
-  const text = output.map((chunk) => new TextDecoder().decode(chunk)).join("");
-  expect(text).toContain("Next?");
-});

@@ -112,16 +112,6 @@ async function readSessionHistory(
       }
       if (event.type === "history.restored") {
         for (const historical of event.data.events) append(historical);
-      } else if (event.type === "hook.result") {
-        if (event.data.responseMetadata !== undefined)
-          append({
-            ...event,
-            data: {
-              hookId: event.data.hookId,
-              turnId: event.data.turnId,
-              responseMetadata: event.data.responseMetadata,
-            },
-          });
       } else if (isHistoryProjectionEvent(event)) {
         append(event);
       }

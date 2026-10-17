@@ -1,4 +1,3 @@
-import type { JsonObject } from "#shared/json.js";
 import type { HandleMessageStreamEvent } from "../../protocol/message.js";
 import type { SessionContext } from "./callback-context.js";
 import type { ExactDefinition } from "./exact.js";
@@ -16,7 +15,8 @@ type ProtocolEvent<TType extends HandleMessageStreamEvent["type"]> = Extract<
  * until eve exposes them here.
  */
 export interface HookEventMap {
-  readonly "hook.result": ProtocolEvent<"hook.result">;
+  readonly "history.seeded": ProtocolEvent<"history.seeded">;
+  readonly "history.restored": ProtocolEvent<"history.restored">;
   readonly "action.input.appended": ProtocolEvent<"action.input.appended">;
   readonly "action.partial": ProtocolEvent<"action.partial">;
   readonly "action.result": ProtocolEvent<"action.result">;
@@ -32,8 +32,6 @@ export interface HookEventMap {
   readonly "input.resolved": ProtocolEvent<"input.resolved">;
   readonly "message.appended": ProtocolEvent<"message.appended">;
   readonly "message.completed": ProtocolEvent<"message.completed">;
-  readonly "history.seeded": ProtocolEvent<"history.seeded">;
-  readonly "history.restored": ProtocolEvent<"history.restored">;
   readonly "message.received": ProtocolEvent<"message.received">;
   readonly "reasoning.appended": ProtocolEvent<"reasoning.appended">;
   readonly "reasoning.completed": ProtocolEvent<"reasoning.completed">;
@@ -84,25 +82,13 @@ export interface HookContext extends SessionContext {
 }
 
 /**
- * Handler for one accepted runtime stream event. Only turn.completed may return a result.
+ * Side-effect-only handler for one accepted runtime stream event.
  *
  * `TEvent` is one variant of {@link HookEvent}. {@link StreamEventHooks}
  * infers it from the event key. The typed event is the first argument, `ctx`
  * is the last.
  */
-/** Durable display annotations; never model context. */
-export interface TurnCompletedHookResult {
-  readonly responseMetadata?: JsonObject;
-}
-
-type HookReturn<TEvent> = TEvent extends { readonly type: "turn.completed" }
-  ? void | TurnCompletedHookResult
-  : void;
-
-export type StreamEventHook<TEvent> = (
-  event: TEvent,
-  ctx: HookContext,
-) => HookReturn<TEvent> | Promise<HookReturn<TEvent>>;
+export type StreamEventHook<TEvent> = (event: TEvent, ctx: HookContext) => void | Promise<void>;
 
 /**
  * Map of stream-event subscribers an authored hook file may declare.
@@ -119,7 +105,7 @@ export type StreamEventHooks<TKey extends HookEventKey = HookEventKey> = {
  *
  * Hook files declare stream-event subscribers (under `events:`) that
  * fire after eve has accepted and durably recorded each event.
- * Handlers cannot inject model context. A turn.completed handler may return display metadata and auxiliary model usage. To
+ * Handlers are observe-only: they cannot inject model context. To
  * contribute runtime model messages, use `defineDynamic` +
  * `defineInstructions` in `agent/instructions/`.
  */

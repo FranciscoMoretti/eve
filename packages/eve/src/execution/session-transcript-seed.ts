@@ -40,13 +40,11 @@ const sessionTranscriptSeed = z.strictObject({
         z.strictObject({
           role: z.literal("user"),
           metadata: jsonObjectSchema.optional(),
-          annotations: z.record(z.string().min(1).max(512), jsonObjectSchema).optional(),
           parts: z.array(z.union([text, file])).min(1),
         }),
         z.strictObject({
           role: z.literal("assistant"),
           metadata: jsonObjectSchema.optional(),
-          annotations: z.record(z.string().min(1).max(512), jsonObjectSchema).optional(),
           modelId: z.string().min(1).max(512).optional(),
           parts: z
             .array(
@@ -182,8 +180,7 @@ export function prepareSessionTranscriptSeed(value: unknown): {
     };
     if (
       (message.role === "assistant" && message.modelId !== undefined) ||
-      message.metadata !== undefined ||
-      message.annotations !== undefined
+      message.metadata !== undefined
     ) {
       const metadata: {
         -readonly [K in keyof NonNullable<EveMessage["metadata"]>]: NonNullable<
@@ -193,7 +190,6 @@ export function prepareSessionTranscriptSeed(value: unknown): {
       if (message.role === "assistant" && message.modelId !== undefined)
         metadata.modelId = message.modelId;
       if (message.metadata !== undefined) metadata.custom = message.metadata;
-      if (message.annotations !== undefined) metadata.annotations = message.annotations;
       seeded.metadata = metadata;
     }
     messages.push(seeded);
