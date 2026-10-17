@@ -1,3 +1,43 @@
+## ChatJS 0.80.1 upgrade candidate
+
+This candidate starts at upstream **eve 0.80.1**,
+[`e3cea42486e7e32b7b3001bb5912e076b5443ad5`](https://github.com/vercel/eve/commit/e3cea42486e7e32b7b3001bb5912e076b5443ad5).
+Its review base is `codex/chatjs-eve080-base`, pinned to that commit.
+The maintained `francisco/chatjs-package` runtime remains at
+[`5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c`](https://github.com/FranciscoMoretti/eve/commit/5f129f3b0b4d9a094ead45ca1cd3c53548d1da3c).
+This candidate is **not ready for ChatJS adoption**. Starting from upstream does
+not mean the remaining contracts have been ported or retired.
+
+**Next production startup:** native candidate retirement evidence is recorded in
+[the startup slice](research/chatjs-next-startup/README.md). It maps the exact old
+patch to upstream behavior and exercises two minimal agents with real local
+`next build` / `next start`. Merging this proof alone does not delete code from the
+maintained runtime. Its ten-group inventory becomes nine only when this verified
+startup replacement is adopted in an integrated candidate.
+
+### Remaining inventory dispositions
+
+| Group                                 | Candidate disposition and remaining gate                                                                   |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Exact approval receipts               | Removal candidate; accepted 15+3 supported proof exists, actual MCP/deletion consumer integration remains. |
+| Message metadata and identity         | Port/narrow exact operation correlation and replay IDs; generic display metadata is app-owned.             |
+| Creation-operation lookup             | Narrow around native create dedupe; authenticated read-only recovery without resend still needs proof.     |
+| Checkpoints and forks                 | Port required new-conversation boundaries and owned resource isolation.                                    |
+| History import and projection         | Port trusted new-conversation seed/projection APIs without tool replay or billing import.                  |
+| Attachment staging                    | Narrow to strict owned seed staging and complete retry semantics.                                          |
+| Sandbox lifecycle                     | Port required identity, cleanup, snapshot and Microsandbox 0.6 contracts; no silent backend downgrade.     |
+| Resumable HTTP streams                | Removal candidate; native stream semantics still need the ChatJS proxy/security proof.                     |
+| Distribution and protocol integration | Unproven until all retained contracts, packaged exports, both app agents and fresh-session runtime pass.   |
+
+The application dependency prerequisite is reviewed separately in
+[ChatJS #847](https://github.com/FranciscoMoretti/chat-js/pull/847).
+No application pin changes, release, deployment, old-session continuation, or old
+billing import are part of this candidate. Authority, exact correlation, ownership,
+best-effort accounting, and no automatic resend remain required. The application's
+PostgreSQL consumed-prefix patch and abrupt-crash recovery gate remain separate.
+
+---
+
 <div align="center">
   <a href="https://eve.dev/">
     <picture>
