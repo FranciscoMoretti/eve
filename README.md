@@ -115,9 +115,9 @@ that propagates required persistence failure and preserves the same retry contra
 Do not replace it with a general strict-stream-hook switch.
 
 Validation distinguishes actual in-memory owner execution, the actual ChatJS hook
-against PGlite, and the separate actual microsandbox provider probe. A controlled
-failure between app persistence and native receipt writing is not abrupt process
-termination or a real native storage outage. Combined app/owner/VM and restart
+against PGlite, and the separate actual microsandbox provider probe. A native checkpoint stream write fault is injected through the workflow World
+store, proving that failed writes expose neither receipt nor ready event and
+retry succeeds. This is not abrupt process termination or an external storage outage. Combined app/owner/VM and restart
 proof remain outstanding.
 
 ### Integrated ChatJS progress

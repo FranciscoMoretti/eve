@@ -7,7 +7,7 @@ import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 import { mockChannelContext } from "#internal/testing/mocks/mock-channel-operations.js";
 import { createWorkflowRuntime } from "#execution/workflow-runtime.js";
 import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
-import { getRun } from "#internal/workflow/runtime.js";
+import { getRun, getWorld } from "#internal/workflow/runtime.js";
 import { z } from "#compiled/zod/index.js";
 import { copyCheckpointHandler } from "#eve-channel/copy-checkpoint.js";
 import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
@@ -20,6 +20,7 @@ import { captureTurnEvents } from "#internal/testing/events.js";
 import { workflowEntry } from "#execution/session/entry.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
 import {
+  COPY_CHECKPOINT_NAMESPACE,
   copyCheckpointPrincipal,
   boundaryCopyCheckpointId,
   readCopyCheckpoint,
@@ -384,7 +385,11 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
   const persisted = new Set<string>();
   let attempts = 0;
   let failPersistence = true;
-  let failReceipt = true;
+  let failReceipt = false;
+  let writeFailures = 0;
+  let publishedAttempts = 0;
+  let failPublication = false;
+  let publicationFailures = 0;
   const runtime = await createTestRuntime({
     agent: { name: "required-checkpoint" },
     modules: [
@@ -393,16 +398,11 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
         loadNamespace: async () => ({
           default: {
             checkpoint: async (checkpoint: { checkpointId: string }) => {
+              if (checkpoint.checkpointId === "publication-loss") publishedAttempts++;
               if (checkpoint.checkpointId !== "required") return;
               attempts++;
               if (failPersistence) throw new Error("Document store unavailable.");
               persisted.add(checkpoint.checkpointId);
-              if (failReceipt) {
-                failReceipt = false;
-                throw new Error(
-                  "Injected failure after application commit, before native receipt write.",
-                );
-              }
             },
             events: {
               "session.waiting": async () => {
@@ -434,6 +434,22 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
       },
     ]);
     const stream = captureTurnEvents(source);
+    const world = await getWorld();
+    const append = world.streams.write.bind(world.streams);
+    const write = vi.spyOn(world.streams, "write").mockImplementation(async (...args) => {
+      const namespace = Buffer.from(args[1].split("_").at(-1)!, "base64url").toString();
+      if (namespace === COPY_CHECKPOINT_NAMESPACE && failReceipt) {
+        failReceipt = false;
+        writeFailures++;
+        throw new Error("Injected native checkpoint stream write failure.");
+      }
+      if (args[1].endsWith("_user") && failPublication) {
+        failPublication = false;
+        publicationFailures++;
+        throw new Error("Injected readiness publication append failure.");
+      }
+      return await append(...args);
+    });
     const request = {
       kind: "copy-checkpoint" as const,
       checkpointId: "required",
@@ -456,8 +472,21 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
       expect(persisted.size).toBe(0);
       expect(await readCopyCheckpoint(source.runId, "required")).toBeUndefined();
       failPersistence = false;
+      failReceipt = true;
       await resumeSessionInbox({ sessionId: source.runId }, request);
       await barrier("after-receipt-failure");
+      const beforeRetry = await stream.nextUntil(
+        (event) =>
+          event.type === "session.waiting" &&
+          event.data.checkpoint?.checkpointId === "after-receipt-failure",
+      );
+      expect(writeFailures).toBe(1);
+      expect(
+        beforeRetry.some(
+          (event) =>
+            event.type === "session.waiting" && event.data.checkpoint?.checkpointId === "required",
+        ),
+      ).toBe(false);
       expect(attempts).toBe(2);
       expect(persisted.size).toBe(1);
       expect(await readCopyCheckpoint(source.runId, "required")).toBeUndefined();
@@ -471,6 +500,23 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
       await barrier("after-repeat");
       expect(attempts).toBe(3);
       expect(await readCopyCheckpoint(source.runId, "required")).toEqual(ready);
+      await stream.nextUntil(
+        (event) =>
+          event.type === "session.waiting" &&
+          event.data.checkpoint?.checkpointId === "after-repeat",
+      );
+      failPublication = true;
+      let retained: Awaited<ReturnType<typeof readCopyCheckpoint>>;
+      await resumeSessionInbox(
+        { sessionId: source.runId },
+        { ...request, checkpointId: "publication-loss" },
+      );
+      await vi.waitFor(async () =>
+        expect(await readCopyCheckpoint(source.runId, "publication-loss")).toBeDefined(),
+      );
+      retained = await readCopyCheckpoint(source.runId, "publication-loss");
+      await vi.waitFor(() => expect(publicationFailures).toBe(1));
+
       await resumeSessionInbox(
         { sessionId: source.runId },
         { kind: "send", payload: { message: "Alice continues after the storage failures." }, auth },
@@ -480,7 +526,19 @@ it("requires checkpoint persistence, retries a lost receipt, and keeps ordinary 
           (event) => event.type === "turn.completed",
         ),
       ).toBe(true);
+      await resumeSessionInbox(
+        { sessionId: source.runId },
+        { ...request, checkpointId: "publication-loss" },
+      );
+      await stream.nextUntil(
+        (event) =>
+          event.type === "session.waiting" &&
+          event.data.checkpoint?.checkpointId === "publication-loss",
+      );
+      expect(await readCopyCheckpoint(source.runId, "publication-loss")).toEqual(retained);
+      expect(publishedAttempts).toBe(1);
     } finally {
+      write.mockRestore();
       stream.dispose();
       await source.cancel();
     }
@@ -614,6 +672,59 @@ it("forks exact imported user boundaries from retained trusted input without rep
         await destination.cancel();
       }
     } finally {
+      stream.dispose();
+      await source.cancel();
+    }
+  });
+});
+
+it("does not expose imported history or a private seed when its durable append fails", async () => {
+  const { FatalError } = await import("#compiled/@workflow/errors/index.js");
+  const { COPY_SEED_NAMESPACE } = await import("#execution/copy-checkpoint.js");
+  const runtime = await createTestRuntime({ agent: { name: "seed-write-failure" } });
+  await runtime.run(async () => {
+    const world = await getWorld();
+    const append = world.streams.write.bind(world.streams);
+    let failures = 0;
+    const write = vi.spyOn(world.streams, "write").mockImplementation(async (...args) => {
+      if (Buffer.from(args[1].split("_").at(-1)!, "base64url").toString() === COPY_SEED_NAMESPACE) {
+        failures++;
+        throw new FatalError("Private seed append unavailable.");
+      }
+      return await append(...args);
+    });
+    const auth = {
+      authenticator: "test",
+      principalId: "alice",
+      principalType: "user",
+      attributes: {},
+    };
+    const source = await startSessionOwner(workflowEntry, [
+      {
+        kind: "initial",
+        ownerDeploymentId: "dpl_a",
+        sessionTimeoutMs: false,
+        seed: {
+          attachments: "channel",
+          messages: [
+            { role: "user", parts: [{ type: "text", text: "Uncommitted imported note" }] },
+          ],
+        },
+        input: {},
+        serializedContext: {
+          ...buildSerializedContext({ channelKind: "http", auth }),
+          "eve.initiatorAuth": auth,
+        },
+      },
+    ]);
+    const stream = captureTurnEvents(source);
+    try {
+      const events = await stream.nextUntil((event) => event.type === "session.failed");
+      expect(failures).toBe(1);
+      expect(events.some((event) => event.type === "history.seeded")).toBe(false);
+      expect(await readCopyCheckpoint(source.runId, "seed", COPY_SEED_NAMESPACE)).toBeUndefined();
+    } finally {
+      write.mockRestore();
       stream.dispose();
       await source.cancel();
     }

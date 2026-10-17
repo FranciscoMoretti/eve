@@ -91,7 +91,7 @@ export async function captureCopyCheckpointStep(
           input.active ||
           !announce ||
           "rejected" in previous ||
-          state?.["eve.publishedCopyCheckpoint"] === request.checkpointId
+          (automatic && state?.["eve.publishedCopyCheckpoint"] === request.checkpointId)
         )
           return { sessionState: input.sessionState };
         const { published } = await publishFromSessionStep(
@@ -190,6 +190,8 @@ export async function captureCopyCheckpointStep(
                 checkpointId: request.checkpointId,
                 beforeTurnId: current,
               });
+            // Events publish immediately. Commit the receipt before advertising readiness.
+            if (!(automatic && "rejected" in record)) await writeCopyCheckpoint(record);
             if (announce && !("rejected" in record))
               await publishTransition(
                 checkpointReady(sessionView(storedProjection(state), state), {
@@ -198,8 +200,6 @@ export async function captureCopyCheckpointStep(
                 }),
                 emit,
               );
-            // The ready receipt follows application hooks, including document snapshots.
-            if (!(automatic && "rejected" in record)) await writeCopyCheckpoint(record);
             return { record, staged };
           },
           updateSession(session, { record, staged }) {

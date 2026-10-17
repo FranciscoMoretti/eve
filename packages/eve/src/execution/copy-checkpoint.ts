@@ -125,12 +125,21 @@ export async function writeCopyCheckpoint(
 ): Promise<void> {
   if (Buffer.byteLength(JSON.stringify(record)) > 8 * 1024 * 1024)
     throw new Error("Copy checkpoint is too large.");
+  const operations: Promise<unknown>[] = [];
   const writer = getRun(record.sessionId)
-    .getWritable<CopyCheckpointRecord>({ namespace })
+    .getWritable<CopyCheckpointRecord>({ namespace, ops: operations })
     .getWriter();
+  // write() only queues serialization. Lock release drains the SDK's tracked
+  // append operations; readiness requires their durable completion.
+  // Observe eager rejections, but collect completion only after release: the
+  // public ops contract permits serialization to register more operations.
+  void Promise.allSettled(operations);
   try {
     await writer.write(record);
   } finally {
     writer.releaseLock();
+  }
+  for (const result of await Promise.allSettled(operations)) {
+    if (result.status === "rejected") throw result.reason;
   }
 }

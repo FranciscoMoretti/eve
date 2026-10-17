@@ -77,3 +77,38 @@ owner, seed and hook-lifecycle integration tests pass. Package TypeScript, targe
 lint, documentation and framework invariant checks pass. Changed extension
 capability epochs are regenerated with fresh-start requirements; no new legacy
 compatibility fixtures were added.
+
+Receipt ordering regression: the workflow World stream writer rejects a checkpoint
+append after the application callback has committed. The test failed against
+311f64f5 because a ready event was already visible. Capture now commits the receipt
+before emitting readiness; failed writes expose neither, retry succeeds with the
+same immutable app snapshot, and subsequent source turns still run. This exercises
+the actual owner and storage boundary with an injected fault, not a process kill.
+
+The regression also remained red after merely moving `writer.write()` before the
+ready event: the SDK queues serialization and drains append operations after lock
+release. `writeCopyCheckpoint` now supplies the SDK's `ops` collection and awaits
+its completion after releasing the lock. Both ready receipts and retained trusted
+seeds use this durable append barrier. All six owner checkpoint tests pass after
+the fix, including the real World stream-write faults.
+
+The pinned dependency is `@workflow/core` **5.2.0**. Its exported
+`WorkflowRunWritableStreamOptions.ops` explicitly documents buffer-entry write
+acknowledgment and awaiting operations after lock release. This is a typed,
+documented option, not an unexported adapter. Checkpoint receipts and the private
+seed share `writeCopyCheckpoint` because both append the same private record shape
+and require identical durable completion semantics.
+
+The reverse fault is covered too: after receipt append succeeds, rejecting the
+public readiness stream append does not change the receipt. The source completes
+another turn; an explicit retry re-announces the exact retained boundary without
+rerunning required snapshot hooks or recapturing newer history. Automatic
+announcement deduplication remains, while explicit requests may re-announce.
+Rejecting the private seed append exposes neither a private seed record nor a
+`history.seeded` event. These are actual in-memory owner/storage faults, not
+external service outages or process-kill experiments.
+
+Completion is collected from `ops` after writer release, as the public contract
+requires; it does not assume the collection was complete at writable creation.
+An early all-settled observer handles eager rejections without freezing the final
+set of operations awaited for readiness.
