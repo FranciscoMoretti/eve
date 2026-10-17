@@ -64,6 +64,26 @@ billing import are part of this candidate. Authority, exact correlation, ownersh
 best-effort accounting, and no automatic resend remain required. The application's
 PostgreSQL consumed-prefix patch and abrupt-crash recovery gate remain separate.
 
+### Exact candidate integration checkpoint
+
+**Not yet compatible with real ChatJS.** Candidate
+`aab691297a59cc8c325b8f8c584a472495aed9ce` was built and packed successfully,
+then consumed by tracked ChatJS main `c0ab1c0504bb3da73ca0f3625f66c47bf69e042e`
+(including merged #847). Both real agent builds fail: authenticated at missing
+`eve/transcript`, guest at removed `inputResponseSchema`. Authenticated types have
+56 diagnostics in eight groups; guest has one. Thirty focused app tests pass, but
+full startup/send/stream/cancel/approval/copy/sandbox flows remain blocked.
+
+[Committed matrix, root causes and reproduction](https://github.com/FranciscoMoretti/chat-js/blob/355553f0b/experiments/eve080-candidate-verification/README.md)
+distinguish app adaptations from missing required runtime contracts. An initial
+extra MCP schema diagnostic was a fixture dependency-topology artifact and was
+removed without modifying application or runtime code. This documentation update
+changes no runtime source; the tested commit remains the exact SHA above.
+
+Streaming evidence is now [fork #10](https://github.com/FranciscoMoretti/eve/pull/10),
+stacked on #8, with independent [ChatJS #848](https://github.com/FranciscoMoretti/chat-js/pull/848).
+It is not yet incorporated into this aggregate. Its fixture proof does not override
+the real-app compiler failures.
 
 ### Next minimal port plan
 
