@@ -359,9 +359,12 @@ For scripts, server-to-server calls, evals, tests, and custom clients, use the [
 
 An authenticated creation can include `operationId`. If its response is lost,
 read `GET /eve/v1/operation/:operationId` with the same authenticated principal.
-A successful lookup returns `{ "sessionId": "..." }`. An absent operation returns
-404 with `code: "eve_operation_not_found"`. Responses use `Cache-Control: no-store`.
+A successful lookup returns `{ "sessionId": "..." }`. An unresolved operation returns
+409 with `code: "eve_operation_unresolved"`. Responses use `Cache-Control: no-store`.
 The lookup never creates a session, sends a message, or resumes an agent.
+An unresolved result covers absent, allocated-before-hook and released-alias
+states; it cannot certify that a creation was never dispatched. Never turn it
+into an automatic POST retry.
 
 The operation identity uses the same authenticator, issuer, principal type and
 principal ID as creation. Another principal cannot retrieve the operation by

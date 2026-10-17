@@ -148,8 +148,11 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         const session = await resolveSession(token);
         return session === undefined
           ? Response.json(
-              { error: "Operation not found.", code: "eve_operation_not_found" },
-              { status: 404, headers: { "cache-control": "no-store" } },
+              {
+                error: "Operation ownership is unresolved. Do not redispatch based on this lookup.",
+                code: "eve_operation_unresolved",
+              },
+              { status: 409, headers: { "cache-control": "no-store" } },
             )
           : Response.json({ sessionId: session.id }, { headers: { "cache-control": "no-store" } });
       }),

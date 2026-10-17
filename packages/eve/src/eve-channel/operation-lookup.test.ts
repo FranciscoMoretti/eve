@@ -36,7 +36,7 @@ it("looks up only the authenticated operation without creating or dispatching", 
   );
   for (const [auth, status] of [
     [owner, 200],
-    [{ ...owner, principalId: "foreign" }, 404],
+    [{ ...owner, principalId: "foreign" }, 409],
   ] as const) {
     const channel = eveChannel({ auth: () => auth });
     const route = channel.routes.find(
@@ -61,7 +61,7 @@ it("looks up only the authenticated operation without creating or dispatching", 
     expect(response.status).toBe(status);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toMatchObject(
-      status === 200 ? { sessionId: "existing" } : { code: "eve_operation_not_found" },
+      status === 200 ? { sessionId: "existing" } : { code: "eve_operation_unresolved" },
     );
   }
   expect(send).not.toHaveBeenCalled();

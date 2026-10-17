@@ -28,7 +28,18 @@ review base. None of these draft proof PRs deletes maintained runtime code.
 **Implemented runtime extension: authenticated read-only creation-operation lookup.**
 It reuses upstream creation token derivation and owner resolution without sending
 or creating. Ten focused route/create tests and package type checking pass; the
-packaged integrated recovery gate is still pending. Other required contracts below
+packaged integrated recovery gate is still pending. Missing aliases return 409
+`eve_operation_unresolved`, never a not-found permission to recreate. Native
+allocation can return a run ID before its alias hook exists, and releasing an
+alias also loses lookup identity. Full recovery needs a durable allocation
+binding; the current extension safely exposes known bindings only. Immutable
+intent remains app-owned through the persisted initial request/content hash and
+matching checks before dispatch. Changed-content and allocation-gap recovery
+still need integrated evidence.
+
+Removal criterion: upstream provides authenticated read-only operation lookup
+with durable allocated identity (including before alias claim/after release),
+and ChatJS proves immutable-intent verification and recovery without resending. Other required contracts below
 remain missing.
 The absence of old fork code is not proof that its requirements work upstream.
 
