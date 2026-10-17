@@ -91,6 +91,30 @@ export async function stageAttachmentsForAdapter(
   );
 }
 
+/** Trusted copy files must resolve through the destination channel, never public fallback. */
+export async function stageSeedFile(
+  part: FilePart,
+): Promise<{ readonly part: FilePart; readonly digest: string }> {
+  const ctx = loadContext();
+  const adapter = ctx.get(ChannelKey);
+  const sandbox = await ctx.get(SandboxKey)?.get();
+  if (!adapter?.fetchFile || !sandbox)
+    throw new Error("Copied files require their destination channel and sandbox.");
+  const data = readFileData(part.data);
+  if (data.kind !== "link") throw new Error("Copied files require destination URLs.");
+  const result = await adapter.fetchFile(data.url.href, buildAdapterContext(adapter, ctx));
+  if (result === null) throw new Error("Destination channel did not resolve a copied file.");
+  const resolved = Buffer.isBuffer(result) ? { bytes: result } : result;
+  const staged = await stageResolvedBytes(
+    part,
+    resolved,
+    sandbox,
+    adapter.uploadPolicy ?? DEFAULT_UPLOAD_POLICY,
+  );
+  if (staged.type !== "file") throw new Error("Copied file violates attachment policy.");
+  return { part: staged, digest: createHash("sha256").update(resolved.bytes).digest("hex") };
+}
+
 /**
  * Context-bound variant of {@link stageAttachmentsForAdapter}. Without an
  * active sandbox, every file part becomes a note: history never keeps an
@@ -182,9 +206,10 @@ export async function stageToolResultMedia<T extends ModelMessage>(
  */
 export async function hydrateSandboxAttachments(
   input: readonly ModelMessage[],
+  strictPaths: Readonly<Record<string, string>> = {},
 ): Promise<ModelMessage[]> {
   const messages = replaceUnresolvedFileParts(input);
-  if (!messagesContainSandboxRef(messages)) {
+  if (!messagesContainSandboxRef(messages) && Object.keys(strictPaths).length === 0) {
     return messages;
   }
 
@@ -197,12 +222,19 @@ export async function hydrateSandboxAttachments(
   }
 
   const sandbox = await activeSandbox(sandboxAccess);
+  // Keep copied resources valid even after compaction projects their refs into text.
+  for (const [path, digest] of Object.entries(strictPaths)) {
+    const bytes = await sandbox?.readBinaryFile({ path });
+    if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) {
+      throw new Error("Copied attachment is unavailable or changed in the destination sandbox.");
+    }
+  }
   return Promise.all(
     messages.map(async (message) => {
       if (!messageContainsSandboxRef(message)) {
         return message;
       }
-      const content = await hydrateMessageContent(message.content, sandbox);
+      const content = await hydrateMessageContent(message.content, sandbox, strictPaths);
       return { ...message, content } as ModelMessage;
     }),
   );
@@ -353,6 +385,7 @@ function isSandboxRefFilePart(part: unknown): part is FilePart {
 async function hydrateMessageContent(
   content: unknown,
   sandbox: SandboxSession | null,
+  strictPaths: Readonly<Record<string, string>>,
 ): Promise<unknown> {
   if (!Array.isArray(content)) {
     return content;
@@ -361,11 +394,24 @@ async function hydrateMessageContent(
     content.map(async (part): Promise<unknown[]> => {
       if (isSandboxRefFilePart(part)) {
         const ref = decodeSandboxRef(part.data as URL);
+        const strictDigest = strictPaths[ref.path];
+        const strictBytes =
+          strictDigest === undefined
+            ? undefined
+            : await sandbox?.readBinaryFile({ path: ref.path });
+        if (
+          strictDigest !== undefined &&
+          (!strictBytes || createHash("sha256").update(strictBytes).digest("hex") !== strictDigest)
+        ) {
+          throw new Error(
+            "Copied attachment is unavailable or changed in the destination sandbox.",
+          );
+        }
         const label = renderSandboxRefAsTextPart(ref);
         if (!inlinesSandboxRefAsBytes(ref)) {
           return [label];
         }
-        const bytes = await readSandboxRefBytes(ref, sandbox);
+        const bytes = strictBytes ?? (await readSandboxRefBytes(ref, sandbox));
         return bytes === null
           ? [renderMissingSandboxRef(ref)]
           : [label, { ...part, data: bytes, mediaType: ref.mediaType }];

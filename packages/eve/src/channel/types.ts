@@ -439,6 +439,8 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
+  /** Trusted server-resolved fresh-root transcript, never a request payload. */
+  readonly seed?: import("#execution/session-transcript-seed.js").SessionTranscriptSeed;
   /**
    * @internal Set by the server after it authorizes tool stubs.
    * Local subagents match rules qualified by their full path, such as researcher/list_tasks.

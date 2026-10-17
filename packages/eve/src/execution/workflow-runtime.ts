@@ -147,6 +147,17 @@ export function createWorkflowRuntime(config: {
     input: RunInput,
     predecessor?: SessionPredecessor,
   ): Promise<RunHandle> => {
+    if (
+      input.seed !== undefined &&
+      (input.input.message !== undefined ||
+        input.parent !== undefined ||
+        config.nodeId !== undefined ||
+        input.auth === null ||
+        input.auth.principalType === "anonymous" ||
+        predecessor !== undefined)
+    ) {
+      throw new Error("Trusted seeds require an authenticated fresh root without a first message.");
+    }
     const bundle = await getCompiledRuntimeAgentBundle({
       compiledArtifactsSource: config.compiledArtifactsSource,
       nodeId: config.nodeId,
@@ -181,6 +192,7 @@ export function createWorkflowRuntime(config: {
     } = {
       kind: "initial",
       input: input.input,
+      seed: input.seed,
       ownerDeploymentId: await resolveCurrentWorkflowDeploymentId(),
       serializedContext,
     };

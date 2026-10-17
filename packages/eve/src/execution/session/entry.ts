@@ -1,3 +1,4 @@
+import { emitSessionTranscriptSeedStep } from "#execution/emit-session-transcript-seed-step.js";
 import { readSerializedSessionSchedule } from "#context/session-schedule.js";
 import { failSession, runPreparedSession, type SessionBoot } from "#execution/session/program.js";
 import { getWorkflowMetadata, getWritable } from "#compiled/@workflow/core/index.js";
@@ -168,6 +169,7 @@ export async function bootInitialOwner(
   let owner: OwnedInitialSession | undefined;
   try {
     const sessionCreationPromise = createSessionStep({
+      seed: input.seed,
       compiledArtifactsSource: serializedBundle.source,
       continuationToken,
       dynamicSubagentAgentConfig: serializedContext["eve.dynamicSubagentAgentConfig"] as
@@ -208,6 +210,9 @@ export async function bootInitialOwner(
       return undefined;
     }
     const caller = unwrapSettled(callerResolution);
+    if (input.seed !== undefined) {
+      await emitSessionTranscriptSeedStep({ seed: input.seed, writable: sessionWritable });
+    }
     return {
       inbox,
       session: {

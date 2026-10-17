@@ -15,6 +15,7 @@ type ProtocolEvent<TType extends HandleMessageStreamEvent["type"]> = Extract<
  * until eve exposes them here.
  */
 export interface HookEventMap {
+  readonly "history.seeded": ProtocolEvent<"history.seeded">;
   readonly "action.input.appended": ProtocolEvent<"action.input.appended">;
   readonly "action.partial": ProtocolEvent<"action.partial">;
   readonly "action.result": ProtocolEvent<"action.result">;

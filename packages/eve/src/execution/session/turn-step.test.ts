@@ -1,6 +1,6 @@
 import { AgentSpanIdGenerator } from "#compiled/@vercel/agent-runs/index.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
-import { jsonSchema, type ModelMessage } from "ai";
+import { jsonSchema, type FilePart, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelAdapter, ChannelAdapterContext } from "#channel/adapter.js";
@@ -3785,4 +3785,62 @@ describe("runProxySubagentEventStep", () => {
       "http:proxy-second",
     ]);
   });
+});
+
+it("stages pending copied history before model execution and keeps failed staging out of the model", async () => {
+  const sourceHistory: HarnessSession["history"] = [
+    {
+      role: "user",
+      kind: "user",
+      content: [
+        {
+          type: "file",
+          data: new URL("https://files.example/copied.txt"),
+          mediaType: "text/plain",
+          filename: "copied.txt",
+        },
+      ],
+    },
+  ];
+  const original = createStubSession({
+    history: sourceHistory,
+    state: { "eve.pending-seed-files": true },
+  });
+  installSessionStoreMocks([original]);
+  vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(createTurnStepTestBundle());
+  const sandbox = mockSandbox({ id: "copied-destination" });
+  vi.mocked(ensureSandboxAccess).mockResolvedValueOnce(sandbox.access as never);
+  const execute = vi.fn(async (session: HarnessSession): Promise<StepResult> => ({
+    next: null,
+    session,
+  }));
+  vi.mocked(createExecutionNodeStep).mockImplementation(() => execute);
+  await turnStep({
+    history: sourceHistory,
+    input: { kind: "deliver", payloads: [{ message: "continue" }] },
+    sessionWritable: createTestWritable(),
+    serializedContext: createSerializedContext(),
+    sessionState: createStubSessionState(),
+  });
+  expect(execute).toHaveBeenCalledOnce();
+  const modelSession = execute.mock.calls[0]![0];
+  const file = (modelSession.history[0]!.content as FilePart[])[0]!;
+  expect(isSandboxRefUrl(file.data)).toBe(true);
+  expect(modelSession.state?.["eve.pending-seed-files"]).toBeUndefined();
+  expect(sandbox.writes).toHaveLength(1);
+
+  execute.mockClear();
+  installSessionStoreMocks([original]);
+  vi.mocked(ensureSandboxAccess).mockResolvedValueOnce({ get: async () => null } as never);
+  await expect(
+    turnStep({
+      history: sourceHistory,
+      input: { kind: "deliver", payloads: [{ message: "continue" }] },
+      sessionWritable: createTestWritable(),
+      serializedContext: createSerializedContext(),
+      sessionState: createStubSessionState(),
+    }),
+  ).rejects.toThrow("destination channel and sandbox");
+  expect(execute).not.toHaveBeenCalled();
+  expect(original.state?.["eve.pending-seed-files"]).toBe(true);
 });

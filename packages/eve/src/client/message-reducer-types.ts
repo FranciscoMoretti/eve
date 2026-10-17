@@ -29,6 +29,9 @@ export interface EveMessage {
  * once the turn finalizes.
  */
 export interface EveMessageMetadata {
+  /** Provenance from a trusted copied transcript; never runtime authority. */
+  readonly modelId?: string;
+  readonly custom?: Record<string, unknown>;
   readonly optimistic?: true;
   readonly result?: unknown;
   readonly status?: "complete" | "failed" | "streaming" | "submitted";
@@ -192,6 +195,7 @@ export type EveDynamicToolPart = {
       };
       readonly errorText?: never;
       readonly input: unknown;
+      readonly outputType?: "text";
       readonly output: unknown;
       readonly partial?: true;
       readonly state: "output-available";

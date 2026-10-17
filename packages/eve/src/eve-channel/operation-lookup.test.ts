@@ -34,9 +34,10 @@ it("looks up only the authenticated operation without creating or dispatching", 
         } satisfies Session)
       : undefined,
   );
-  for (const [auth, status] of [
-    [owner, 200],
-    [{ ...owner, principalId: "foreign" }, 409],
+  for (const [auth, status, query] of [
+    [owner, 200, ""],
+    [{ ...owner, principalId: "foreign" }, 409, ""],
+    [owner, 409, "?kind=seed"],
   ] as const) {
     const channel = eveChannel({ auth: () => auth });
     const route = channel.routes.find(
@@ -45,7 +46,7 @@ it("looks up only the authenticated operation without creating or dispatching", 
     expect(route, "read-only operation lookup route").toBeDefined();
     if (!route) throw new Error("Missing operation lookup");
     const response = await route.handler(
-      new Request("https://example.test/eve/v1/operation/operation"),
+      new Request(`https://example.test/eve/v1/operation/operation${query}`),
       {
         ...mockAgentRouteArgs(),
         ...operations,
@@ -72,7 +73,7 @@ it("rejects anonymous operation lookup and unsupported query modes before resolu
   const send = vi.fn(() => {
     throw new Error("Lookup must not dispatch");
   });
-  for (const query of ["", "?kind=seed", "?owner=foreign"]) {
+  for (const query of ["", "?kind=unknown", "?owner=foreign"]) {
     const channel = eveChannel({
       auth:
         query === ""

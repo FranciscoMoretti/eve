@@ -2749,3 +2749,51 @@ describe("eveChannel — forwarded principal", () => {
     expect(handler.send).not.toHaveBeenCalled();
   });
 });
+
+it("accepts only a trusted destination seed and separates its operation identity", async () => {
+  const resolveSeed = vi.fn(() => ({
+    attachments: "channel" as const,
+    messages: [
+      { role: "user" as const, parts: [{ type: "text" as const, text: "accepted destination" }] },
+    ],
+  }));
+  const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed });
+  const normal = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
+  expect(
+    (await handler.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(202);
+  expect(resolveSeed).toHaveBeenCalledWith({ auth: ACCEPTED_AUTH, operationId: "same" });
+  const accepted = handler.createSession.mock.calls[0]![0];
+  expect(accepted.seed?.messages[0]?.parts).toEqual([
+    { type: "text", text: "accepted destination" },
+  ]);
+  expect(accepted.input.message).toBeUndefined();
+  expect((await normal.fetch(createJsonMessageRequest({ operationId: "same" }))).status).toBe(202);
+  expect(accepted.continuationToken).not.toBe(
+    normal.createSession.mock.calls[0]![0].continuationToken,
+  );
+  for (const body of [
+    { operationId: "other", seed: { messages: [] } },
+    { operationId: "other", seed: true, message: "execute now" },
+    { seed: true },
+    { operationId: "other", seed: true, fork: { sessionId: "source" } },
+  ])
+    expect((await handler.fetch(createJsonMessageRequest(body))).status).toBe(400);
+  expect(resolveSeed).toHaveBeenCalledOnce();
+  expect(handler.createSession).toHaveBeenCalledOnce();
+  const foreign = createEveCreateHandler({
+    auth: () => OVERRIDE_AUTH,
+    resolveSeed: () => {
+      throw new Error("Destination is not owned");
+    },
+  });
+  expect(
+    (await foreign.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(409);
+  expect(foreign.createSession).not.toHaveBeenCalled();
+  const anonymous = createEveCreateHandler({ auth: none(), resolveSeed });
+  expect(
+    (await anonymous.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(400);
+  expect(anonymous.createSession).not.toHaveBeenCalled();
+});

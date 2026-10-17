@@ -1,3 +1,4 @@
+import { parseSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
 import { InvalidToolStubTargetError } from "#tool-stubs/validate-targets.js";
 import { readStubFailure, readMatchedStubRules } from "#execution/tool-stubs/steps.js";
 import { getRun } from "#internal/workflow/runtime.js";
@@ -127,15 +128,19 @@ export function eveChannel(input: EveChannelInput): EveChannel {
       GET(`${EVE_ROUTE_PREFIX}/operation/:operationId`, async (req, { params, resolveSession }) => {
         const auth = await routeAuth(req, input.auth);
         if (auth instanceof Response) return auth;
+        const query = new URL(req.url).searchParams;
+        const kind = query.get("kind");
         if (
           auth.principalType === "anonymous" ||
           !params.operationId ||
-          new URL(req.url).search !== ""
+          [...query.keys()].some((key) => key !== "kind") ||
+          query.getAll("kind").length > 1 ||
+          (kind !== null && kind !== "seed")
         ) {
           return Response.json(
             {
               error:
-                "Operation lookup requires an authenticated principal, an operation id and no query parameters.",
+                "Operation lookup requires an authenticated principal, an operation id and a supported operation kind.",
               ok: false,
             },
             { status: 400, headers: { "cache-control": "no-store" } },
@@ -144,6 +149,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         const token = await deriveOperationContinuationToken({
           auth,
           operationId: params.operationId,
+          kind: kind === "seed" ? "seed" : undefined,
         });
         const session = await resolveSession(token);
         return session === undefined
@@ -286,6 +292,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             : await deriveOperationContinuationToken({
                 auth: forwarded.auth,
                 operationId: body.operationId,
+                kind: body.seed === true ? "seed" : undefined,
               });
         if (operationToken !== undefined) {
           const owner = await args.resolveSession(operationToken);
@@ -362,6 +369,28 @@ export function eveChannel(input: EveChannelInput): EveChannel {
           );
         }
 
+        let seed: ReturnType<typeof parseSessionTranscriptSeed> | undefined;
+        if (body.seed === true) {
+          if (!input.resolveSeed || body.operationId === undefined || parent !== undefined) {
+            return Response.json(
+              { error: "Trusted seed creation is unavailable.", ok: false },
+              { status: 400 },
+            );
+          }
+          try {
+            seed = parseSessionTranscriptSeed(
+              await input.resolveSeed({ auth: forwarded.auth, operationId: body.operationId }),
+            );
+            if (seed.attachments !== "channel")
+              throw new Error("Copied files require channel resolution.");
+          } catch (error) {
+            const errorId = logError(log, "seed resolution failed", error);
+            return Response.json(
+              { error: "Seed creation was rejected.", errorId, ok: false },
+              { status: 409 },
+            );
+          }
+        }
         let handle: Awaited<ReturnType<typeof createSession>>;
         try {
           handle = await agentDelegation.receive(
@@ -375,6 +404,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             },
             ({ conversationId, parentTraceContext: inheritedTrace }) => {
               return createSession({
+                seed,
                 audienceAuth: auth,
                 toolStubs:
                   body.stubs === undefined

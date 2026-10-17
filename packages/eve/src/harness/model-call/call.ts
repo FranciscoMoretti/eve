@@ -1,3 +1,4 @@
+import { seedFileDigests } from "#harness/seed-attachments.js";
 import { createStepCompletedEvent } from "#protocol/message.js";
 import {
   isStepCount,
@@ -316,7 +317,10 @@ export class ModelCaller {
     );
     generation.begin();
     // Hydrate `eve-sandbox:` file refs for this call only; history keeps the refs.
-    this.modelMessages = await hydrateSandboxAttachments(this.request.nonSystemMessages);
+    this.modelMessages = await hydrateSandboxAttachments(
+      this.request.nonSystemMessages,
+      seedFileDigests(step.session),
+    );
     if (this.profile.filesOutsideToolResults) {
       this.modelMessages = moveToolResultFilesToUserMessages(this.modelMessages);
     }

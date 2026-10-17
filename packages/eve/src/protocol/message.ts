@@ -870,7 +870,16 @@ export interface SessionCompletedStreamEvent {
  * Internal emitters use this type while constructing events. Public stream
  * consumers receive {@link MessageStreamEvent}.
  */
+/** Display history installed once for a fresh trusted copy, without executing it. */
+export interface HistorySeededStreamEvent {
+  readonly type: "history.seeded";
+  readonly data: {
+    readonly messages: readonly import("#client/message-reducer-types.js").EveMessage[];
+  };
+}
+
 export type UnstampedMessageStreamEvent =
+  | HistorySeededStreamEvent
   | ActionInputAppendedStreamEvent
   | AgentStartedStreamEvent
   | ApprovalCandidateStreamEvent

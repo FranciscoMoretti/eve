@@ -25,6 +25,21 @@ review base. None of these draft proof PRs deletes maintained runtime code.
 
 ### Implemented retained extensions and upstream replacements
 
+**Implemented local runtime slice: trusted fresh-copy seed initialization.**
+The channel resolves only an authenticated accepted destination reservation;
+structured history and `history.seeded` display are installed before first input,
+without historical tool/model execution. Copied files use strict destination
+channel staging and digest-checked later hydration, including compacted prompts.
+No legacy decoder or public history normalizer is restored. Removal criterion:
+upstream supplies equivalent trusted initialization and strict resource semantics.
+
+Focused route, creation/projection, attachment and turn-step checks cover this
+slice. Full ChatJS copy is still gated by checkpoint/fork source revisions,
+sandbox lifecycle isolation, and creation recovery/admission. No copy-ready claim.
+App integration `3a192e621` owns plan validation; 11 pre-seed authenticated-source
+diagnostics remained. The local runtime slice must be packed and selected before
+that count can be updated; the app still uses candidate `6869c350` at this point.
+
 **Implemented runtime extension: authenticated read-only creation-operation lookup.**
 It reuses upstream creation token derivation and owner resolution without sending
 or creating. Ten focused route/create tests and package type checking pass; the

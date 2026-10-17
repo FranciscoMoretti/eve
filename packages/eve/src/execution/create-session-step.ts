@@ -7,6 +7,11 @@ import {
   createDurableSessionValues,
   type DurableSessionState,
 } from "#execution/durable-session-store.js";
+import {
+  prepareSessionTranscriptSeed,
+  type SessionTranscriptSeed,
+} from "#execution/session-transcript-seed.js";
+import { markSeedAttachmentsPending } from "#harness/seed-attachments.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSession } from "#execution/session.js";
 import { resolveInheritedTokenLimit } from "#execution/run-session-limits.js";
@@ -33,6 +38,7 @@ export interface CreateSessionStepResult {
  * the root agent.
  */
 export async function createSessionStep(input: {
+  readonly seed?: SessionTranscriptSeed;
   readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
   readonly continuationToken: string;
   readonly dynamicSubagentAgentConfig?: DynamicSubagentAgentConfig;
@@ -44,6 +50,13 @@ export async function createSessionStep(input: {
 }): Promise<CreateSessionStepResult> {
   "use step";
 
+  if (
+    input.seed !== undefined &&
+    (input.rootSessionId !== undefined || input.nodeId !== undefined)
+  ) {
+    throw new Error("Transcript seeds require a fresh root session.");
+  }
+  const prepared = input.seed === undefined ? undefined : prepareSessionTranscriptSeed(input.seed);
   const bundle = await getCompiledRuntimeAgentBundle({
     compiledArtifactsSource: resolveDurableCompiledArtifactsSource(input.compiledArtifactsSource),
     nodeId: input.nodeId,
@@ -84,6 +97,13 @@ export async function createSessionStep(input: {
     turnAgent: effectiveAgent.turnAgent,
   });
 
-  const { history, sessionState } = createDurableSessionValues(session);
+  const seeded =
+    prepared === undefined
+      ? session
+      : markSeedAttachmentsPending({
+          ...session,
+          history: [...session.history, ...prepared.history],
+        });
+  const { history, sessionState } = createDurableSessionValues(seeded);
   return { history, state: sessionState };
 }

@@ -111,6 +111,17 @@ function reduceContent(data: EveMessageData, event: EveAgentReducerEvent): EveMe
         event.data.turnId,
       );
 
+    case "history.seeded":
+      return {
+        ...data,
+        messages: [
+          ...event.data.messages,
+          ...data.messages.filter(
+            (message) => !event.data.messages.some((seeded) => seeded.id === message.id),
+          ),
+        ],
+      };
+
     case "message.received":
       return upsertMessage(
         data,
