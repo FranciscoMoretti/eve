@@ -1,17 +1,38 @@
-## ChatJS eve 0.80.1 integration candidate
+## ChatJS maintained eve fork
 
-[Draft #9](https://github.com/FranciscoMoretti/eve/pull/9) upgrades the maintained
-fork to eve 0.80.1. Review the residual changes against exact upstream commit
-`e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
+The maintained branch is `francisco/chatjs-package`. The eve 0.80.1 upgrade in
+[fork #9](https://github.com/FranciscoMoretti/eve/pull/9) and its companion
+[ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) are merged.
+Compare the residual fork against exact upstream commit
+`e3cea42486e7e32b7b3001bb5912e076b5443ad5` (eve 0.80.1), not upstream's moving
+`main`. Recheck every entry when changing that baseline.
 
 ### Retained contracts
 
-| Contract                                  | Purpose                                                                                                                                                                               | Removal criterion                                                    |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Trusted transcript seeds                  | An authenticated channel resolves accepted app reservations. Fresh sessions import completed conversation content and stage explicit attachments without replaying historical tools.  | Equivalent upstream trusted initialization and attachment ownership. |
-| Local resource ownership and deletion     | Persisted VM IDs and state snapshot digest/path receipts bind resources to their owner and canonical cache. Retirement fences allocation; deletion requires confirmed native absence. | Equivalent upstream ownership, retirement, and confirmed removal.    |
-| Microsandbox SDK and development shutdown | SDK 0.6.18 and verified VM shutdown preserve normal session resume state within the CLI exit window.                                                                                  | Equivalent upstream SDK lifecycle.                                   |
-| Scoped package resolution                 | Compiler lookups support the published `@chat-js/eve` package and its self references through an `eve` dependency alias.                                                              | Equivalent upstream scoped publication support.                      |
+Four feature areas contain seven review slices. The rows describe current
+patches; proposed destinations are investigation directions, not confirmed
+upstream equivalents or submitted contributions.
+
+| ID / feature area              | Retained change and source                                                                                                                                                                                                                                                  | Why it remains / ChatJS boundary                                                                                                                                      | Removal condition / investigation direction                                                                                                                                           |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                                                                                                      | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.                    | Adopt an upstream trusted initial-transcript API that initializes both native history and events. Investigate a generic server-side seed contract.                                    |
+| T2 / Transcript initialization | [Imported attachment staging](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                                                                                                          | Fresh sandboxes must receive explicit attachments. ChatJS owns access checks, copied file references and URL authorization; eve stages and hydrates them.             | An upstream transcript/attachment resolver supports equivalent staging and ownership checks. Investigate with T1.                                                                     |
+| R1 / Local resource management | [Ownership records and operation locks](packages/eve/src/execution/sandbox/bindings/microsandbox-resource-metadata.ts), VM/snapshot receipts, allocation retirement and [confirmed deletion](packages/eve/src/execution/sandbox/bindings/microsandbox-resource-cleanup.ts). | Deletion must not remove another owner's or replacement resources. ChatJS authorizes requests and fences admission; the provider tracks and removes native resources. | Upstream provider APIs expose equivalent ownership, retirement and confirmed absence. Investigate the smallest provider contract; retain the local-authority limits below.            |
+| R2 / Local resource management | [Hosted-build import separation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) keeps the development-environment helper independent of the optional installer.                                                                                       | Hosted builds can prune the installer while resource-management code still needs the helper.                                                                          | Upstream accepts the import/pruning fix or provides an equivalent build path. Candidate for a standalone bug fix.                                                                     |
+| L1 / Microsandbox lifecycle    | [SDK adaptation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) and dependency alignment from 0.5.5 to 0.6.18.                                                                                                                                        | Native SDK signatures and lifecycle behavior require provider changes, not only a ChatJS dependency override.                                                         | Upstream supports the SDK version with equivalent lifecycle behavior. Investigate as a compatibility contribution.                                                                    |
+| L2 / Microsandbox lifecycle    | [Development shutdown](packages/eve/src/execution/sandbox/development-cleanup.ts) verifies VM identity, paginates discovery and stops the persisted VM within the CLI exit window.                                                                                          | Normal exit must preserve resume state without allocating an interrupted snapshot. The shutdown hook is owned by eve.                                                 | Upstream provides equivalent bounded shutdown and resume behavior. Investigate separately from SDK alignment.                                                                         |
+| P1 / Package resolution        | [Scoped package/self-reference resolution](packages/eve/src/internal/application/package.ts) and the [internal development-capability import](packages/eve/src/self-modification/filesystem.ts).                                                                            | ChatJS installs `@chat-js/eve` under the `eve` alias, including isolated dependency layouts.                                                                          | Retire scoped-distribution handling when ChatJS returns to upstream eve, or upstream supports generic package identity resolution. Investigate the internal import fix independently. |
+
+Supporting changes are not additional runtime features: regression tests,
+changesets, dependency lock data, extension compatibility epochs/reports, and
+fork release/inventory guardrails. Historical contract reports remain immutable;
+do not delete them as transient evidence. The release guard prevents this fork
+from running the upstream publication workflow.
+
+Admission, billing, operation journaling, document copying, branch selection and
+source-boundary capture belong to ChatJS. This inventory does not propose moving
+those responsibilities into eve. No upstream contribution is claimed for a row
+until a proposal or PR is linked here.
 
 Copies start with fresh sandboxes. They retain conversation history, documents,
 and explicit attachments; installed packages, arbitrary files, and running
@@ -26,9 +47,10 @@ missing evidence.
 
 ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.2`.
 The published package corresponds to signed source commit
-`97aba72836dad4194a08a002e08a2bf8d38809cf`, including these simplifications and
-the isolated-layout development import fix. The `chatjs` tag points to `.2`;
-`latest` remains `0.61.0-chatjs.0`.
+`97aba72836dad4194a08a002e08a2bf8d38809cf`, including the fresh-copy simplifications and
+the isolated-layout development import fix. At publication, the `chatjs` tag pointed to `.2`; `latest` remained
+`0.61.0-chatjs.0`. Later inventory and unused-code cleanup commits do not change
+that published artifact; adopting a future package requires a separate release.
 
 Registry bytes match the tested artifact. SHA-512 integrity:
 `lm6eZBc0hj9cSd2iZnhXt772GqHUHp1q3RWNshEBfTxZNyM8sEOnJr5U0MDXJENtRUsg7hGjRtduMG0CzpIA2Q==`.
@@ -41,8 +63,8 @@ Fork prerelease versions do not name upstream container images. Set
 `EVE_SANDBOX_IMAGE_TAG=0.80.1` for the matching upstream image; ChatJS commands
 default to this tag and preserve an explicit override.
 
-[ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
-app review. Historical evidence and upstream replacement reviews remain linked
+[ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) records the merged
+app integration. Historical evidence and upstream replacement reviews remain linked
 in [startup #8](https://github.com/FranciscoMoretti/eve/pull/8),
 [streams #10](https://github.com/FranciscoMoretti/eve/pull/10), and
 [approvals #11](https://github.com/FranciscoMoretti/eve/pull/11).
