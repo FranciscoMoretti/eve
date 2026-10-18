@@ -321,10 +321,8 @@ export async function createMicrosandboxHandle(input: {
       templateKey: preparedTemplate.snapshotName,
     });
   }
-  let fromSnapshot = preparedTemplate.snapshotName;
-
   const sandbox = await createPreparedMicrosandbox({
-    fromSnapshot,
+    fromSnapshot: preparedTemplate.snapshotName,
     metadataPath,
     module,
     name: sandboxName,
@@ -392,8 +390,6 @@ function requirePreparedMicrosandboxTemplate(
   };
 }
 
-const forkSources = new WeakMap<SandboxProviderHandle, MicrosandboxVm>();
-
 function createHandle(
   sandbox: MicrosandboxVm,
   _optionsHash: string,
@@ -405,7 +401,7 @@ function createHandle(
       await sandbox.setNetworkPolicy(policy);
     },
   );
-  const handle: SandboxProviderHandle<NetworkPolicySandboxSession> = {
+  return {
     sandbox: session,
     async onSandboxDelete() {
       await sandbox.shutdown();
@@ -421,8 +417,6 @@ function createHandle(
       await sandbox.shutdown();
     },
   };
-  forkSources.set(handle, sandbox);
-  return handle;
 }
 
 function createMicrosandboxInternalSession(sandbox: MicrosandboxVm): InternalSandboxSession {
