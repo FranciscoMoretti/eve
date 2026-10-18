@@ -1,8 +1,14 @@
-import { updatePendingAuthorizations } from "#client/session-utils.js";
-import type { MessageStreamEvent } from "#protocol/message.js";
-import { EVE_SESSION_ID_HEADER, isCurrentTurnBoundaryEvent } from "#protocol/message.js";
-import { EVE_SESSION_ROUTE_PATH, createEveSessionRoutePath } from "#protocol/routes.js";
-import { ClientError } from "#client/client-error.js";
+import { throwIfAborted } from "#client/abort-signal.js";
+import { TurnSegment } from "#client/session-utils.js";
+import type { AgentStartedStreamEvent, MessageStreamEvent } from "#protocol/message.js";
+import { EVE_SESSION_ID_HEADER } from "#protocol/message.js";
+import {
+  EVE_SESSION_ROUTE_PATH,
+  createEveSessionRoutePath,
+  createEveSessionStreamRoutePath,
+} from "#protocol/routes.js";
+import { ClientAgentSession } from "#client/agent-session.js";
+import { ClientError, createClientError } from "#client/client-error.js";
 import { MessageResponse } from "#client/message-response.js";
 import { followStreamIterable, sleep } from "#client/open-stream.js";
 import {
@@ -66,9 +72,9 @@ export class ClientSession {
   /** @internal */
   static async create<TOutput = unknown>(
     context: ClientSessionContext,
-    input: SendTurnInput<TOutput>,
+    input: SendTurnInput<TOutput> & CreateSessionOptions,
   ): Promise<{ readonly response: MessageResponse<TOutput>; readonly session: ClientSession }> {
-    const response = await postTurn(context, EVE_SESSION_ROUTE_PATH, input, true);
+    const response = await postTurn(context, EVE_SESSION_ROUTE_PATH, input, true, input.stubs);
     const { sessionId } = await readAcceptedMessage(response);
     const session = new ClientSession(context, { sessionId, streamIndex: 0 });
 
@@ -95,7 +101,7 @@ export class ClientSession {
 
   /** Reads a finite prefix through the durable tail without advancing this handle. */
   async snapshot(options?: { readonly signal?: AbortSignal }): Promise<SessionSnapshot> {
-    options?.signal?.throwIfAborted();
+    throwIfAborted(options?.signal);
     const events: MessageStreamEvent[] = [];
 
     for await (const event of this.#readStream({
@@ -106,7 +112,7 @@ export class ClientSession {
       events.push(event);
     }
 
-    options?.signal?.throwIfAborted();
+    throwIfAborted(options?.signal);
     return {
       events,
       session: { sessionId: this.#state.sessionId, streamIndex: events.length },
@@ -153,6 +159,8 @@ export class ClientSession {
         "Message route did not return a delivery id. Update the server before sending with this client.",
       );
     }
+    // A message's response ends at the boundary that lists its delivery. An answer's ends at its
+    // first turn boundary: not every path that publishes an answer's events attributes them.
     return this.#messageResponse<TOutput>(
       response,
       input,
@@ -161,10 +169,9 @@ export class ClientSession {
     );
   }
 
-  /** Requests cooperative cancellation of this session's active turn and optionally its tasks. */
+  /** Requests cooperative cancellation of this session's active turn. */
   async cancel(options?: {
     readonly signal?: AbortSignal;
-    readonly tasks?: boolean;
     readonly turnId?: string;
   }): Promise<CancelSessionResult> {
     return await cancelClientSession({
@@ -206,6 +213,16 @@ export class ClientSession {
     return this.#streamAndAdvance(options);
   }
 
+  /**
+   * The session an agent run opened, as this session's stream announced it.
+   * Pass an `agent.started` event from this session, then follow the child
+   * with `stream()`; reads use this session's host and credentials, for local
+   * and remote agents alike.
+   */
+  agent(started: AgentStartedStreamEvent): ClientAgentSession {
+    return new ClientAgentSession(this.#context, started);
+  }
+
   [followSession](options: FollowSessionOptions): AsyncIterable<MessageStreamEvent> {
     return this.#streamAndAdvance({ ...options, keepAlive: true });
   }
@@ -222,6 +239,7 @@ export class ClientSession {
       createStream: (source) =>
         this.#createEventStream(initialStreamIndex, input, deliveryId, source),
       deliveryId,
+      resumesTurn: input.inputResponses !== undefined,
       sessionId: this.#state.sessionId,
     });
   }
@@ -235,7 +253,7 @@ export class ClientSession {
     let eventCount = 0;
     let started = deliveryId === undefined;
     let reachedBoundary = false;
-    const pendingAuthorizations = new Set<string>();
+    const segment = new TurnSegment({ followCallbacks: true });
     try {
       for await (const event of source ??
         this.#readStream({
@@ -255,13 +273,11 @@ export class ClientSession {
             );
           }
           if (!started && !matches) continue;
-          if (!terminal && event.meta?.deliveryIds !== undefined && !matches) continue;
+          const attributed = event.meta?.deliveryIds !== undefined;
+          if (!terminal && attributed && !matches) continue;
           started = true;
         }
-        updatePendingAuthorizations(pendingAuthorizations, event);
-        reachedBoundary =
-          isCurrentTurnBoundaryEvent(event) &&
-          (event.type !== "session.waiting" || pendingAuthorizations.size === 0);
+        reachedBoundary = segment.observe(event);
         yield event;
         if (reachedBoundary) {
           break;
@@ -323,8 +339,8 @@ export class ClientSession {
       host: this.#context.host,
       keepAlive: input.keepAlive,
       resolveHeaders: () => this.#context.resolveHeaders(input.resolveHeaders?.() ?? input.headers),
+      path: createEveSessionStreamRoutePath(this.#state.sessionId),
       redirect: this.#context.redirect,
-      sessionId: this.#state.sessionId,
       signal: input.signal,
       startIndex: input.startIndex,
       streamReconnectPolicy: input.streamReconnectPolicy,
@@ -358,7 +374,7 @@ async function postSessionSend(
       await sleep(Math.min(retryDelayMs, remainingMs), input.signal);
     }
 
-    input.signal?.throwIfAborted();
+    throwIfAborted(input.signal);
     retryDelayMs = Math.min(retryDelayMs * 2, SESSION_SEND_RETRY_MAX_DELAY_MS);
   }
 }
@@ -368,7 +384,10 @@ async function postCreateSession(
   options: CreateSessionOptions,
 ): Promise<Response> {
   const headers = await context.resolveHeaders(options.headers);
+  const body = options.stubs === undefined ? undefined : JSON.stringify({ stubs: options.stubs });
+  if (body !== undefined) headers.set("content-type", "application/json");
   const response = await fetch(createClientUrl(context.host, EVE_SESSION_ROUTE_PATH), {
+    body,
     headers,
     method: "POST",
     redirect: context.redirect,
@@ -390,6 +409,7 @@ async function postTurn(
   path: string,
   input: SendTurnPayload,
   requireMessage: boolean,
+  stubs?: CreateSessionOptions["stubs"],
 ): Promise<Response> {
   const body = createMessageBody(input, requireMessage);
   if (body === null) {
@@ -399,6 +419,7 @@ async function postTurn(
         : "A session turn requires a non-empty message or inputResponses.",
     );
   }
+  if (stubs !== undefined) body.stubs = stubs;
 
   const headers = await context.resolveHeaders(input.headers);
   headers.set("content-type", "application/json");
@@ -411,7 +432,7 @@ async function postTurn(
   });
   if (!response.ok) {
     const responseBody = await response.text();
-    throw new ClientError(response.status, responseBody, response.headers);
+    throw createClientError(response.status, responseBody, response.headers);
   }
   return response;
 }
@@ -444,7 +465,6 @@ function createMessageBody(
 ): Record<string, unknown> | null {
   const body: Record<string, unknown> = {};
   if (input.message !== undefined) body.message = input.message;
-  if (input.messageMetadata !== undefined) body.messageMetadata = input.messageMetadata;
   if (input.inputResponses !== undefined && input.inputResponses.length > 0) {
     body.inputResponses = input.inputResponses;
   }

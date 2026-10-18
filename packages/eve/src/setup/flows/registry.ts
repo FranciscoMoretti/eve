@@ -1,6 +1,6 @@
 import type { RegistryCatalogItem } from "#cli/commands/registry.js";
 import { HumanActionRequiredError } from "#setup/human-action.js";
-import type { Prompter, SingleSelectOptions } from "#setup/prompter.js";
+import type { Prompter } from "#setup/prompter.js";
 import { WizardCancelledError } from "#setup/step.js";
 import { withSpinner } from "#setup/with-spinner.js";
 
@@ -31,10 +31,7 @@ export class RegistryFlowFailedError extends Error {
 function hasSettledOutcomes(
   result: RegistrySessionResult | undefined,
 ): result is RegistrySessionResult {
-  return (
-    result !== undefined &&
-    (result.items.length > 0 || result.failures.length > 0 || result.outcomes !== undefined)
-  );
+  return result !== undefined && result.outcomes.length > 0;
 }
 
 /** Searches the catalog and installs one selected item with its required setup. */
@@ -47,6 +44,8 @@ export async function runRegistryFlow(input: {
   signal?: AbortSignal;
   /** Registry item supplied by `/add <item>`, installed directly. */
   initialAddress?: string;
+  /** Rerun the item's setup only; its source is already installed. */
+  skipInstall?: boolean;
   onScreen?: (input: { screen: "registry_install"; registrySelectedCount?: number }) => void;
   onItemStart?: (item: Item, index: number, total: number) => void;
   /** Gives each installation its own cancellation boundary without ending the batch. */
@@ -105,12 +104,20 @@ export async function runRegistryFlow(input: {
         const install = (signal = input.signal) =>
           installRegistryItem(installRoot, item.address, {
             silent: true,
+            ...(input.skipInstall === true && { skipInstall: true }),
             prompter: input.prompter,
             signal,
           });
         const run = () => (input.runItem === undefined ? install() : input.runItem(install));
         const installed = await (input.prompter.withExclusiveTerminal?.(run) ?? run());
-        activeSession.add(label(item), installed.output, installed.setup);
+        if (installed.setupIncomplete !== undefined) {
+          activeSession.addIncomplete(label(item), {
+            address: item.address,
+            ...installed.setupIncomplete,
+          });
+        } else {
+          activeSession.add(label(item), installed.output, installed.setup);
+        }
       } catch (error) {
         input.signal?.throwIfAborted();
         if (error instanceof WizardCancelledError) {
@@ -120,20 +127,7 @@ export async function runRegistryFlow(input: {
         if (error instanceof HumanActionRequiredError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         const failureMessage = message.trim() || "Installation failed.";
-        const summary = failureMessage.split("\n").find((line) => line.trim() !== "");
         activeSession.addFailure(label(item), failureMessage);
-        const request: SingleSelectOptions<"skip" | "cancel"> = {
-          message: `Couldn't add ${label(item)}`,
-          options: [
-            { value: "skip", label: `Skip ${label(item)}` },
-            { value: "cancel", label: "Cancel setup" },
-          ],
-        };
-        if (summary !== undefined) request.description = summary;
-        const action = await input.prompter.select(request);
-        if (action === "cancel") {
-          return { kind: "done", result: { ...activeSession.result(), cancelled: true } };
-        }
       }
     }
     return {

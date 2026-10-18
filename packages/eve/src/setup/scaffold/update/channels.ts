@@ -20,6 +20,7 @@ import {
   WEB_APP_SIGN_IN_WITH_VERCEL_TEMPLATE_FILES,
   WEB_APP_TEMPLATE_FILES,
   WEB_APP_TEMPLATE_PACKAGE_JSON,
+  WEB_CHANNEL_TEMPLATES,
 } from "../create/web-template.js";
 import {
   resolveWebPackageVersions,
@@ -61,8 +62,6 @@ export interface PackageJsonMutation {
   devDependencies: string[];
   scripts: string[];
 }
-
-export type ChannelMutationAction = "created" | "overwritten" | "skipped";
 
 export type ChannelMutationResult = SlackChannelMutationResult | WebChannelMutationResult;
 
@@ -169,6 +168,8 @@ async function hasPackageDependency(
  */
 const VERCEL_HOST_FRAMEWORK_PRESETS: Readonly<Record<string, string>> = {
   "@sveltejs/kit": "sveltekit",
+  "@tanstack/react-start": "tanstack-start",
+  "@tanstack/solid-start": "tanstack-start",
   [NEXT_PACKAGE_NAME]: "nextjs",
   nuxt: "nuxtjs",
   nuxt3: "nuxtjs",
@@ -180,6 +181,8 @@ const VERCEL_HOST_FRAMEWORK_PRESETS: Readonly<Record<string, string>> = {
 export async function resolveVercelHostFrameworkPreset(
   projectRoot: string,
 ): Promise<string | undefined> {
+  if (await pathExists(join(projectRoot, "vercel.ts"))) return "services";
+
   const parsed = await readPackageJsonObject(join(projectRoot, "package.json"));
   if (parsed === undefined) return undefined;
 
@@ -526,11 +529,13 @@ async function ensureWebChannel(
   filesSkipped.push(...packageManagerConfiguration.filesSkipped);
 
   if (!options.skipDependencyMutation) {
+    const channelTemplate = WEB_CHANNEL_TEMPLATES[options.webAuthentication ?? "default"];
     const templateFiles = {
       ...WEB_APP_TEMPLATE_FILES,
       ...(options.webAuthentication === "sign-in-with-vercel"
         ? WEB_APP_SIGN_IN_WITH_VERCEL_TEMPLATE_FILES
         : {}),
+      [WEB_CHANNEL_PATH]: channelTemplate,
     };
     for (const [relPath, content] of Object.entries(templateFiles)) {
       const filePath = join(options.projectRoot, relPath);

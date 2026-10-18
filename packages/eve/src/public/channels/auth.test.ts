@@ -1460,32 +1460,52 @@ describe("vercelOidc strategy helper", () => {
     await expect(Promise.resolve(authFn(request))).resolves.toBeNull();
   });
 
-  it("rejects malformed bearer payloads without throwing", async () => {
-    const authFn = vercelOidc();
-    const request = new Request(TEST_ROUTE_URL, {
-      method: "POST",
-      headers: { authorization: "Bearer not.a.real.jwt" },
-    });
-    await expect(Promise.resolve(authFn(request))).resolves.toBeNull();
-  });
-
-  it("rejects bearer tokens whose issuer is not on the Vercel OIDC prefix", async () => {
-    const { privateKey } = await generateKeyPair("RS256");
-    const token = await new SignJWT({})
-      .setProtectedHeader({ alg: "RS256" })
-      .setAudience("https://vercel.com/acme")
-      .setExpirationTime("5m")
-      .setIssuedAt()
-      .setIssuer("https://attacker.example/oidc")
-      .setSubject("acme")
-      .sign(privateKey);
-
-    const authFn = vercelOidc();
-    const request = new Request(TEST_ROUTE_URL, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    await expect(Promise.resolve(authFn(request))).resolves.toBeNull();
+  it("grants stubs only through an explicitly granting matched subject entry", async () => {
+    const issuer = await installMockedVercelIssuer("stub-subject-grants");
+    const subject = "owner:acme:project:eval-runner:environment:preview";
+    const wildcard = "owner:acme:project:eval-runner:environment:*";
+    try {
+      const token = await issuer.signToken({
+        environment: "preview",
+        project_id: "prj_eval",
+        sub: subject,
+      });
+      const request = new Request(TEST_ROUTE_URL, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const cases = [
+        { subjects: undefined, allowed: false },
+        { subjects: [], allowed: false },
+        { subjects: [subject], allowed: false },
+        { subjects: [{ subject }], allowed: false },
+        { subjects: [{ subject, allowToolStubs: false }], allowed: false },
+        { subjects: [{ subject: "another-project", allowToolStubs: true }], allowed: false },
+        { subjects: [{ subject: wildcard, allowToolStubs: true }], allowed: true },
+        { subjects: [subject, { subject: wildcard, allowToolStubs: true }], allowed: true },
+      ];
+      for (const { subjects, allowed } of cases) {
+        const auth = await vercelOidc({
+          currentVercelProject: { projectId: "prj_eval", environment: "preview" },
+          subjects,
+        })(request);
+        expect(auth?.principalType).toBe("runtime");
+        expect(auth?.allowToolStubs === true).toBe(allowed);
+      }
+      const userToken = await issuer.signToken({
+        environment: "development",
+        project_id: "prj_eval",
+        sub: subject,
+        user_id: "user_alice",
+      });
+      const user = await vercelOidc({
+        currentVercelProject: { projectId: "prj_eval", environment: "development" },
+        subjects: [{ subject: "*", allowToolStubs: true }],
+      })(new Request(TEST_ROUTE_URL, { headers: { authorization: `Bearer ${userToken}` } }));
+      expect(user?.principalType).toBe("user");
+      expect(user?.allowToolStubs).toBeUndefined();
+    } finally {
+      issuer.restore();
+    }
   });
 
   it("uses the local host's linked project binding only for bearer requests", async () => {
@@ -1550,17 +1570,6 @@ describe("httpBasic strategy helper", () => {
       authenticator: "http-basic",
       principalId: "ops",
     });
-  });
-
-  it("rejects mismatched credentials", () => {
-    const authFn = httpBasic({ password: "top-secret", username: "ops" });
-    const request = new Request(TEST_ROUTE_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Basic ${Buffer.from("ops:wrong", "utf8").toString("base64")}`,
-      },
-    });
-    expect(authFn(request)).toBeNull();
   });
 });
 

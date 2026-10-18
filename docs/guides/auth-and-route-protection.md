@@ -113,6 +113,8 @@ Verifies a bearer JWT against the [Vercel OIDC issuer](https://vercel.com/docs/o
 
 Auth fails closed: routes reject unauthenticated traffic by default, and the OIDC user branch verifies `external_sub` against `VERCEL_PROJECT_ID` and the deployment environment, returning `false` when either is unset. An external-subject token cannot authenticate on a deployment that hasn't pinned its project.
 
+Subject entries can also be objects: `{ subject: vercelSubject({ teamSlug: "acme", projectName: "eval-runner" }), allowToolStubs: true }`. This explicitly permits that verified service/runtime caller to create [stubbed eval sessions](../evals/tool-stubs). Plain subject strings and implicit current-project acceptance grant ordinary access only. Custom authenticators can return the same permission in their authentication result; it is not part of persisted or forwarded session identity.
+
 #### `subjects` patterns and `vercelSubject(...)`
 
 Each `subjects` entry is matched against the token's `sub` claim, which Vercel shapes as `owner:<team>:project:<name>:environment:<env>`. Hand-writing that string is a footgun: a typo silently rejects every caller, and an over-broad `*` wildcard silently lets unrelated ones in. Build the pattern with `vercelSubject(...)` instead. It rejects malformed input at construction time, and defaults `environment` to `"production"` when you omit it, so an unspecified environment cannot silently accept preview or development tokens:
@@ -239,9 +241,41 @@ export default eveChannel({
 
 `trustedForwarders` authorizes the verified forwarder to supply eve delegation context: principal identity, parent session lineage, and, with principal forwarding, trace-content constraints. Match it precisely: `() => true` grants this authority to every caller that passes route auth, including preview deployments accepted by `vercelOidc()`. The framework default channel rejects forwarded principals and ignores the other context.
 
+### Limiting what a forwarder may assert
+
+A forwarder accepted on its identity alone can assert any principal, including identities your tools trust directly, such as a Slack user or an app principal. When a forwarder should speak only for its own users, check what it asserts with the predicate's second argument:
+
+```ts title="agent/channels/eve.ts"
+import { eveChannel } from "eve/channels/eve";
+import { vercelOidc, vercelSubject } from "eve/channels/auth";
+import type { SessionAuthContext } from "eve/context";
+
+const router = vercelSubject({ teamSlug: "acme", projectName: "router" });
+
+/** The router forwards only users signed in through its own identity provider. */
+function isRouterUser(context: SessionAuthContext): boolean {
+  return (
+    context.authenticator === "router-sso" &&
+    context.issuer === "router" &&
+    context.principalType === "user"
+  );
+}
+
+export default eveChannel({
+  auth: [vercelOidc()],
+  trustedForwarders: (forwarder, assertion) =>
+    forwarder.subject === router &&
+    assertion.principal !== undefined &&
+    isRouterUser(assertion.principal.current) &&
+    isRouterUser(assertion.principal.initiator),
+});
+```
+
+`assertion.principal` holds the `current` and `initiator` contexts the forwarder asserts, already stamped with `eve:forwarded-by`. `initiator` equals `current` when the sender omits it. `initiator` takes effect only on session creation; on continuation the predicate still sees the asserted `initiator`, but the session keeps its original initiator, so checking it does not constrain that pinned value. Attributes are asserted too, so check any attribute your tools trust. `assertion.principal` is absent when the predicate decides parent session lineage for a request that forwards no principal; a predicate that requires it accepts that forwarder's lineage only alongside a principal it accepts. The `ForwardedAssertion` and `TrustedForwarders` types are exported from `eve/channels/eve` for named predicates.
+
 When the predicate accepts a create request, `ctx.session.auth.current` and `.initiator` carry the forwarded user exactly as if they had called your deployment directly. On continuation, only `auth.current` is replaced; `auth.initiator` remains the session creator. User-scoped connections, local subagents, and further `forwardPrincipal` hops therefore see the active turn's caller.
 
-The forwarder is recorded on accepted contexts as the `eve:forwarded-by` attribute (always overwritten by the receiver, so a forwarder cannot falsify it). Forwarded identity rejections fail loud: a forwarded body without `trustedForwarders` configured or with a forwarder the predicate refuses is a `403`, and a malformed payload is a `400`. Only principal metadata is ever accepted — tokens and credentials never cross the hop.
+The forwarder is recorded on accepted contexts as the `eve:forwarded-by` attribute (always overwritten by the receiver, so a forwarder cannot falsify it). Forwarded identity rejections fail loud: a forwarded body without `trustedForwarders` configured, or with a forwarder or assertion the predicate refuses, is a `403`, and a malformed payload is a `400`. Only principal metadata is ever accepted — tokens and credentials never cross the hop.
 
 Trusted parent session lineage populates `ctx.session.parent` and preserves the root session across the delegation chain. Untrusted lineage is ignored, and accepted lineage does not remove the normal root-session token cap.
 
@@ -260,11 +294,34 @@ Inside runtime code, `ctx.session.auth` carries the result of the channel's rout
 - `auth.current`: the caller on the active inbound turn.
 - `auth.initiator`: the caller that started the durable session.
 - A follow-up message updates `auth.current` but leaves `auth.initiator` alone. When a different caller follows up on the same session, `auth.current` tracks the new caller for that turn while `auth.initiator` stays pinned to whoever started it.
-- Both are `null` only on internal runtime paths (subagents, for instance) that never went through an authored route. HTTP traffic always populates `auth.current`, since the walk either accepts with a `SessionAuthContext` or returns `401`.
+- `auth.current` is whatever the channel passed as `auth` when it dispatched the message. Route auth either accepts the request or returns `401`, but a route handler or channel hook can still dispatch with `auth: null`, such as `source.send(message, { auth: null })` or a Slack `onMessage` hook that returns `{ auth: null }`. On a new session, both values are then `null`. On a continuation, `auth.current` is `null` while `auth.initiator` stays pinned to the session's original caller. Internal runtime paths, such as subagents, can also have no caller auth.
 
 Use the principal on `auth.current` (or `auth.initiator`) to scope tools, resolve [dynamic capabilities](./dynamic-capabilities) per principal, or enforce tenant boundaries. There's no second per-session ownership ACL stacked on top of route auth. Access is decided at the HTTP boundary, and the durable session carries the caller snapshot forward into your runtime code.
 
 Route auth does not enforce session ownership. If multiple users or tenants can reach the same route, you must implement the per-user, per-tenant, or per-session authorization your application requires.
+
+## Tool replacement permission
+
+Creating a [stubbed eval session](../evals/tool-stubs) requires an explicit `allowToolStubs: true` in the verified route authentication result. The target's server configuration grants permission; request JSON cannot. With `vercelOidc`, put the grant on a `subjects` entry as shown above. Any matching entry with the grant permits replacement; other entries do not revoke it. Implicit current-project acceptance and user principals do not inherit project grants.
+
+Custom authenticators return the same grant after verifying their caller. For example, this alternative channel permits stubs only in local development:
+
+```ts
+import { localDev } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+
+const authenticate = localDev();
+export default eveChannel({
+  auth: async (request) => {
+    const caller = await authenticate(request);
+    return caller ? { ...caller, allowToolStubs: true } : null;
+  },
+});
+```
+
+The channel checks the grant before forwarded-principal handling or `onMessage` projection. It removes the grant before using the identity for forwarding, audience classification, or session persistence. This is an authentication-result permission, not a session attribute.
+
+Later messages, approvals, controls, and result reads use normal channel authentication. There is no additional creator-only rule or replacement-permission recheck. Anyone your channel admits to an existing session can use its configured stubs; apply the same application-specific session-access policy you need for ordinary sessions.
 
 ## Tool and connection auth
 

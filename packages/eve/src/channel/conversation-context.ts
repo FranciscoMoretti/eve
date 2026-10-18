@@ -10,8 +10,19 @@ import {
 } from "#shared/conversation-context.js";
 import { readForwardedTraceAssertion } from "#shared/forwarded-trace-policy.js";
 
+/** What a conversation context is built from: a run, or a direct tool call's channel and caller. */
+type ConversationSource =
+  | RunInput
+  | (Pick<RunInput, "adapter" | "auth"> &
+      Partial<
+        Pick<
+          RunInput,
+          "audienceAuth" | "channelName" | "inheritedConversation" | "parentTraceContext"
+        >
+      >);
+
 export function buildConversationContext(
-  run: RunInput,
+  run: ConversationSource,
   environment: ConversationEnvironment,
 ): ConversationContext {
   const hasRouteAuth = Object.hasOwn(run, "audienceAuth");
@@ -36,7 +47,6 @@ export function buildConversationContext(
       auth,
       caller: toAudienceCaller(auth),
       channel,
-      mode: run.mode,
       environment,
     });
 
@@ -45,7 +55,6 @@ export function buildConversationContext(
       channelKind: projection.kind,
       environment,
       forwardedTracePolicy,
-      mode: run.mode,
       principalType: auth?.principalType,
     }),
     audience,

@@ -33,12 +33,10 @@ export type PreparedInitProject =
     };
 
 export type InitResult = {
-  agentElapsedMs: number;
+  elapsedMs: number;
   agentLaunched: boolean;
-  installElapsedMs: number;
   packageManager: PackageManagerKind;
   projectPath: string;
-  selfModificationEnabled: boolean;
 } & (
   | {
       configurationFilesChanged: string[];

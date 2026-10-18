@@ -1,85 +1,90 @@
-import { resolveForwardedPrincipal } from "#channel/forwarded-principal.js";
-import type { Session } from "#channel/session.js";
-import type { SessionAuthContext } from "#channel/types.js";
-import { defaultEveAudience } from "#eve-channel/audience.js";
-import { createEveSessionRoute } from "#eve-channel/create-session-route.js";
-import {
-  checkUploadPolicy,
-  deriveOperationContinuationToken,
-  parseCancelTurnBody,
-  parseJsonRequest,
-  parseResetBody,
-  parseSessionControlBody,
-  parseSessionMessageBody,
-  requireSessionId,
-} from "#eve-channel/request.js";
-import {
-  createSessionStreamResponse,
-  parseIncludeTailIndex,
-  parseStartIndex,
-} from "#eve-channel/stream-response.js";
-import {
-  findRemoteSubagentBinding,
-  healthResponse,
-  normalizeEveCors,
-  resolveOnMessage,
-} from "#eve-channel/support.js";
-import type { EveChannel, EveChannelInput, EveEventContext } from "#eve-channel/types.js";
-import { handleActivityRequest } from "#execution/activity-route.js";
-import { handleCheckpointReadiness } from "#execution/checkpoint-readiness.js";
-import { handleConnectionCallbackRequest } from "#execution/connections/callback-route.js";
+import { parseSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
+import { InvalidToolStubTargetError } from "#tool-stubs/validate-targets.js";
+import { readStubFailure, readMatchedStubRules } from "#execution/tool-stubs/steps.js";
+import { getRun } from "#internal/workflow/runtime.js";
+import { proxyStreamHeaders } from "#eve-channel/stream-headers.js";
 import { handleExpiredLegacyAuthorization } from "#execution/legacy-session/authorization.js";
-import {
-  readSessionCheckpoint,
-  SessionCheckpointNotFoundError,
-  SessionCheckpointRejectedError,
-} from "#execution/read-session-checkpoint.js";
-import { handleSandboxIdentityRead } from "#execution/sandbox-identity-read.js";
-import { handleTaskInputResponseRequest } from "#execution/task-input-response-route.js";
+import { EVE_ROUTE_PREFIX } from "#protocol/routes.js";
+import type { SessionAuthContext, SessionParent, SessionTraceContext } from "#channel/types.js";
+import type { Session } from "#channel/session.js";
+import { resolveForwardedPrincipal } from "#channel/forwarded-principal.js";
+import { handleConnectionCallbackRequest } from "#execution/connections/callback-route.js";
+import { handleSessionCallbackRequest } from "#subagents/callback-route.js";
 import {
   handleWorkflowWebhookRequest,
   WORKFLOW_WEBHOOK_ROUTE_PATTERN,
 } from "#execution/workflow-webhook-route.js";
-import { attachClientContext } from "#internal/client-context.js";
 import { createLogger, logError } from "#internal/logging.js";
 import {
   readAgentInfoRouteResponse,
   readRemoteAgentStreamHeadersResolver,
+  readRouteSessionCreator,
 } from "#internal/nitro/routes/channel-route-context.js";
-import type { CancelTurnResponse } from "#protocol/cancel-turn.js";
-import type { ClearResponse } from "#protocol/clear-session.js";
-import type { CompactResponse } from "#protocol/compact-session.js";
+import { EVE_SESSION_ID_HEADER, EVE_STREAM_CONTROL_VERSION_QUERY } from "#protocol/message.js";
+import { legacyTaskInputRoute } from "#execution/legacy-remote-agent/protocol.js";
 import {
-  EVE_SESSION_ID_HEADER,
-  EVE_STREAM_CONTROL_VERSION_QUERY,
-  EVE_STREAM_FORMAT_HEADER,
-  EVE_STREAM_TAIL_INDEX_HEADER,
-  EVE_STREAM_VERSION_HEADER,
-  type SubagentCalledStreamEvent,
-} from "#protocol/message.js";
-import type { ResetResponse } from "#protocol/reset-session.js";
-import {
-  createEveSessionStreamRoutePath,
-  createEveSubagentStreamRoutePath,
-  EVE_ACTIVITY_ROUTE_PATTERN,
   EVE_CALLBACK_ROUTE_PATTERN,
   EVE_CONNECTION_CALLBACK_ROUTE_PATTERN,
   EVE_HEALTH_ROUTE_PATH,
   EVE_INFO_ROUTE_PATH,
-  EVE_ROUTE_PREFIX,
+  EVE_SESSION_ROUTE_PATH,
   EVE_SESSION_CANCEL_ROUTE_PATTERN,
   EVE_SESSION_CLEAR_ROUTE_PATTERN,
   EVE_SESSION_COMPACT_ROUTE_PATTERN,
-  EVE_SESSION_RESET_ROUTE_PATTERN,
   EVE_SESSION_ROUTE_PATTERN,
+  EVE_SESSION_RESET_ROUTE_PATTERN,
   EVE_SESSION_STREAM_ROUTE_PATTERN,
+  EVE_SESSION_STUBS_ROUTE_PATTERN,
   EVE_SUBAGENT_STREAM_ROUTE_PATTERN,
-  EVE_TASK_INPUT_ROUTE_PATTERN,
+  createEveSessionStreamRoutePath,
+  createEveSubagentStreamRoutePath,
 } from "#protocol/routes.js";
+import type { CancelTurnResponse } from "#protocol/cancel-turn.js";
+import type { ClearResponse } from "#protocol/clear-session.js";
+import type { CompactResponse } from "#protocol/compact-session.js";
+import type { ResetResponse } from "#protocol/reset-session.js";
+import { parseTraceparent, readAgentDispatchTraceContext } from "#protocol/traceparent.js";
+import {
+  readForwardedAudienceBaggage,
+  readForwardedParentSessionBaggage,
+} from "#protocol/baggage.js";
+import { agentDelegation } from "#tracing/eve/delegation.js";
+import {
+  FAIL_CLOSED_FORWARDED_TRACE_ASSERTION,
+  formatTraceContentCeiling,
+} from "#shared/forwarded-trace-policy.js";
+import { sessionAuthFromResult } from "#channel/auth/result.js";
 import { routeAuth } from "#public/channels/auth.js";
+import { defaultEveAudience } from "#eve-channel/audience.js";
 import { mergeUploadPolicy } from "#public/channels/upload-policy.js";
 import { defineChannel, DELETE, GET, HEAD, PATCH, POST, PUT } from "#public/definitions/channel.js";
-import { handleSessionCallbackRequest } from "#subagents/callback-route.js";
+import {
+  checkUploadPolicy,
+  createSessionStreamResponse,
+  deriveOperationContinuationToken,
+  parseCancelTurnBody,
+  parseCreateBody,
+  parseIncludeTailIndex,
+  parseJsonRequest,
+  parseOptionalJsonRequest,
+  parseResetBody,
+  parseSessionControlBody,
+  parseSessionMessageBody,
+  parseStartIndex,
+  rejectSessionContinuationToken,
+  requireSessionId,
+} from "#eve-channel/request.js";
+import { attachClientContext } from "#internal/client-context.js";
+import type { ParsedCreateBody } from "#eve-channel/create-request.js";
+import {
+  findRemoteAgentBinding,
+  healthResponse,
+  type RemoteAgentBinding,
+  normalizeEveCors,
+  resolveOnMessage,
+  strandedSessionResponse,
+} from "#eve-channel/support.js";
+import type { EveChannel, EveChannelInput, EveEventContext } from "#eve-channel/types.js";
 
 export * from "#eve-channel/types.js";
 
@@ -94,11 +99,22 @@ const log = createLogger("eve.channel");
  * Default-export the result as your `agent/channels/eve.ts` channel; reach for
  * {@link defineChannel} directly only for a custom transport.
  */
+/** A delegating caller checks that this deployment serves its remote agent protocol. */
+function createdSessionBody(sessionId: string, body: ParsedCreateBody) {
+  const created: {
+    ok: true;
+    protocolVersion?: number;
+    sessionId: string;
+    status: "accepted";
+  } = { ok: true, sessionId, status: "accepted" };
+  if (body.protocolVersion !== undefined) created.protocolVersion = body.protocolVersion;
+  return created;
+}
+
 export function eveChannel(input: EveChannelInput): EveChannel {
   const uploadPolicy = mergeUploadPolicy(input.uploadPolicy);
 
   return defineChannel<undefined, EveEventContext>({
-    fetchFile: input.fetchFile,
     cors: normalizeEveCors(input.cors),
     turnPolicy: input.turnPolicy,
     audience: (classifierInput) => {
@@ -108,35 +124,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
     routes: [
       GET(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
       HEAD(EVE_HEALTH_ROUTE_PATH, async () => healthResponse()),
-
-      GET("/eve/v1/operation/:operationId", async (req, { params, resolveSession }) => {
-        const authResult = await routeAuth(req, input.auth);
-        if (authResult instanceof Response) return authResult;
-        if (authResult.principalType === "anonymous" || !params.operationId) {
-          return Response.json(
-            {
-              error: "Operation lookup requires an authenticated principal and operation id.",
-              ok: false,
-            },
-            { status: 400 },
-          );
-        }
-        const kind = new URL(req.url).searchParams.get("kind");
-        if (kind !== null && kind !== "seed")
-          return Response.json({ error: "Unknown operation kind.", ok: false }, { status: 400 });
-        const token = await deriveOperationContinuationToken({
-          auth: authResult,
-          operationId: params.operationId,
-          kind: kind === "seed" ? "seed" : undefined,
-        });
-        const owner = await resolveSession(token);
-        return owner
-          ? Response.json({ sessionId: owner.id }, { headers: { "cache-control": "no-store" } })
-          : Response.json(
-              { error: "Operation not found.", code: "eve_operation_not_found" },
-              { status: 404, headers: { "cache-control": "no-store" } },
-            );
-      }),
 
       GET(EVE_INFO_ROUTE_PATH, async (req, args) => {
         const authResult = await routeAuth(req, input.auth);
@@ -163,16 +150,274 @@ export function eveChannel(input: EveChannelInput): EveChannel {
       ),
       GET(EVE_CONNECTION_CALLBACK_ROUTE_PATTERN, handleConnectionCallbackRequest),
       POST(EVE_CONNECTION_CALLBACK_ROUTE_PATTERN, handleConnectionCallbackRequest),
-      POST(EVE_ACTIVITY_ROUTE_PATTERN, handleActivityRequest),
       POST(EVE_CALLBACK_ROUTE_PATTERN, handleSessionCallbackRequest),
-      POST(EVE_TASK_INPUT_ROUTE_PATTERN, handleTaskInputResponseRequest),
+      POST(legacyTaskInputRoute.path, legacyTaskInputRoute.handler),
       GET(WORKFLOW_WEBHOOK_ROUTE_PATTERN, handleWorkflowWebhookRequest),
       POST(WORKFLOW_WEBHOOK_ROUTE_PATTERN, handleWorkflowWebhookRequest),
       PUT(WORKFLOW_WEBHOOK_ROUTE_PATTERN, handleWorkflowWebhookRequest),
       PATCH(WORKFLOW_WEBHOOK_ROUTE_PATTERN, handleWorkflowWebhookRequest),
       DELETE(WORKFLOW_WEBHOOK_ROUTE_PATTERN, handleWorkflowWebhookRequest),
 
-      createEveSessionRoute(input),
+      POST(EVE_SESSION_ROUTE_PATH, async (req, args) => {
+        const authResult = await routeAuth(req, input.auth);
+        if (authResult instanceof Response) return authResult;
+        const auth = sessionAuthFromResult(authResult);
+
+        const payload = await parseOptionalJsonRequest(req);
+        if (payload instanceof Response) return payload;
+        if (payload.stubs !== undefined && authResult.allowToolStubs !== true) {
+          return Response.json(
+            { ok: false, error: "Tool stubbing is not permitted for this caller." },
+            { status: 403 },
+          );
+        }
+        const tokenRejection = rejectSessionContinuationToken(payload);
+        if (tokenRejection !== null) return tokenRejection;
+
+        const forwarded = await resolveForwardedPrincipal({
+          trustedForwarders: input.trustedForwarders,
+          forwarder: auth,
+          payload,
+        });
+        if (forwarded instanceof Response) return forwarded;
+
+        const body = parseCreateBody(payload);
+        if (body instanceof Response) return body;
+        if (body.callback !== undefined && body.legacyRemoteAgentCaller !== undefined) {
+          log.info("serving a remote agent protocol 1 caller", {
+            callerOrigin: new URL(body.callback.url).origin,
+            forwarder: authResult.principalId,
+          });
+        }
+        const forwardedParentSession =
+          body.callback === undefined
+            ? "absent"
+            : readForwardedParentSessionBaggage(req.headers.get("baggage"));
+        let parent: SessionParent | undefined;
+        if (typeof forwardedParentSession === "object") {
+          if (forwardedParentSession.callId !== body.callback?.callId) {
+            log.warn("ignoring remote parent lineage with a mismatched callback", {
+              forwarder: authResult.principalId,
+            });
+          } else {
+            let accepted = forwarded.accepted;
+            if (!accepted && input.trustedForwarders !== undefined) {
+              try {
+                accepted = await input.trustedForwarders(auth, {});
+              } catch (error) {
+                const errorId = logError(log, "trustedForwarders handler failed", error, {
+                  forwarder: authResult.principalId,
+                });
+                return Response.json(
+                  { error: "trustedForwarders handler failed.", errorId, ok: false },
+                  { status: 500 },
+                );
+              }
+            }
+            if (accepted) {
+              parent = forwardedParentSession;
+            } else {
+              log.warn("ignoring remote parent lineage from an untrusted forwarder", {
+                forwarder: authResult.principalId,
+              });
+            }
+          }
+        } else if (forwardedParentSession === "malformed") {
+          log.warn("ignoring malformed remote parent lineage", {
+            forwarder: authResult.principalId,
+          });
+        }
+        const transportParentTraceContext =
+          body.callback === undefined
+            ? undefined
+            : parseTraceparent(req.headers.get("traceparent"));
+        const parsedParentTraceContext =
+          body.callback === undefined
+            ? undefined
+            : (readAgentDispatchTraceContext(
+                req.headers.get("tracestate"),
+                transportParentTraceContext,
+              ) ?? transportParentTraceContext);
+
+        const policyRejection = checkUploadPolicy(body, uploadPolicy);
+        if (policyRejection !== null) return policyRejection;
+
+        if (body.operationId !== undefined && forwarded.auth.principalType === "anonymous") {
+          return Response.json(
+            { error: "operationId requires an authenticated principal.", ok: false },
+            { status: 400 },
+          );
+        }
+        const operationToken =
+          body.operationId === undefined
+            ? undefined
+            : await deriveOperationContinuationToken({
+                auth: forwarded.auth,
+                operationId: body.operationId,
+                kind: body.seed === true ? "seed" : undefined,
+              });
+        if (operationToken !== undefined) {
+          const owner = await args.resolveSession(operationToken);
+          if (owner !== undefined) {
+            return Response.json(createdSessionBody(owner.id, body), {
+              headers: {
+                "cache-control": "no-store",
+                [EVE_SESSION_ID_HEADER]: owner.id,
+              },
+              status: 202,
+            });
+          }
+        }
+
+        const forwardedTraceAssertion =
+          transportParentTraceContext === undefined
+            ? "absent"
+            : readForwardedAudienceBaggage(req.headers.get("baggage"));
+        const acceptsForwardedTracePolicy =
+          forwarded.accepted &&
+          transportParentTraceContext !== undefined &&
+          (transportParentTraceContext.traceFlags & 1) === 1;
+        const acceptedForwardedTracePolicy = !acceptsForwardedTracePolicy
+          ? undefined
+          : typeof forwardedTraceAssertion === "object"
+            ? forwardedTraceAssertion
+            : forwardedTraceAssertion === "malformed"
+              ? FAIL_CLOSED_FORWARDED_TRACE_ASSERTION
+              : undefined;
+        let parentTraceContext: SessionTraceContext | undefined = parsedParentTraceContext;
+        if (acceptedForwardedTracePolicy !== undefined && parsedParentTraceContext !== undefined) {
+          parentTraceContext = {
+            ...parsedParentTraceContext,
+            forwardedTracePolicy: acceptedForwardedTracePolicy,
+          };
+        }
+        if (forwardedTraceAssertion === "malformed") {
+          log.warn("using metadata-only policy for malformed forwarded audience baggage", {
+            forwarder: authResult.principalId,
+          });
+        } else if (typeof forwardedTraceAssertion === "object") {
+          if (acceptedForwardedTracePolicy !== undefined) {
+            log.info("accepted forwarded trace policy", {
+              audience: forwardedTraceAssertion.originAudience,
+              ceiling: formatTraceContentCeiling(forwardedTraceAssertion.ceiling),
+              forwarder: authResult.principalId,
+            });
+          } else {
+            log.warn("ignoring forwarded trace policy without an accepted sampled principal", {
+              forwarder: authResult.principalId,
+            });
+          }
+        }
+
+        const messageResult =
+          body.message === undefined
+            ? { auth: forwarded.auth }
+            : await resolveOnMessage({
+                auth: forwarded.auth,
+                config: input,
+                invocation:
+                  parent === undefined || body.operationId === undefined
+                    ? undefined
+                    : { operationId: body.operationId },
+                message: body.message,
+                request: req,
+              });
+        if (messageResult instanceof Response) return messageResult;
+        const createSession = readRouteSessionCreator(args);
+        if (createSession === undefined) {
+          return Response.json(
+            { error: "Session creation requires internal channel dispatch context.", ok: false },
+            { status: 500 },
+          );
+        }
+
+        let seed: ReturnType<typeof parseSessionTranscriptSeed> | undefined;
+        if (body.seed === true) {
+          if (!input.resolveSeed || body.operationId === undefined || parent !== undefined) {
+            return Response.json(
+              { error: "Trusted seed creation is unavailable.", ok: false },
+              { status: 400 },
+            );
+          }
+          try {
+            seed = parseSessionTranscriptSeed(
+              await input.resolveSeed({ auth: forwarded.auth, operationId: body.operationId }),
+            );
+            if (seed.attachments !== "channel")
+              throw new Error("Copied files require channel resolution.");
+          } catch (error) {
+            const errorId = logError(log, "seed resolution failed", error);
+            return Response.json(
+              { error: "Seed creation was rejected.", errorId, ok: false },
+              { status: 409 },
+            );
+          }
+        }
+        let handle: Awaited<ReturnType<typeof createSession>>;
+        try {
+          handle = await agentDelegation.receive(
+            {
+              headers: req.headers,
+              delegated: body.callback !== undefined,
+              trusted: forwarded.accepted,
+              parent,
+              callerTrace: parsedParentTraceContext,
+              parentTraceContext,
+            },
+            ({ conversationId, parentTraceContext: inheritedTrace }) => {
+              return createSession({
+                seed,
+                audienceAuth: auth,
+                toolStubs:
+                  body.stubs === undefined
+                    ? undefined
+                    : {
+                        rules: body.stubs,
+                        token: crypto.randomUUID(),
+                      },
+                auth: messageResult.auth,
+                capabilities: body.capabilities ?? { requestInput: true },
+                callback: body.callback,
+                legacyRemoteAgentCaller: body.legacyRemoteAgentCaller,
+                continuationToken: operationToken,
+                initiatorAuth: forwarded.accepted ? forwarded.initiatorAuth : undefined,
+                input: attachClientContext(
+                  {
+                    message: body.message,
+                    context: messageResult.context,
+                    outputSchema: body.outputSchema,
+                  },
+                  body.context,
+                ),
+                conversationId,
+                parent,
+                parentTraceContext: inheritedTrace,
+                // A remote agent's spans form their own session in this
+                // deployment; its lineage still names the caller's root.
+                traceRoot: parent === undefined ? undefined : { kind: "own" },
+                title: messageResult.title,
+              });
+            },
+          );
+        } catch (error) {
+          if (error instanceof InvalidToolStubTargetError) {
+            return Response.json({ error: error.message, ok: false }, { status: 400 });
+          }
+          const errorId = logError(log, "session-create request failed", error);
+          return Response.json(
+            { error: "Failed to create the session.", errorId, ok: false },
+            { status: 500 },
+          );
+        }
+
+        return Response.json(createdSessionBody(handle.sessionId, body), {
+          headers: {
+            "cache-control": "no-store",
+            [EVE_SESSION_ID_HEADER]: handle.sessionId,
+          },
+          status: 202,
+        });
+      }),
 
       POST(EVE_SESSION_ROUTE_PATTERN, async (req, { attachSession, params }) => {
         const authResult = await routeAuth(req, input.auth);
@@ -184,7 +429,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (payload instanceof Response) return payload;
         const forwarded = await resolveForwardedPrincipal({
           trustedForwarders: input.trustedForwarders,
-          forwarder: authResult,
+          forwarder: sessionAuthFromResult(authResult),
           payload,
         });
         if (forwarded instanceof Response) return forwarded;
@@ -216,14 +461,12 @@ export function eveChannel(input: EveChannelInput): EveChannel {
           const session = attachSession(sessionId);
           const options = attachClientContext(
             {
-              activityObserver: body.activityObserver,
               auth: dispatchAuth,
               callback: body.callback,
               context,
               outputSchema: body.outputSchema,
               turnPolicy: body.turnPolicy,
               title,
-              messageMetadata: body.messageMetadata,
             },
             body.context,
           );
@@ -232,6 +475,8 @@ export function eveChannel(input: EveChannelInput): EveChannel {
               ? await session.send(body.message!, options)
               : await session.respond(body.inputResponses, options);
         } catch (error) {
+          const stranded = strandedSessionResponse(error);
+          if (stranded !== undefined) return stranded;
           const errorId = logError(log, "session-message request failed", error, { sessionId });
           return Response.json(
             { error: "Failed to send the session message.", errorId, ok: false },
@@ -278,11 +523,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (body instanceof Response) return body;
         let result: Awaited<ReturnType<Session["cancel"]>>;
         try {
-          result = await attachSession(sessionId).cancel({
-            taskId: body.taskId,
-            tasks: body.tasks,
-            turnId: body.turnId,
-          });
+          result = await attachSession(sessionId).cancel({ turnId: body.turnId });
         } catch (error) {
           const errorId = logError(log, "cancel-turn request failed", error, { sessionId });
           return Response.json(
@@ -303,88 +544,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             status: result.status === "accepted" ? 202 : 200,
           },
         );
-      }),
-
-      GET("/eve/v1/session/:sessionId/sandbox-identity", async (req, { params }) => {
-        const authResult = await routeAuth(req, input.auth);
-        if (authResult instanceof Response) return authResult;
-        const sessionId = requireSessionId(params);
-        if (sessionId instanceof Response) return sessionId;
-        return handleSandboxIdentityRead(req, sessionId);
-      }),
-
-      GET("/eve/v1/session/:sessionId/checkpoint", async (req, { params }) => {
-        const authResult = await routeAuth(req, input.auth);
-        if (authResult instanceof Response) return authResult;
-        const sessionId = requireSessionId(params);
-        if (sessionId instanceof Response) return sessionId;
-        return handleCheckpointReadiness(req, sessionId);
-      }),
-
-      POST("/eve/v1/session/:sessionId/checkpoint", async (req, { attachSession, params }) => {
-        const authResult = await routeAuth(req, input.auth);
-        if (authResult instanceof Response) return authResult;
-        const sessionId = requireSessionId(params);
-        if (sessionId instanceof Response) return sessionId;
-        const body = await req.json().catch(() => null);
-        if (
-          !body ||
-          typeof body !== "object" ||
-          !("checkpointId" in body) ||
-          !("beforeTurnId" in body) ||
-          typeof body.checkpointId !== "string" ||
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-            body.checkpointId,
-          ) ||
-          typeof body.beforeTurnId !== "string" ||
-          !/^turn_(0|[1-9][0-9]*)$/.test(body.beforeTurnId)
-        )
-          return Response.json({ error: "Invalid checkpoint request." }, { status: 400 });
-        const source = attachSession(sessionId);
-        if (!source.checkpoint)
-          return Response.json({ error: "Idle checkpoints are unavailable." }, { status: 409 });
-        const result = await source.checkpoint({
-          checkpointId: body.checkpointId,
-          beforeTurnId: body.beforeTurnId,
-        });
-        return Response.json(result, {
-          status: result.status === "accepted" ? 202 : 409,
-          headers: { "cache-control": "no-store" },
-        });
-      }),
-      GET("/eve/v1/session/:sessionId/checkpoint/:checkpointId", async (req, { params }) => {
-        const authResult = await routeAuth(req, input.auth);
-        if (authResult instanceof Response) return authResult;
-        const sessionId = requireSessionId(params);
-        if (sessionId instanceof Response) return sessionId;
-        const checkpointId = params?.checkpointId;
-        const beforeTurnId = new URL(req.url).searchParams.get("beforeTurnId");
-        if (
-          typeof checkpointId !== "string" ||
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(checkpointId) ||
-          !beforeTurnId ||
-          !/^turn_(0|[1-9][0-9]*)$/.test(beforeTurnId)
-        )
-          return Response.json({ error: "Invalid checkpoint reference." }, { status: 400 });
-        try {
-          await readSessionCheckpoint({ sessionId, checkpointId, beforeTurnId });
-          return Response.json(
-            { ready: true, sessionId, checkpointId, beforeTurnId },
-            { headers: { "cache-control": "no-store" } },
-          );
-        } catch (error) {
-          if (error instanceof SessionCheckpointNotFoundError)
-            return Response.json(
-              { code: "checkpoint_not_ready" },
-              { status: 404, headers: { "cache-control": "no-store" } },
-            );
-          if (error instanceof SessionCheckpointRejectedError)
-            return Response.json(
-              { error: error.message, checkpointRejected: true },
-              { status: 409 },
-            );
-          throw error;
-        }
       }),
 
       POST(EVE_SESSION_COMPACT_ROUTE_PATTERN, async (req, { attachSession, params }) => {
@@ -430,25 +589,18 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         try {
           result = await attachSession(sessionId).clear();
         } catch (error) {
+          const stranded = strandedSessionResponse(error);
+          if (stranded !== undefined) return stranded;
           const errorId = logError(log, "session-clear request failed", error, { sessionId });
           return Response.json(
             { error: "Failed to clear the session context.", errorId, ok: false },
             { status: 500 },
           );
         }
-        return Response.json(
-          result.status === "accepted"
-            ? ({
-                ok: true,
-                sessionId: result.sessionId,
-                status: "accepted",
-              } satisfies ClearResponse)
-            : ({ ok: true, status: "no_active_session" } satisfies ClearResponse),
-          {
-            headers: { "cache-control": "no-store" },
-            status: result.status === "accepted" ? 202 : 200,
-          },
-        );
+        return Response.json({ ok: true, ...result } satisfies ClearResponse, {
+          headers: { "cache-control": "no-store" },
+          status: result.status === "accepted" ? 202 : 200,
+        });
       }),
 
       POST(EVE_SESSION_RESET_ROUTE_PATTERN, async (req, { attachSession, params }) => {
@@ -478,6 +630,39 @@ export function eveChannel(input: EveChannelInput): EveChannel {
             : ({ ok: true, status: "no_active_session" } satisfies ResetResponse),
           { headers: { "cache-control": "no-store" } },
         );
+      }),
+
+      GET(EVE_SESSION_STUBS_ROUTE_PATTERN, async (req, { params }) => {
+        const authResult = await routeAuth(req, input.auth);
+        if (authResult instanceof Response) return authResult;
+        if (authResult.allowToolStubs !== true) {
+          return Response.json(
+            { error: "Tool stubbing is not permitted for this caller.", ok: false },
+            { status: 403 },
+          );
+        }
+        const sessionId = requireSessionId(params);
+        if (sessionId instanceof Response) return sessionId;
+        try {
+          if (!(await getRun(sessionId).exists)) {
+            return Response.json({ error: "Session not found.", ok: false }, { status: 404 });
+          }
+          return Response.json(
+            {
+              error: (await readStubFailure(sessionId)) ?? null,
+              matchedRuleIds: await readMatchedStubRules(sessionId),
+            },
+            { headers: { "cache-control": "no-store" } },
+          );
+        } catch (error) {
+          const errorId = logError(log, "tool-stub verification request failed", error, {
+            sessionId,
+          });
+          return Response.json(
+            { error: "Failed to verify tool stubs.", errorId, ok: false },
+            { status: 500 },
+          );
+        }
       }),
 
       GET(EVE_SESSION_STREAM_ROUTE_PATTERN, async (req, { attachSession, params }) => {
@@ -511,14 +696,13 @@ export function eveChannel(input: EveChannelInput): EveChannel {
           childSessionId,
           parentSessionId,
         });
-        let binding: SubagentCalledStreamEvent;
+        let binding: RemoteAgentBinding;
         try {
           const parent = args.attachSession(parentSessionId);
-          const found = await findRemoteSubagentBinding({
+          const found = await findRemoteAgentBinding({
             callId,
             childSessionId,
             childStreamPath,
-            parentSessionId,
             parent,
           });
           if (found === undefined) {
@@ -542,18 +726,14 @@ export function eveChannel(input: EveChannelInput): EveChannel {
 
         let headers: Record<string, string>;
         try {
-          headers = await resolveHeaders({
-            name: binding.data.toolName,
-            resolverId: binding.data.remote!.resolverId,
-            url: binding.data.remote!.url,
-          });
+          headers = await resolveHeaders(binding);
         } catch {
           return Response.json({ error: "Subagent stream not found.", ok: false }, { status: 404 });
         }
 
         const upstreamUrl = new URL(
           createEveSessionStreamRoutePath(childSessionId).replace(/^\/+/, ""),
-          `${binding.data.remote!.url.replace(/\/+$/, "")}/`,
+          `${binding.url.replace(/\/+$/, "")}/`,
         );
         if (startIndex !== undefined) {
           upstreamUrl.searchParams.set("startIndex", String(startIndex));
@@ -572,19 +752,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
           redirect: "manual",
           signal: req.signal,
         });
-        const responseHeaders = new Headers();
-        for (const name of [
-          "cache-control",
-          "content-type",
-          "x-accel-buffering",
-          EVE_SESSION_ID_HEADER,
-          EVE_STREAM_FORMAT_HEADER,
-          EVE_STREAM_TAIL_INDEX_HEADER,
-          EVE_STREAM_VERSION_HEADER,
-        ]) {
-          const value = upstream.headers.get(name);
-          if (value !== null) responseHeaders.set(name, value);
-        }
+        const responseHeaders = proxyStreamHeaders(upstream.headers);
         return new Response(upstream.body, {
           headers: responseHeaders,
           status: upstream.status,
@@ -593,5 +761,7 @@ export function eveChannel(input: EveChannelInput): EveChannel {
       }),
     ],
     events: input.events,
+    fetchFile: input.fetchFile,
+    uploadPolicy: input.uploadPolicy,
   });
 }

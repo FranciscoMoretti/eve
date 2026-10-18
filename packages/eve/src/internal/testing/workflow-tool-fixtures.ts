@@ -13,7 +13,6 @@ import {
 } from "#compiled/@workflow/core/index.js";
 
 import type { WorkflowToolContext } from "#tools/workflow-definition.js";
-import type { TaskExec, TaskMessage } from "#tools/task.js";
 import {
   ConnectionAuthorizationFailedError,
   ConnectionAuthorizationRequiredError,
@@ -39,6 +38,23 @@ export async function authorizedDeployWorkflow(input: DeployInput, ctx: Workflow
   const plan = await planDeployStep(input.service);
   const authenticatedAs = await authorizedDeployStep(input.service, ctx);
   return { plan, authenticatedAs };
+}
+
+export async function workflowContextMisuseWorkflow(_input: DeployInput, ctx: WorkflowToolContext) {
+  "use workflow";
+  return await readAgentsStep(ctx);
+}
+
+async function readAgentsStep(ctx: WorkflowToolContext) {
+  "use step";
+  try {
+    return ctx.agents;
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message += ` Attempt ${getStepMetadata().attempt}.`;
+    }
+    throw error;
+  }
 }
 
 export async function stepReferenceWorkflow(input: DeployInput) {
@@ -123,7 +139,48 @@ export async function* confirmDeployWorkflow(
     prompt: `Apply ${plan}?`,
   });
   yield "approval received";
-  return { approved: answer.optionId === "approve", service: input.service };
+  const approved = answer.status === "answered" && answer.optionId === "approve";
+  return { approved, service: input.service };
+}
+
+export async function answerWithResponderWorkflow(
+  _input: DeployInput,
+  ctx: WorkflowToolContext,
+): Promise<string> {
+  "use workflow";
+
+  const answer = await ctx.ask({
+    display: "confirmation",
+    options: [{ id: "approve", label: "Approve" }],
+    prompt: "Apply this change?",
+  });
+  return JSON.stringify({ answer, runStartPrincipal: ctx.session.auth.current?.principalId });
+}
+
+/** Returns `ctx.ask()`'s answer as-is; a selected option carries `text: undefined`. */
+export async function returnAskAnswerWorkflow(_input: DeployInput, ctx: WorkflowToolContext) {
+  "use workflow";
+
+  return await ctx.ask({
+    display: "confirmation",
+    options: [{ id: "approve", label: "Approve" }],
+    prompt: "Apply this change?",
+  });
+}
+
+/** Asks two questions at once, so answering one leaves the other pending. */
+export async function confirmTwoStepsWorkflow(
+  input: DeployInput,
+  ctx: WorkflowToolContext,
+): Promise<{ readonly migrate: string; readonly rollout: string }> {
+  "use workflow";
+
+  const options = [{ id: "approve", label: "Approve" }];
+  const [migrate, rollout] = await Promise.all([
+    ctx.ask({ display: "confirmation", options, prompt: `Migrate ${input.service}?` }),
+    ctx.ask({ display: "confirmation", options, prompt: `Roll out ${input.service}?` }),
+  ]);
+  return { migrate: migrate.status, rollout: rollout.status };
 }
 
 export async function failingDeployWorkflow(input: DeployInput): Promise<never> {
@@ -131,26 +188,6 @@ export async function failingDeployWorkflow(input: DeployInput): Promise<never> 
 
   await planDeployStep(input.service);
   throw new Error(`deploy of ${input.service} exploded`);
-}
-
-export async function subagentShapedDeployWorkflow(): Promise<{
-  readonly callId: string;
-  readonly isError: true;
-  readonly kind: "subagent-result";
-  readonly origin: "dispatch";
-  readonly output: string;
-  readonly subagentName: string;
-}> {
-  "use workflow";
-
-  return {
-    callId: "authored-call",
-    isError: true,
-    kind: "subagent-result",
-    origin: "dispatch",
-    output: "authored payload",
-    subagentName: "authored-name",
-  };
 }
 
 export async function* reportingDeployWorkflow(
@@ -163,33 +200,10 @@ export async function* reportingDeployWorkflow(
   return { plan };
 }
 
-export async function* backgroundDeployWorkflow(
-  input: DeployInput,
-  _ctx: WorkflowToolContext,
-  task: TaskExec,
-): AsyncGenerator<string | TaskMessage, { readonly plan: string }> {
-  "use workflow";
-
-  const plan = await planDeployStep(input.service);
-  yield `planned ${input.service}`;
-  yield task.postMessage(`Review ${plan}`);
-  return { plan };
-}
-
 async function planDeployStep(service: string): Promise<string> {
   "use step";
 
   return `plan:${service}`;
-}
-
-export async function stepThenRaceWorkflow(
-  input: DeployInput,
-): Promise<{ readonly decided: string; readonly service: string }> {
-  "use workflow";
-  const gate = createHook<{ readonly optionId: string }>();
-  await planDeployStep(input.service);
-  const answer = await Promise.race([gate, workflowSleep("50ms")]);
-  return { decided: answer === undefined ? "timed out" : "answered", service: input.service };
 }
 
 /** Holds in a step until `ctx.abortSignal` fires, then cleans up in `finally`. */
@@ -247,4 +261,21 @@ export async function askThenRaceWorkflow(
   });
   const answer = await Promise.race([pending, workflowSleep("50ms")]);
   return { decided: answer === undefined ? "timed out" : "answered", service: input.service };
+}
+
+/** Receives the actual delegated result over the durable parent hook. */
+export async function receiveDelegatedResultWorkflow(token: string): Promise<unknown> {
+  "use workflow";
+  using result = createHook<unknown>({ token });
+  return await result;
+}
+
+export async function reportCallerWorkflow(_input: unknown, ctx: WorkflowToolContext) {
+  "use workflow";
+  return { caller: ctx.session.auth.current?.principalId ?? null };
+}
+
+export async function failingServeWorkflow(): Promise<never> {
+  "use workflow";
+  throw new Error("Live serve workflow must not execute.");
 }

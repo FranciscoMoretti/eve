@@ -11,7 +11,7 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock,
 }));
 
-import { resolveEveDestinationPrefix } from "./server.js";
+import { ensureEveProductionServer, resolveEveDestinationPrefix } from "./server.js";
 
 const tempRoots: string[] = [];
 
@@ -56,11 +56,9 @@ describe("resolveEveDestinationPrefix", () => {
     const appRoot = await createTempAppRoot();
 
     await expect(
-      resolveEveDestinationPrefix({
+      ensureEveProductionServer({
         appRoot,
-        phase: "phase-production-server",
-        productionDestinationPrefix: "http://127.0.0.1:4274",
-        productionServerOrigin: "http://127.0.0.1:4274",
+        origin: "http://127.0.0.1:4274",
       }),
     ).rejects.toThrow(`Run eve build from ${appRoot} before starting Next.js.`);
     expect(spawnMock).not.toHaveBeenCalled();
@@ -85,7 +83,6 @@ describe("resolveEveDestinationPrefix", () => {
     const destination = resolveEveDestinationPrefix({
       appRoot,
       logLabel: "support",
-      phase: "phase-development-server",
       productionDestinationPrefix: "/internal/eve",
     });
 
@@ -109,6 +106,30 @@ describe("resolveEveDestinationPrefix", () => {
     );
   });
 
+  it("selects a workspace agent when starting its dev server", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const appRoot = await createTempAppRoot();
+    const child = createMockChildProcess();
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    spawnMock.mockReturnValue(child);
+
+    const destination = resolveEveDestinationPrefix({
+      appRoot,
+      logLabel: "support",
+      productionDestinationPrefix: "/internal/eve",
+      workspaceAgentName: "support",
+    });
+
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+    expect(spawnMock).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining(["dev", "--no-ui", "--port", "0", "--agent", "support"]),
+      expect.objectContaining({ cwd: appRoot }),
+    );
+    child.stdout.emit("data", Buffer.from("[dev] server listening at http://127.0.0.1:33451\n"));
+    await expect(destination).resolves.toBe("http://127.0.0.1:33451");
+  });
+
   it("suppresses low-signal eve dev startup output", async () => {
     vi.stubEnv("NODE_ENV", "development");
     const appRoot = await createTempAppRoot();
@@ -123,7 +144,6 @@ describe("resolveEveDestinationPrefix", () => {
     const destination = resolveEveDestinationPrefix({
       appRoot,
       logLabel: "billing",
-      phase: "phase-development-server",
       productionDestinationPrefix: "/internal/eve",
     });
 

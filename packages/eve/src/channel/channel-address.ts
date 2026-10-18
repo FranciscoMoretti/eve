@@ -1,13 +1,12 @@
 import type { UserContent } from "ai";
 
 import type { ChannelAdapter } from "#channel/adapter.js";
-import { copyChannelActivityPresentation } from "#channel/activity-renderer.js";
 import {
   createChannelDeliveryMetadata,
   type ChannelDeliverySource,
 } from "#channel/delivery-metadata.js";
 import type { SendPayload } from "#channel/routes.js";
-import { normalizeSendInput, serializeUrlFilePartsInMessage } from "#channel/send-input.js";
+import { normalizeSendInput, serializeFilePartsInMessage } from "#channel/send-input.js";
 import { createSession, sessionCallbackToTurnCaller, type Session } from "#channel/session.js";
 import type {
   CancelTurnResult,
@@ -23,13 +22,11 @@ import type {
 } from "#channel/types.js";
 import { DEFAULT_TURN_POLICY } from "#channel/types.js";
 import { isReservedSessionCommandToken } from "#execution/session-inbox/address.js";
-import type { RunMode } from "#shared/run-mode.js";
 
 interface BaseChannelAddressDeliveryOptions {
   readonly auth: SessionAuthContext | null;
   readonly callback?: SessionCallback;
   readonly initiatorAuth?: SessionAuthContext | null;
-  readonly mode?: RunMode;
   readonly title?: string;
   readonly turnPolicy?: TurnPolicy;
 }
@@ -41,9 +38,11 @@ export type ChannelAddressDeliveryOptions<TState = undefined> = [TState] extends
 
 /**
  * Dynamic handle for whichever durable session currently owns one channel-local address.
- * Only {@link send} may create a session when the address is unowned.
+ * Only {@link send} may create a session: when the address is unowned, or in
+ * place of a stranded session that another eve version built. Sends to a session whose
+ * owner is only unavailable throw `SessionStrandedError` and deliver nothing.
  */
-export interface ChannelAddress<TState = undefined> {
+interface ChannelAddress<TState = undefined> {
   readonly continuationToken: string;
   deliver(input: SendPayload, options: ChannelAddressDeliveryOptions<TState>): Promise<Session>;
   send(
@@ -62,9 +61,7 @@ export interface ChannelAddress<TState = undefined> {
 }
 
 /** Factory for binding a route-local continuation token to a {@link ChannelAddress}. */
-export type ChannelAddressFn<TState = undefined> = (
-  continuationToken: string,
-) => ChannelAddress<TState>;
+type ChannelAddressFn<TState = undefined> = (continuationToken: string) => ChannelAddress<TState>;
 
 /** Creates one channel address backed by the runtime's continuation dispatch primitive. */
 export function createChannelAddress<TState = undefined>(input: {
@@ -96,7 +93,7 @@ export function createChannelAddress<TState = undefined>(input: {
         kind: "send" as const,
         payload: {
           ...payload,
-          message: serializeUrlFilePartsInMessage(payload.message),
+          message: serializeFilePartsInMessage(payload.message),
         },
         requestId: metadata.requestId,
         turnPolicy:
@@ -106,27 +103,6 @@ export function createChannelAddress<TState = undefined>(input: {
       };
       const command: Extract<SessionCommand, { readonly kind: "send" }> =
         caller === undefined ? commandWithoutCaller : { ...commandWithoutCaller, caller };
-      const dispatch = async (): Promise<Session | undefined> => {
-        const result = await input.runtime.dispatchContinuation({
-          command,
-          continuationToken: namespacedToken,
-        });
-        return result.status === "accepted"
-          ? createSession(result.sessionId, input.runtime, {
-              ...metadata,
-              turnPolicy: input.turnPolicy,
-            })
-          : undefined;
-      };
-
-      const existing = await dispatch();
-      if (existing !== undefined) return existing;
-      if (payload.inputResponses && payload.inputResponses.length > 0) {
-        throw new Error(
-          "Cannot deliver inputResponses — the target session was not found via continuation token.",
-        );
-      }
-
       const state = (options as { readonly state?: TState }).state;
       const adapter =
         state === undefined
@@ -135,13 +111,10 @@ export function createChannelAddress<TState = undefined>(input: {
               ...input.adapter,
               state: { ...input.adapter.state, ...(state as Record<string, unknown>) },
             };
-      if (adapter !== input.adapter) copyChannelActivityPresentation(input.adapter, adapter);
-      const capabilities: RunInput["capabilities"] =
-        options.mode === "task" ? undefined : { requestInput: true };
       const runInput: RunInput = {
         adapter,
         auth: options.auth,
-        capabilities,
+        capabilities: { requestInput: true },
         callback: options.callback,
         channelName: input.channelName,
         continuationConflictCommand: command,
@@ -150,19 +123,28 @@ export function createChannelAddress<TState = undefined>(input: {
         initiatorAuth: options.initiatorAuth,
         input: {
           context: payload.context,
-          message: serializeUrlFilePartsInMessage(payload.message) ?? "",
-          messageMetadata: payload.messageMetadata,
+          message: serializeFilePartsInMessage(payload.message) ?? "",
           outputSchema: payload.outputSchema,
+          state: payload.state,
         },
-        mode: options.mode ?? "conversation",
         requestId: metadata.requestId,
         title: options.title,
       };
-      const handle = await input.runtime.createSession(runInput);
-      return createSession(handle.sessionId, input.runtime, {
-        ...metadata,
-        turnPolicy: input.turnPolicy,
+      const toSession = (sessionId: string) =>
+        createSession(sessionId, input.runtime, { ...metadata, turnPolicy: input.turnPolicy });
+
+      const result = await input.runtime.dispatchContinuation({
+        command,
+        continuationToken: namespacedToken,
+        successor: runInput,
       });
+      if (result.status === "accepted") return toSession(result.sessionId);
+      if (payload.inputResponses && payload.inputResponses.length > 0) {
+        throw new Error(
+          "Cannot deliver inputResponses — the target session was not found via continuation token.",
+        );
+      }
+      return toSession((await input.runtime.createSession(runInput)).sessionId);
     },
     async send(message, options) {
       return await this.deliver({ message }, options);

@@ -24,7 +24,7 @@ export default defineAgent({
 
 This turns off the optional defaults described below. Add back only the tools the agent needs with the command in each tool's section. Existing files under `agent/tools/` remain available, including same-name replacements such as `agent/tools/bash.ts`.
 
-`connection_search` stays available when the agent has connections because it provides access to their tools.
+`defaultTools` doesn't affect [the catalog tools](#eve__search-eve__tool-and-eve__skill): eve adds them from what the session can reach, as listed in that section.
 
 ### `bash`
 
@@ -37,6 +37,23 @@ eve add tool/bash
 ```ts title="agent/tools/bash.ts"
 export { default } from "eve/tools/bash";
 ```
+
+`bash` waits up to 30 seconds for a command. A command that finishes in time returns `status: "completed"` with `exitCode`, `stdout`, `stderr`, and `truncated`. A command that is still running keeps running in the sandbox as its own process group and returns `status: "running"` with:
+
+- `pid`: the process group id
+- `outputDirectory`: a directory under `/tmp/.eve/jobs/`
+- `stdout`, `stderr`, and `truncated`: the output so far
+- `message`: instructions for the model
+
+The command keeps writing to `stdout` and `stderr` files in `outputDirectory` and writes its exit code to an `exit` file when it finishes. The model checks on or stops it with ordinary shell commands in later `bash` calls, so the tool's approval policy applies to them:
+
+```sh
+tail /tmp/.eve/jobs/3f9a1c2e/stdout   # latest output
+cat /tmp/.eve/jobs/3f9a1c2e/exit      # exit code, once the command has finished
+kill -- -4312                         # stop the command's whole process group
+```
+
+The command keeps running across turns until it exits, the model stops it, or the sandbox stops. Its output files stay in the sandbox until the sandbox stops. Cancelling a turn stops a command that has not yet returned `running`. The `just-bash` provider has no background processes, so it runs every command to completion.
 
 Override its description, approval policy, or executor by wrapping the exported definition:
 
@@ -64,7 +81,7 @@ export default disableTool();
 
 ### `read_file`
 
-`read_file` reads text files from the sandbox with line-numbered output. It accepts absolute paths and paths beginning with `$HOME/`.
+`read_file` reads text files from the sandbox with line-numbered output, and shows PNG, JPEG, GIF, and WebP images up to 3 MiB and 8000 pixels per side, and PDFs up to 20 MiB, to the model as files. Images and PDFs are detected from their bytes, so a missing or mismatched filename extension does not matter, and other text files are always read as text. It accepts absolute paths and paths beginning with `$HOME/`.
 
 ```sh
 eve add tool/read_file
@@ -191,6 +208,55 @@ import { webSearch } from "eve/tools/web_search";
 export default webSearch({ provider: "parallel" });
 ```
 
+Select Browserbase Search in the same slot:
+
+```ts title="agent/tools/web_search.ts"
+import { webSearch } from "eve/tools/web_search";
+
+export default webSearch({ provider: "browserbase" });
+```
+
+Use a [Gateway model ID](../agent-config#set-the-model) to route searches through Browserbase. AI Gateway executes the search using `AI_GATEWAY_API_KEY` or Vercel project OIDC credentials; no `BROWSERBASE_API_KEY` is needed. See [Browserbase Search on AI Gateway](https://vercel.com/docs/ai-gateway/models-and-providers/web-search#using-browserbase-search).
+
+Select the model vendor's own hosted search for a model routed through AI Gateway:
+
+```ts title="agent/tools/web_search.ts"
+import { webSearch } from "eve/tools/web_search";
+
+export default webSearch({ provider: "native" });
+```
+
+The vendor runs the search server-side and returns citations: OpenAI models use OpenAI web search, Anthropic models use Anthropic web search, and Gemini 3 and later models use Google Search grounding. AI Gateway uses its usual credentials, so no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or Google key is needed. Every other Gateway model, including one picked by a dynamic model resolver, doesn't get `web_search`. That includes Gemini models before Gemini 3, which can't use Google Search alongside other tools.
+
+eve picks the search tool from the requested model, so when AI Gateway's own `models` fallback serves a call with a model from another vendor, that call can run without search. Anthropic web search runs only on Anthropic's own API. AI Gateway tries another host when Amazon Bedrock or Google Vertex AI rejects the tool. If no host accepts it, eve retries the step without `web_search`.
+
+Set `fallback` to give models without native search a provider that works with any Gateway model (`"exa"`, `"parallel"`, or `"browserbase"`):
+
+```ts title="agent/tools/web_search.ts"
+import { webSearch } from "eve/tools/web_search";
+
+export default webSearch({ provider: "native", fallback: "exa" });
+```
+
+The `provider` setting applies only to AI Gateway models. Direct OpenAI, Anthropic, and Gemini 3 and later models always use their native search; other direct models omit `web_search`.
+
+eve identifies a direct model's vendor by its AI SDK provider name, so a `createOpenAI()` model pointed at an OpenAI-compatible endpoint, such as Amazon Bedrock's, gets OpenAI web search. When the endpoint rejects it, eve retries the step without `web_search`, so each step makes one rejected call first. To skip it, give the provider its own name:
+
+```ts title="agent/agent.ts"
+import { createOpenAI } from "@ai-sdk/openai";
+import { defineAgent } from "eve";
+
+const mantle = createOpenAI({
+  name: "mantle",
+  baseURL: "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+  apiKey: process.env.BEDROCK_API_KEY,
+});
+
+export default defineAgent({ model: mantle("openai.gpt-5.6-sol") });
+```
+
+The agent then gets no `web_search`, the same as other direct models without native search.
+
 Replace provider-managed search with an authored implementation:
 
 ```ts title="agent/tools/web_search.ts"
@@ -213,75 +279,9 @@ import { disableTool } from "eve/tools";
 export default disableTool();
 ```
 
-### `todo`
-
-`todo` maintains a durable todo list for the session.
-
-```sh
-eve add tool/todo
-```
-
-```ts title="agent/tools/todo.ts"
-export { default } from "eve/tools/todo";
-```
-
-Override it. Spreading the definition preserves its durable state key:
-
-```ts title="agent/tools/todo.ts"
-import { defineTool } from "eve/tools";
-import { todo } from "eve/tools/todo";
-
-export default defineTool({
-  ...todo,
-  description: "Track the current implementation plan.",
-});
-```
-
-Disable it:
-
-```ts title="agent/tools/todo.ts"
-import { disableTool } from "eve/tools";
-
-export default disableTool();
-```
-
-### `ask_question`
-
-`ask_question` asks the user for clarification or a choice, then parks the turn until they answer. It appears only when the session can request user input. See [Human-in-the-loop](/docs/human-in-the-loop).
-
-```sh
-eve add tool/ask_question
-```
-
-```ts title="agent/tools/ask_question.ts"
-export { default } from "eve/tools/ask_question";
-```
-
-Replace its request-input behavior with an ordinary authored tool:
-
-```ts title="agent/tools/ask_question.ts"
-import { defineTool } from "eve/tools";
-
-export default defineTool({
-  description: "Record a clarification request.",
-  inputSchema: { type: "object" },
-  async execute(input) {
-    return { recorded: input };
-  },
-});
-```
-
-Disable it:
-
-```ts title="agent/tools/ask_question.ts"
-import { disableTool } from "eve/tools";
-
-export default disableTool();
-```
-
 ### `agent`
 
-`agent` delegates a subtask to a fresh copy of the root agent. It is root-only, always runs in the background, and returns a task receipt immediately. The child receives the root's instructions, tools, connections, and sandbox, but starts with fresh conversation history and [state](./state). See [Subagents](../subagents).
+`agent` delegates a subtask to a fresh copy of the root agent. It is root-only, and each call is a [task](/docs/tools/tasks): the call returns a receipt, and the child's reply arrives later as the task's result. The child receives the root's instructions, tools, connections, and sandbox, but starts with fresh conversation history and [state](./state). See [Subagents](../subagents).
 
 ```sh
 eve add tool/agent
@@ -291,7 +291,7 @@ eve add tool/agent
 export { default } from "eve/tools/agent";
 ```
 
-An authored tool at `agent/tools/agent.ts` replaces the framework behavior. Re-export the definition above to restore direct root-copy delegation, export another tool such as `agentRouter()` to change the model-facing behavior, or disable the slot:
+An authored tool at `agent/tools/agent.ts` replaces the framework behavior. Re-export the definition above to restore direct root-copy delegation, export another tool such as `agentRouter()` to change the model-facing behavior, or disable the slot. `agentRouter()` runs each call as a [task](/docs/tools/workflows#run-calls-as-tasks-task), which adds `eve__task_wait` and `eve__task_cancel`:
 
 ```ts title="agent/tools/agent.ts"
 import { disableTool } from "eve/tools";
@@ -299,63 +299,36 @@ import { disableTool } from "eve/tools";
 export default disableTool();
 ```
 
-### `task_cancel`
+### `eve__search`, `eve__tool`, and `eve__skill`
 
-`task_cancel` lets the root session cancel background tasks.
+These tools let the model reach what isn't in its tool list. `eve__search` finds tools defined with `deferred: true`, agents defined with `tool: "deferred"`, every tool from the agent's [connections](../connections), and deferred [skills](../skills). `eve__tool` calls a deferred tool, agent, or connection tool by name, and `eve__skill` loads a skill, deferred or not. There is no add command; eve adds each one when the session has something it reaches, even when `defaultTools` is `false`:
 
-```sh
-eve add tool/task_cancel
-```
+- `eve__tool` comes with anything it can call: a deferred tool or agent, or a connection.
+- `eve__skill` comes with any skill, so an agent whose only catalog entries are listed skills gets `eve__skill` alone.
+- `eve__search` comes with anything it could find: whatever `eve__tool` can call, plus deferred skills.
+- A session with none of these gets no catalog tools.
 
-```ts title="agent/tools/task_cancel.ts"
-export { default } from "eve/tools/task_cancel";
-```
+Entries the agent declares count from the session's first step. An entry a dynamic resolver returns counts from the step where it first appears, so a resolver in `agent/tools/` that returns only tools without `deferred: true` adds no catalog tools. Once a session's tool list includes a catalog tool, the session keeps it, even after a resolver stops returning the entry that brought it. The catalog tools change only when the session first reaches a new kind of entry, such as its first deferred tool or its first connection.
 
-The framework behavior cannot be overridden. Re-export the definition above to restore it, or disable it:
+- `eve__search({ query, limit? })` returns the best matches, up to `limit` (default 10, at most 50). `query` is required and must contain a word. A tool match has its exact `tool` name, its `description`, and a TypeScript `signature` rendered from its schemas. A very long signature drops its property descriptions before any property name. A deferred skill's match has its `skill` name, its `description`, and the `path` of its `SKILL.md` when it has supporting files. A result with `tool` is called with `eve__tool`, and one with `skill` is loaded with `eve__skill`. Next to `results`, `searched` counts the entries the query covered, the whole catalog or one namespace, and `remaining` counts the matches past `limit`. A connection behind sign-in counts as its one sign-in result until the user signs in, and an unavailable connection counts as none. Tools and skills rank together, in tiers: an entry whose name is exactly the query, then one whose name after its last `__` is the query, such as `linear__create_issue` or `sre__create_issue` for `create_issue`, then the tools of a connection named by the query, then entries whose names, or names after their last `__`, start with the query, then keyword matches in names, parameters, and descriptions. So `eve__search({ query: "linear" })` lists the `linear` connection's tools first. One-letter and filler words such as `a` and `the` don't count toward keyword matches unless the query has nothing else.
+- A query whose first word contains `__` searches one namespace: everything before its last `__`, without trailing underscores. The namespace only filters. `eve__search` keeps names under `<namespace>__` and anything named exactly the namespace, such as a connection's sign-in entry, then ranks them by the whole query, so `eve__search({ query: "linear__" })` returns only the `linear` connection's tools, or its sign-in result, and an exact name that contains `__` still ranks first. eve lists only the connections that can own names in that namespace, so other connections make no network call and don't appear in `unavailable`. A namespace that matches nothing fails with the closest connection names. Characters that can't appear in a name, such as a leading `^`, are ignored; `query` isn't a regular expression.
+- `eve__search` never asks the user to sign in. A connection whose server won't list its tools until the user signs in appears as one result named after the connection, such as `linear`; a connection whose server lists its tools without a token is searched like any other. A connection whose tools fail to load, or don't load within 10 seconds, appears under `unavailable` with its `error`, such as `"crm" did not list its tools within 10s. Try again later.` Matches from everything else are still returned, so a slow server doesn't hold up the search. An `eve__tool` call on that connection's tools fails with the same error.
+- `eve__tool({ name: "linear" })`, with a connection's own name, asks the user to sign in to that connection when its tools need it, and returns once they can be listed, so the next `eve__search` finds them. On a server that lists its tools without sign-in, it confirms the tools are available without asking.
+- `eve__tool({ name, input? })` calls the entry named `name` with `input`, which defaults to `{}`. A connection tool's name is `<connection>__<tool>`, such as `linear__list_issues`. eve checks `input` against the entry's input schema. An invalid input fails with the entry's signature, an unknown name fails with the closest names, and a skill's name fails with a reminder to load it with `eve__skill`. When the server asks for the user's authorization, the call asks the user to sign in and parks until sign-in completes.
+- `eve__skill({ name })` loads the named skill, deferred or not, and returns its instructions. An unknown name fails with the closest skill names, a tool's name fails with a reminder to call it with `eve__tool` or directly, and a name that matches a connection says to find its tools with `eve__search({ query: "<connection>__" })`.
 
-```ts title="agent/tools/task_cancel.ts"
-import { disableTool } from "eve/tools";
+After `eve__tool` or `eve__skill` resolves its entry, the call runs exactly like a direct call to that entry. A skill load reports a `load-skill` action and a `load-skill-result`, both with the skill's `name`, and an `execute_tool eve:load-skill` span. Approval policies and `approvedTools`, workflow tools and tasks, agents, `endsTurn`, `toModelOutput`, hooks, and stream events all see the entry's own name and input, such as `linear__list_issues`. Only model history records the call as `eve__tool` or `eve__skill`.
 
-export default disableTool();
-```
+eve tells the model what it can reach in an append-only context message rather than in the system prompt: which kinds of deferred entries exist, up to 20 namespaces (the first `__` segment of deferred names, such as `sre` for `sre__list_alerts`), and up to 20 connections with their descriptions. It never names a deferred entry, so deferred entries stay out of context until `eve__search` finds them. A later step appends the listing again only when that changes; a deferred entry added to a listed namespace, or without one, changes nothing. After the session first reaches each kind of entry, adding or removing entries, signing in, or resolving more dynamic connections doesn't change the catalog tools, so the cached prompt prefix holds.
 
-### `load_skill`
+The tools eve adds itself all live in the `eve` namespace: `eve__search`, `eve__tool`, `eve__skill`, `eve__task_wait`, `eve__task_cancel`, and `eve__reply`. Nothing you author or resolve may be named `eve` or start with `eve__`: tools, subagents, skills, connections, and extension mounts, static or dynamic, since a connection or mount named `eve` would own every `eve__` name. The compiler rejects an authored tool, skill, connection, or mount, such as `agent/tools/eve__search.ts`; eve rejects an authored subagent when the agent loads, and a dynamic entry when its resolver returns it. Any other name is free, including `search` and `execute`. A connection's own name is also the entry that signs the user in to it.
 
-`load_skill` pulls an on-demand [skill](../skills)'s instructions into the current turn. It appears only when the agent declares skills and adds no execution surface by itself.
+### `eve__task_wait` and `eve__task_cancel`
 
-```sh
-eve add tool/load_skill
-```
+eve adds `eve__task_wait` and `eve__task_cancel` when the agent has a tool that runs its calls as [tasks](/docs/tools/tasks): any agent tool, including the built-in `agent` tool, declared subagents, and remote agents, or a tool such as `agentRouter()`, the `workflow` tool, or an authored workflow tool that defines `task(input, ctx)` or `serve(receive, ctx)`. There is no add command, and the tools are not workflow tools. Like every `eve__` name, both are reserved.
 
-```ts title="agent/tools/load_skill.ts"
-export { default } from "eve/tools/load_skill";
-```
-
-Override it:
-
-```ts title="agent/tools/load_skill.ts"
-import { defineTool } from "eve/tools";
-import { loadSkill } from "eve/tools/load_skill";
-
-export default defineTool({
-  ...loadSkill,
-  description: "Load instructions for an available skill.",
-});
-```
-
-Disable it:
-
-```ts title="agent/tools/load_skill.ts"
-import { disableTool } from "eve/tools";
-
-export default disableTool();
-```
-
-### `connection_search`
-
-`connection_search` discovers tools across declared [connections](../connections) and makes matches directly callable by qualified name, such as `linear__list_issues`. eve adds it automatically when connections exist, even when `defaultTools` is `false`, so there is no add command.
-
-An authored `agent/tools/connection_search.ts` replaces the framework behavior. Import the framework definition from `eve/tools/connection_search` when you need to reference it directly. Exporting `disableTool()` from this slot is an error because agents with connections require connection discovery.
+- `eve__task_wait({ timeoutSeconds? })` parks the turn until any task has a result, a new message arrives, or `timeoutSeconds` pass, and returns at once when a result is already waiting. While it waits, the stream reports `turn.waiting` for the open turn. Results arrive in a `<task_result>` message right after it returns. Waiting never stops a task.
+- `eve__task_cancel({ taskId })` stops a task's current work and says so, or says the task had no work to stop when it already finished or is an idle [resumable task](/docs/tools/workflows#resumable-tasks-serve). An id that names no task fails with `UNKNOWN_TASK`. A resumable task stays available after a cancel.
 
 Review these tools before production use. Disable, wrap, restrict, or require approval for any tool that can access the filesystem, network, shell, or sensitive data.
 
@@ -364,6 +337,22 @@ You can also add the opt-in framework tools described below.
 ## Opt-in framework tools
 
 These framework-provided tools are not added by default. Add only the ones the agent needs.
+
+### `ask_question`
+
+`ask_question` lets the model ask the user one question, then waits for the answer. The model can offer two or three options, each with a label and a short description, and the user can always type their own answer instead. Channels render the options as native UI, such as Slack select menus. Without the tool, the model can still ask in its reply text and the user answers with their next message. See [Human-in-the-loop](/docs/human-in-the-loop). Add it:
+
+```sh
+eve add tool/ask_question
+```
+
+```ts title="agent/tools/ask_question.ts"
+import { askQuestion } from "eve/tools/ask_question";
+
+export default askQuestion();
+```
+
+`ask_question` is a [workflow tool](/docs/tools/workflows) that calls `ctx.ask()`. The model receives `{ status: "answered", answer }`, where `answer` is the chosen option's label or the user's own words. A plain follow-up message answers the question too when it is the only pending question. When other questions are also pending, a message does not answer any of them: `ask_question` withdraws its question, resolves as `{ interrupted: true }`, which the model reads as `Stopped early because a new message arrived.`, and the model reads the message next. In a session that cannot request input, such as a scheduled run, the result is `{ status: "unavailable" }` and the model continues on its own judgment. Remove the file to remove the tool.
 
 ### `glob`
 
@@ -417,9 +406,27 @@ export default defineTool({
 
 Remove the file to remove the tool. `disableTool()` is unnecessary because `grep` is not added by default.
 
+### `no_reply`
+
+`no_reply` ends the turn without a reply. Use it when a scheduled check finds nothing to report, or when an action the agent already took is the whole answer. The model calls it with an optional `{ reason }`, which stays in the session history and traces and is never sent. The turn completes without a final message, so channels and schedule sends post nothing, and later turns see that the agent chose to stay quiet. Add it:
+
+```sh
+eve add tool/no_reply
+```
+
+```ts title="agent/tools/no_reply.ts"
+import { noReply } from "eve/tools/no_reply";
+
+export default noReply();
+```
+
+`no_reply` is a `defineTool` tool with [`endsTurn: true`](/docs/tools#end-the-turn-after-a-tool-call), so the turn ends only when no other tool runs in the same step. Only root sessions receive it. Slack clears the thread status when the turn completes. Remove the file to remove the tool.
+
+A root session also accepts a successful model call that returns no text with `finishReason: "stop"`, without retrying or reporting a model-call failure. A turn that settles with no text completes without a final message. Use `no_reply` when the agent should record an explicit choice to stay quiet, including an optional reason. Delegated sessions still retry an empty reply once and report a failure if it remains empty, so the caller can act on the failure.
+
 ### `sleep`
 
-`sleep` pauses and durably resumes the current turn. The model calls it with `{ seconds }`; the wait does not hold an application runtime open. Concurrent calls run in parallel, and the turn resumes after the longest wait. Add it:
+`sleep` pauses and durably resumes the current turn. The model calls it with `{ seconds }`; the wait does not hold an application runtime open. Concurrent calls run in parallel, and the turn resumes after the longest wait. A steering message, the default for a new message, ends the wait early: `sleep` returns `{ interrupted: true }`, which the model reads as `Stopped early because a new message arrived.`, followed by the message. Add it:
 
 ```sh
 eve add tool/sleep
@@ -450,4 +457,4 @@ Remove the file to remove the tool. `disableTool()` is unnecessary because `slee
 - [Tools](../tools): define your own tools, gate them on approval, and shape their output with `toModelOutput`
 - [Dynamic capabilities](../guides/dynamic-capabilities): generate the tool set per session with `defineDynamic`
 - [Sandbox](../sandbox): configure the sandbox used by shell and file tools
-- [Subagents](../subagents): declare specialists that the model can call as background tasks
+- [Subagents](../subagents): declare specialists that the model can delegate to

@@ -32,9 +32,6 @@ describe("formatAvailableSkillsSection", () => {
     expect(result).not.toBeNull();
     expect(result).toContain("Available skills");
     expect(result).toContain(
-      "If the user names a skill or the request clearly matches one of the descriptions below, call load_skill before proceeding.",
-    );
-    expect(result).toContain(
       "If multiple skills match, activate the minimal set that covers the task.",
     );
     expect(result).toContain("Skill files live under `$HOME/.agents/skills/<skill>/`");
@@ -49,21 +46,12 @@ describe("formatAvailableSkillsSection", () => {
     );
   });
 
-  it("formats skill line with the resolved skill root", () => {
-    const skill = createTestSkill({
-      logicalPath: "skills/my-skill/SKILL.md",
-      name: "my-skill",
-    });
+  it("omits the path for skills without sandbox files", () => {
+    const result = formatAvailableSkillsSection([
+      { description: "Inline only", hasFiles: false, name: "inline" },
+    ]);
 
-    const result = formatAvailableSkillsSection([skill], {
-      skillRoot: "/home/agent/.agents/skills",
-    });
-
-    expect(result).toContain("Skill files live under `/home/agent/.agents/skills/<skill>/`.");
-    expect(result).toContain(
-      "- my-skill: A test skill (path: /home/agent/.agents/skills/my-skill/SKILL.md)",
-    );
-    expect(result).not.toContain("fallback");
+    expect(result?.split("\n").at(-1)).toBe("- inline: Inline only");
   });
 
   it("always lists all skills in the menu regardless of activation state", () => {

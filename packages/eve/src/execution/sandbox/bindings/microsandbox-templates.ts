@@ -3,10 +3,10 @@ import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-  resolveLocalBackendSessionRootPath,
-  resolveLocalBackendTemplateRootPath,
-  resolveLocalBackendTemplatesDirectory,
-} from "#execution/sandbox/bindings/local-backend-utils.js";
+  resolveLocalProviderSessionRootPath,
+  resolveLocalProviderTemplateRootPath,
+  resolveLocalProviderTemplatesDirectory,
+} from "#execution/sandbox/bindings/local-provider-utils.js";
 import {
   LOCAL_SANDBOX_TEMPLATE_RECENT_WINDOW_MS,
   LOCAL_SANDBOX_TEMPLATE_RETAIN_COUNT,
@@ -16,8 +16,10 @@ import {
   readTemplateMetadata,
   resolveMicrosandboxMetadataPath,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
-import { loadMicrosandboxWithoutInstall } from "#execution/sandbox/bindings/microsandbox-module.js";
-import { removeSnapshotIfExists } from "#execution/sandbox/bindings/microsandbox-runtime.js";
+import {
+  loadMicrosandboxWithoutInstall,
+  removeSnapshotIfExists,
+} from "#execution/sandbox/bindings/microsandbox-runtime.js";
 import { resolveSandboxCacheDirectory } from "#internal/application/paths.js";
 
 const MICROSANDBOX_CACHE_DIRECTORY_NAME = "microsandbox";
@@ -63,22 +65,22 @@ export function resolveMicrosandboxTemplateRootPath(
   cacheDirectory: string,
   templateKey: string,
 ): string {
-  return resolveLocalBackendTemplateRootPath(
+  return resolveLocalProviderTemplateRootPath(
     cacheDirectory,
     MICROSANDBOX_CACHE_DIRECTORY_NAME,
     templateKey,
   );
 }
 
-export function resolveMicrosandboxTemplatesDirectory(cacheDirectory: string): string {
-  return resolveLocalBackendTemplatesDirectory(cacheDirectory, MICROSANDBOX_CACHE_DIRECTORY_NAME);
+function resolveMicrosandboxTemplatesDirectory(cacheDirectory: string): string {
+  return resolveLocalProviderTemplatesDirectory(cacheDirectory, MICROSANDBOX_CACHE_DIRECTORY_NAME);
 }
 
 export function resolveMicrosandboxSessionRootPath(
   cacheDirectory: string,
   sessionKey: string,
 ): string {
-  return resolveLocalBackendSessionRootPath(
+  return resolveLocalProviderSessionRootPath(
     cacheDirectory,
     MICROSANDBOX_CACHE_DIRECTORY_NAME,
     sessionKey,

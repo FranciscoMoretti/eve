@@ -37,10 +37,10 @@ async function writePackageManifest(packageRoot: string, name: string): Promise<
   );
 }
 
-async function writeInstalledEvePackage(appRoot: string): Promise<string> {
+async function writeInstalledEvePackage(appRoot: string, name = "eve"): Promise<string> {
   const packageRoot = join(appRoot, "node_modules", "eve");
 
-  await writePackageManifest(packageRoot, "eve");
+  await writePackageManifest(packageRoot, name);
   await mkdir(join(packageRoot, "dist"), { recursive: true });
   return packageRoot;
 }
@@ -53,18 +53,21 @@ async function writeBundle(appRoot: string): Promise<string> {
 }
 
 describe("resolvePackageLocationFromModulePath", () => {
-  it("resolves an installed eve package from a bundle outside the package root", async () => {
-    const appRoot = await createScratchDirectory("eve-package-location-bundle-");
-    await writePackageManifest(appRoot, "consumer-app");
-    const packageRoot = await writeInstalledEvePackage(appRoot);
-    const bundlePath = await writeBundle(appRoot);
-    const canonicalPackageRoot = canonicalize(packageRoot);
+  it.each(["eve", "@chat-js/eve"])(
+    "resolves installed %s from a bundle outside the package root",
+    async (name) => {
+      const appRoot = await createScratchDirectory("eve-package-location-bundle-");
+      await writePackageManifest(appRoot, "consumer-app");
+      const packageRoot = await writeInstalledEvePackage(appRoot, name);
+      const bundlePath = await writeBundle(appRoot);
+      const canonicalPackageRoot = canonicalize(packageRoot);
 
-    expect(resolvePackageLocationFromModulePath(bundlePath)).toEqual({
-      packageBuildRoot: join(canonicalPackageRoot, "dist"),
-      packageRoot: canonicalPackageRoot,
-    });
-  });
+      expect(resolvePackageLocationFromModulePath(bundlePath)).toEqual({
+        packageBuildRoot: join(canonicalPackageRoot, "dist"),
+        packageRoot: canonicalPackageRoot,
+      });
+    },
+  );
 
   it("keeps source checkouts on package source files", async () => {
     const packageRoot = await createScratchDirectory("eve-package-location-source-");
@@ -79,22 +82,25 @@ describe("resolvePackageLocationFromModulePath", () => {
     });
   });
 
-  it("keeps direct dist execution on built package files", async () => {
-    const packageRoot = await createScratchDirectory("eve-package-location-dist-");
-    await writePackageManifest(packageRoot, "eve");
-    await writeFixtureFile(
-      join(packageRoot, "src", "internal", "application", "package.ts"),
-      "export {};\n",
-    );
-    const modulePath = join(packageRoot, "dist", "src", "internal", "application", "package.js");
-    await writeFixtureFile(modulePath, "export {};\n");
-    const canonicalPackageRoot = canonicalize(packageRoot);
+  it.each(["eve", "@chat-js/eve"])(
+    "keeps direct %s dist execution on built package files",
+    async (name) => {
+      const packageRoot = await createScratchDirectory("eve-package-location-dist-");
+      await writePackageManifest(packageRoot, name);
+      await writeFixtureFile(
+        join(packageRoot, "src", "internal", "application", "package.ts"),
+        "export {};\n",
+      );
+      const modulePath = join(packageRoot, "dist", "src", "internal", "application", "package.js");
+      await writeFixtureFile(modulePath, "export {};\n");
+      const canonicalPackageRoot = canonicalize(packageRoot);
 
-    expect(resolvePackageLocationFromModulePath(modulePath)).toEqual({
-      packageBuildRoot: join(canonicalPackageRoot, "dist"),
-      packageRoot: canonicalPackageRoot,
-    });
-  });
+      expect(resolvePackageLocationFromModulePath(modulePath)).toEqual({
+        packageBuildRoot: join(canonicalPackageRoot, "dist"),
+        packageRoot: canonicalPackageRoot,
+      });
+    },
+  );
 
   it("does not treat consumer directory names as source-checkout evidence", async () => {
     const scratchRoot = await createScratchDirectory("eve-package-location-consumer-");

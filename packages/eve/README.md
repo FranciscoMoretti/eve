@@ -61,7 +61,7 @@ Every authored directory has a typed helper. Import each from the matching subpa
 | `defineInstructions(...)`                                       | `eve/instructions`                    | `instructions.ts` (or `instructions.md`)         |
 | `defineTool(...)`, `defineDynamic(...)`, `disableTool(...)`     | `eve/tools`                           | `tools/<name>.ts`                                |
 | `bash`, `readFile`, `writeFile`, and other provided definitions | `eve/tools/<name>`                    | `tools/<name>.ts`                                |
-| `defineSkill(...)`, `getSkill(...)`                             | `eve/skills`                          | `skills/<name>.ts` (or `skills/<name>.md`)       |
+| `defineSkill(...)`                                              | `eve/skills`                          | `skills/<name>.ts` (or `skills/<name>.md`)       |
 | `defineHook(...)`                                               | `eve/hooks`                           | `hooks/<slug>.ts`                                |
 | `defineChannel(...)`, `POST`, `GET`                             | `eve/channels`                        | `channels/<name>.ts`                             |
 | `eveChannel(...)`, `slackChannel(...)`, `vercelOidc(...)`       | `eve/channels/eve`, `/slack`, `/auth` | reused from `channels/<name>.ts`                 |
@@ -73,7 +73,6 @@ Runtime accessors live on the subpath that owns the concern:
 
 - `getSession()` — current session, turn, auth, parent lineage (`eve/context`)
 - `getSandbox()` — live sandbox handle for the current agent (`eve/sandbox`)
-- `getSkill(identifier)` — handle for a named skill visible to the current agent (`eve/skills`)
 - `getContext(key)`, `requireContext(key)`, `hasContext(key)`, `setContext(key)`, `ensureContext(key, factory)` — unified context helpers (`eve/context`)
 
 The complete API reference, including types and lower-level runtime primitives, is in the [TypeScript API Reference](https://eve.dev/docs/reference/typescript-api).
@@ -126,11 +125,26 @@ npx eve@latest init my-agent
 `eve init` writes a new agent with eve's default model. Pass `--model
 openai/gpt-5.5` to choose another AI Gateway model, `--reasoning high` to set a
 reasoning effort, or `--channel-web-nextjs` to add the Web Chat application. It
-installs dependencies, initializes Git, and starts the development server. When
-it finds a supported coding-agent REPL, the handoff menu can open that REPL
-instead or exit. Targeting an existing project directory (`eve init .`) adds the
-agent files and missing dependencies instead. It does not create a Vercel
-project or deploy the agent.
+installs dependencies, initializes Git, and opens the terminal UI in an interactive
+human terminal. Coding-agent invocations return setup instructions instead.
+Targeting an existing project directory (`eve init .`) adds the agent files and
+missing dependencies instead. Initialization does not create a Vercel project,
+configure browser sign-in, or deploy the agent.
+
+To add Web Chat with **Sign in with Vercel**, run these commands from the agent's directory:
+
+```bash
+npx eve link
+npx eve add channel/web
+```
+
+Choose a hosting layout, then **Sign in with Vercel**. The terminal UI's `/add`
+channel picker offers the same setup. A team owner or a custom role with App and
+environment permissions can provision access for members of the project's team.
+Setup configures production and preview credentials; run `npx eve deploy` to publish.
+Local development works without browser sign-in. See the
+[Web Chat setup guide](https://eve.dev/docs/channels/eve#web-chat-with-sign-in-with-vercel)
+for recovery steps.
 
 CLI commands:
 
@@ -140,6 +154,7 @@ CLI commands:
 - `eve build` — compile `.eve/` and build the host output
 - `eve start` — serve the built `.output/` app
 - `eve dev` — start the local runtime and REPL
+- `eve add channel/web` — add Web Chat and configure browser authentication
 - `eve set [--model <model-id>] [--reasoning <effort>]` — change root model settings
 - `eve extension init <name>` — create a new extension package
 - `eve extension build` — build an extension package
@@ -156,7 +171,7 @@ These files ship inside the installed package at `node_modules/eve/docs/`:
 - [Getting Started](https://eve.dev/docs/getting-started) — install, scaffold, and run locally
 - [Project Layout](https://eve.dev/docs/getting-started#project-layout) — every authored directory in depth
 - [`agent.ts`](https://eve.dev/docs/agent-config) — agent config reference
-- [Automatic Model Selection](https://eve.dev/docs/guides/evaluate) — choose an agent model for each request
+- [Automatic Model Selection](https://eve.dev/docs/guides/decide) — choose an agent model for each request
 - [TypeScript API Reference](https://eve.dev/docs/reference/typescript-api) — complete `define*` and runtime helper reference
 - [Vercel Deployment](https://eve.dev/docs/guides/deployment/overview) — deploy to production
 

@@ -31,8 +31,8 @@ export type {
   AssertionHandle,
   AssertionResult,
   AssertionSeverity,
-  AutoevalsJudges,
   EveEvalActionStatus,
+  EveEvalAgentSession,
   EveEvalAssertions,
   EveEvalContext,
   EveEvalDerivedFacts,
@@ -41,10 +41,12 @@ export type {
   EveEvalSession,
   EveEvalSessionResult,
   EveEvalScheduleDispatchResult,
+  EveEvalSkillLoad,
   EveEvalSubagentCall,
   EveEval,
   EveEvalConfig,
   EveEvalConfigInput,
+  EveEvalConfigContext,
   EveEvalDefinition,
   EveEvalInput,
   EveEvalLiveTurn,
@@ -59,8 +61,12 @@ export type {
   EveEvalStreamEvent,
   EveEvalWaitForEventOptions,
   EveEvalVerdict,
+  JudgeBatch,
+  JudgeInput,
+  JudgeQuestion,
   JudgeContext,
   JudgeOpts,
+  ScoreInput,
 } from "#evals/types.js";
 
 export type {
@@ -74,3 +80,4 @@ export type {
   MockModelToolResult,
   MockModelUsage,
 } from "#evals/mock-model.js";
+export type { ToolStub, ToolStubOutcome } from "#tool-stubs/types.js";

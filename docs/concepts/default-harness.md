@@ -11,7 +11,7 @@ The harness keeps a long session from overflowing the model's context window. Be
 
 ```ts title="agent/agent.ts"
 export default defineAgent({
-  model: "anthropic/claude-opus-4.8",
+  model: "anthropic/claude-opus-5.5",
   compaction: {
     thresholdPercent: 0.75,
   },
@@ -24,8 +24,6 @@ input token count plus an estimate of new messages. A smaller character estimate
 alone cannot satisfy compaction triggered by a higher provider count. If trimming
 cannot free enough space, eve summarizes the older history.
 
-Compaction also preserves the framework's own tool state automatically. It resets read-before-write tracking (so a write afterward re-reads the file whose read evidence was summarized away) and re-injects the active todo list, so the model keeps its task list across the summary. There is no per-tool hook to configure.
-
 First-class [memory](../memory) participates in a separate lifecycle. eve asks
 providers to capture before compaction, excludes attributed recalled records
 from the summarizer, keeps their canonical latest values, and recalls again
@@ -37,6 +35,10 @@ Clients and channels can also request compaction between turns. Call
 if a turn is running, eve queues it until that turn settles. A successful manual
 compaction emits the same `compaction.requested` and `compaction.completed`
 events as automatic compaction, followed by `session.waiting`.
+
+After either kind of compaction, eve moves the idle session to a fresh workflow
+run on the same deployment, so a long session's run history does not keep
+growing. See [Execution model and durability](./execution-model-and-durability#compaction-handoff).
 
 To discard model-message history instead of summarizing it, call the corresponding
 `clear()` method on any of those handles. Clearing preserves the session identity,

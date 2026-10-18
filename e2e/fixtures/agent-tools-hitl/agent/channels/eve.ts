@@ -5,7 +5,12 @@ export default eveChannel({
   auth: (request) => {
     const principalId = request.headers.get("x-eve-fixture-user") ?? "e2e-approval-responder";
     return {
-      attributes: { fixture: "authorized-response" },
+      attributes: {
+        fixture: "authorized-response",
+        // Lets a hitl eval change what the current caller's policies and tools see.
+        flag: request.headers.get("x-eve-fixture-flag") ?? "none",
+        model: request.headers.get("x-eve-fixture-model") ?? "default",
+      },
       authenticator: "e2e-fixture",
       issuer: "e2e",
       principalId,

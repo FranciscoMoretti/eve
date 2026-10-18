@@ -1,19 +1,20 @@
 import type { TurnCaller } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
 import { emitTerminalSessionCompletionStep } from "#execution/terminal-session-completion-step.js";
+import {
+  endSessionSandboxStep,
+  reportSessionSandboxCleanupFailureStep,
+} from "#execution/session/end-sandbox-step.js";
 import { emitTerminalSessionFailureStep } from "#execution/terminal-session-failure-step.js";
 import { terminateChildSessionsStep } from "#execution/terminate-child-sessions-step.js";
+import { liveTaskRuns, readTaskTable } from "#execution/tasks/table.js";
 import type { TurnOutcome } from "#execution/session/turn-step-types.js";
 import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import type { WorkflowEntryResult } from "#execution/session/entry-input.js";
-import type { RunMode } from "#shared/run-mode.js";
 import type { TokenUsage } from "#shared/token-usage.js";
-import { fireSessionCallbackStep } from "#subagents/callback-step.js";
-import { notifyDelegatedParentStep, notifyTurnCallerStep } from "#subagents/parent-notification.js";
-import {
-  createDelegatedSubagentErrorResult,
-  createDelegatedSubagentSuccessResult,
-} from "#subagents/parent-result.js";
+import { storedProjection } from "#harness/session-machine/view.js";
+import { getSessionUsage, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
+import { notifyTurnCallerStep } from "#subagents/parent-notification.js";
 
 /** The three ways a session ends. `done` already emitted its terminal event inside the turn. */
 export type SessionTerminalOutcome =
@@ -21,33 +22,54 @@ export type SessionTerminalOutcome =
   | { readonly kind: "expired" }
   | { readonly kind: "failed"; readonly error: unknown; readonly turnId?: string };
 
-export interface SessionFinalizationContext {
+interface SessionFinalizationContext {
   readonly caller: TurnCaller | undefined;
   readonly cursor: {
     readonly serializedContext: Record<string, unknown>;
     readonly sessionState: DurableSessionState | undefined;
   };
-  readonly mode: RunMode;
   readonly sessionWritable: WritableStream<Uint8Array>;
 }
 
 /**
  * Terminates descendants, emits the terminal protocol event when the turn has
- * not already done so, then settles whoever is waiting on this session: the
- * task callback and delegated parent in task mode, or the parked caller.
+ * not already done so, then settles the parked caller waiting on this session.
  */
 export async function finalizeSession(
   outcome: SessionTerminalOutcome,
   context: SessionFinalizationContext,
 ): Promise<WorkflowEntryResult> {
   const { serializedContext, sessionState } = context.cursor;
-  if (sessionState !== undefined) {
-    await terminateChildSessionsStep({ serializedContext, sessionState });
+  // Most sessions end with no task run, so the step that would find nothing to stop is skipped.
+  if (
+    sessionState !== undefined &&
+    liveTaskRuns(readTaskTable(sessionState.snapshot?.session?.state)).length > 0
+  ) {
+    await terminateChildSessionsStep({ sessionState });
   }
+  if (sessionState !== undefined) {
+    try {
+      await endSessionSandboxStep({
+        reason: outcome.kind === "done" ? "completed" : outcome.kind,
+        serializedContext,
+        sessionState,
+      });
+    } catch (error) {
+      await reportSessionSandboxCleanupFailureStep({
+        error: normalizeSerializableError(error),
+        outcome: outcome.kind,
+        sessionId: sessionState.sessionId,
+      }).catch(() => undefined);
+    }
+  }
+  const session = sessionState?.snapshot.session;
+  const usage = session === undefined ? undefined : getSessionUsage(session);
   if (outcome.kind === "expired") {
     await emitTerminalSessionCompletionStep({
       sessionWritable: context.sessionWritable,
       serializedContext,
+      turn: lastPublishedTurn(session?.state),
+      usage,
     });
   } else if (outcome.kind === "failed") {
     await emitTerminalSessionFailureStep({
@@ -55,26 +77,12 @@ export async function finalizeSession(
       sessionWritable: context.sessionWritable,
       serializedContext,
       turnId: outcome.turnId,
+      usage,
     });
   }
 
-  const settled = settledResult(outcome);
-  if (context.mode === "task") {
-    await fireSessionCallbackStep({
-      error: settled.isError ? settled.output : undefined,
-      output: settled.isError ? undefined : settled.output,
-      serializedContext,
-      status: settled.isError ? "failed" : "completed",
-      usage: settled.sessionUsage,
-    });
-    await notifyDelegatedParentStep({
-      result: settled.isError
-        ? createDelegatedSubagentErrorResult(serializedContext, settled.output)
-        : createDelegatedSubagentSuccessResult(serializedContext, settled.output),
-      serializedContext,
-      usage: settled.sessionUsage,
-    });
-  } else if (context.caller !== undefined) {
+  const settled = settledResult(outcome, context);
+  if (context.caller !== undefined) {
     const notification: { isError?: boolean; output: unknown; usage?: TokenUsage } = {
       output: settled.output,
       usage: settled.turnUsage,
@@ -94,15 +102,31 @@ export async function finalizeSession(
         usage: outcome.action.usage,
         usageDelta: outcome.action.usageDelta,
       }
-    : { isError: settled.isError, output: settled.output };
+    : {
+        isError: settled.isError,
+        output: settled.output,
+        usage: settled.sessionUsage,
+        usageDelta: settled.turnUsage,
+      };
 }
 
-function settledResult(outcome: SessionTerminalOutcome): {
+function settledResult(
+  outcome: SessionTerminalOutcome,
+  context: SessionFinalizationContext,
+): {
   readonly isError: boolean;
   readonly output: unknown;
   readonly sessionUsage?: TokenUsage;
   readonly turnUsage?: TokenUsage;
 } {
+  const session = context.cursor.sessionState?.snapshot.session;
+  const usage =
+    session === undefined || context.caller === undefined
+      ? {}
+      : {
+          sessionUsage: getSessionUsage(session),
+          turnUsage: takeSessionUsageDelta(session).delta,
+        };
   switch (outcome.kind) {
     case "done":
       return {
@@ -112,8 +136,23 @@ function settledResult(outcome: SessionTerminalOutcome): {
         turnUsage: outcome.action.usageDelta,
       };
     case "expired":
-      return { isError: false, output: "" };
+      return context.caller === undefined
+        ? { isError: false, output: "" }
+        : {
+            isError: true,
+            output: "The session ended before the delegated task completed.",
+            ...usage,
+          };
     case "failed":
-      return { isError: true, output: normalizeSerializableError(outcome.error) };
+      return { isError: true, output: normalizeSerializableError(outcome.error), ...usage };
   }
+}
+
+function lastPublishedTurn(state: import("#harness/types.js").SessionStateMap | undefined) {
+  const turns = Object.values(storedProjection(state).turns);
+  const turn = turns.reduce<(typeof turns)[number] | undefined>(
+    (last, next) => (last === undefined || next.sequence > last.sequence ? next : last),
+    undefined,
+  );
+  return turn === undefined ? undefined : { id: turn.turnId, sequence: turn.sequence };
 }

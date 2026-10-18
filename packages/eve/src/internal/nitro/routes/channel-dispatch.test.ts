@@ -1,3 +1,4 @@
+import { AgentSpanIdGenerator } from "#compiled/@vercel/agent-runs/index.js";
 import type { H3Event } from "nitro";
 import {
   context as apiContext,
@@ -24,14 +25,14 @@ import {
   setChannelInstrumentationKind,
 } from "#channel/compiled-channel.js";
 import type { RouteHandlerArgs } from "#channel/routes.js";
-import { registerInstrumentationConfig } from "#instrumentation/config.js";
-import { getInstrumentationRuntime } from "#instrumentation/runtime.js";
+import { createInstrumentationHooks } from "#instrumentation/lifecycle.js";
+import { registerInstrumentationRuntime } from "#instrumentation/runtime.js";
 import type { Runtime } from "#channel/types.js";
 import { readVercelProjectLink } from "#internal/vercel/project-link.js";
 import { DEVELOPMENT_WORKFLOW_SECRET_ENV } from "#internal/workflow/development-world-protocol.js";
 import { resolveVercelOidcCurrentProject } from "#channel/auth/vercel-oidc-project.js";
 import type { ResolvedChannelDefinition } from "#runtime/types.js";
-import { isAgentTraceContext } from "#tracing/agent-trace-context.js";
+import { isAgentTraceContext } from "#tracing/eve/agent-trace-context.js";
 import {
   dispatchChannelRequest,
   dispatchChannelWebSocketRequest,
@@ -89,6 +90,22 @@ function createDeferred<T>() {
     reject,
     resolve,
   };
+}
+
+function registerChannelRequestTracing(enabled: boolean): void {
+  registerInstrumentationRuntime({
+    forceFlush: async () => undefined,
+    idGenerator: new AgentSpanIdGenerator(),
+    hooks: createInstrumentationHooks([]),
+    otelSettings: {
+      functionId: undefined,
+      recordInputs: false,
+      recordOutputs: false,
+      traceChannelRequests: enabled,
+    },
+    runInContext: (_operation, execute) => execute(),
+    shutdown: async () => undefined,
+  });
 }
 
 function createEvent(input?: {
@@ -826,11 +843,11 @@ describe("dispatchChannelRequest tracing", () => {
     apiPropagation.setGlobalPropagator(w3cPropagator as never);
     apiTrace.setGlobalTracerProvider(provider);
     // Request spans are opt-in; enable them for this suite.
-    registerInstrumentationConfig({ traceChannelRequests: true }, { agentName: "test" });
+    registerChannelRequestTracing(true);
   });
 
   afterEach(() => {
-    registerInstrumentationConfig({}, { agentName: "test" });
+    registerChannelRequestTracing(false);
     apiTrace.disable();
     apiContext.disable();
     apiPropagation.disable();
@@ -841,34 +858,23 @@ describe("dispatchChannelRequest tracing", () => {
     return exporter.getFinishedSpans();
   }
 
-  it("uses the semantic request name for the experimental provider layout", async () => {
-    const instrumentationRuntime = getInstrumentationRuntime();
-    if (instrumentationRuntime === undefined)
-      throw new Error("Expected an instrumentation runtime.");
-    Object.defineProperty(instrumentationRuntime, "instrumentationProviders", {
-      configurable: true,
-      value: true,
+  it("uses the semantic request name", async () => {
+    mockedResolveNitroChannelRuntimeBundle.mockResolvedValue({
+      agentName: "test-agent",
+      channels: [slackChannel(async () => new Response("ok"))],
+      runtime,
     });
-    try {
-      mockedResolveNitroChannelRuntimeBundle.mockResolvedValue({
-        agentName: "test-agent",
-        channels: [slackChannel(async () => new Response("ok"))],
-        runtime,
-      });
 
-      await dispatchChannelRequest(createEvent({ waitUntil: vi.fn() }), "POST /slack", {} as never);
+    await dispatchChannelRequest(createEvent({ waitUntil: vi.fn() }), "POST /slack", {} as never);
 
-      const [span] = await finishedSpans();
-      expect(span!.name).toBe("agent.channel.request");
-      expect(span!.attributes["http.route"]).toBe("/slack");
-      expect(span!.attributes["operation.name"]).toBe("agent.channel.request");
-      expect(span!.attributes["resource.name"]).toBe("agent.channel.request");
-    } finally {
-      Reflect.deleteProperty(instrumentationRuntime, "instrumentationProviders");
-    }
+    const [span] = await finishedSpans();
+    expect(span!.name).toBe("agent.channel.request");
+    expect(span!.attributes["http.route"]).toBe("/slack");
+    expect(span!.attributes["operation.name"]).toBe("agent.channel.request");
+    expect(span!.attributes["resource.name"]).toBe("agent.channel.request");
   });
 
-  it("emits one SERVER span named for the route with method, channel, and status attributes", async () => {
+  it("emits one semantic SERVER span with route, method, channel, and status attributes", async () => {
     let agentContextDuringHandler = false;
     let spansDuringHandler = -1;
     mockedResolveNitroChannelRuntimeBundle.mockResolvedValue({
@@ -900,7 +906,7 @@ describe("dispatchChannelRequest tracing", () => {
     const spans = await finishedSpans();
     expect(spans).toHaveLength(1);
     const [span] = spans;
-    expect(span!.name).toBe("POST /slack");
+    expect(span!.name).toBe("agent.channel.request");
     expect(span!.kind).toBe(1 /* SpanKind.SERVER */);
     expect(span!.attributes).toMatchObject({
       "eve.channel.kind": "channel:slack",
@@ -958,7 +964,7 @@ describe("dispatchChannelRequest tracing", () => {
     await dispatchChannelRequest(createEvent({ waitUntil: vi.fn() }), "POST /slack", {} as never);
 
     const spans = await finishedSpans();
-    const server = spans.find((span) => span.name === "POST /slack");
+    const server = spans.find((span) => span.name === "agent.channel.request");
     const nested = spans.find((span) => span.name === "hook.resume");
     expect(server).toBeDefined();
     expect(nested).toBeDefined();
@@ -1062,7 +1068,7 @@ describe("dispatchChannelRequest tracing", () => {
     ).rejects.toThrow("bundle boom");
 
     const [span] = await finishedSpans();
-    expect(span!.name).toBe("POST /slack");
+    expect(span!.name).toBe("agent.channel.request");
     expect(span!.status.code).toBe(2 /* SpanStatusCode.ERROR */);
     expect(span!.events.filter((event) => event.name === "exception")).toHaveLength(0);
     expect(span!.status.message).toBeUndefined();
@@ -1086,7 +1092,7 @@ describe("dispatchChannelRequest tracing", () => {
     expect(response.status).toBe(404);
 
     const [span] = await finishedSpans();
-    expect(span!.name).toBe("POST /missing");
+    expect(span!.name).toBe("agent.channel.request");
     expect(span!.attributes["http.response.status_code"]).toBe(404);
     expect(span!.attributes["http.route"]).toBe("/missing");
     expect(span!.attributes["eve.channel.name"]).toBeUndefined();
@@ -1125,7 +1131,7 @@ describe("dispatchChannelRequest tracing", () => {
     await dispatchChannelRequest(event, "POST /eve/v1/session/:sessionId", {} as never);
 
     const [span] = await finishedSpans();
-    expect(span!.name).toBe("POST /eve/v1/session/:sessionId");
+    expect(span!.name).toBe("agent.channel.request");
     const serialized = JSON.stringify({
       attributes: span!.attributes,
       events: span!.events,
@@ -1151,11 +1157,11 @@ describe("dispatchChannelRequest without an OTel provider", () => {
     apiTrace.disable();
     apiContext.disable();
     apiPropagation.disable();
-    registerInstrumentationConfig({ traceChannelRequests: true }, { agentName: "test" });
+    registerChannelRequestTracing(true);
   });
 
   afterEach(() => {
-    registerInstrumentationConfig({}, { agentName: "test" });
+    registerChannelRequestTracing(false);
     apiTrace.disable();
   });
 
@@ -1192,11 +1198,11 @@ describe("dispatchChannelRequest with request tracing not enabled", () => {
     apiContext.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
     apiPropagation.setGlobalPropagator(w3cPropagator as never);
     apiTrace.setGlobalTracerProvider(provider);
-    registerInstrumentationConfig({}, { agentName: "test" });
+    registerChannelRequestTracing(false);
   });
 
   afterEach(() => {
-    registerInstrumentationConfig({}, { agentName: "test" });
+    registerChannelRequestTracing(false);
     apiTrace.disable();
     apiContext.disable();
     apiPropagation.disable();
@@ -1247,12 +1253,12 @@ describe("dispatchChannelRequest with request tracing not enabled", () => {
   });
 
   it("emits no request span by default when the flag is unset", async () => {
-    registerInstrumentationConfig({}, { agentName: "test" });
+    registerChannelRequestTracing(false);
     await expectNoSpan();
   });
 
   it("emits no request span when the flag is explicitly false", async () => {
-    registerInstrumentationConfig({ traceChannelRequests: false }, { agentName: "test" });
+    registerChannelRequestTracing(false);
     await expectNoSpan();
   });
 });

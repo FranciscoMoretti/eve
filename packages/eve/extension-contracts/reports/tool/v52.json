@@ -2,10 +2,11 @@
   "kind": "eve-extension-capability-contract",
   "capability": "tool",
   "epoch": 52,
-  "sha256": "0d8cfe47d11f02d33859262f6dd88732216ae3e5435b8d662d212611743c5578",
+  "sha256": "016f8b915b37331f6f98321ab88f5cdf905ec6226ba596a1e7bf4b2b25a131ff",
   "exports": [
     "AgentRouterInput",
     "AgentRouterTool",
+    "WorkflowStepToolContext",
     "WorkflowTool",
     "WorkflowToolInput",
     "WorkflowToolOptions",

@@ -73,7 +73,7 @@ export interface ThemeGlyphs {
   cornerOpen: string;
   /** `⌝` — marks a provider endpoint authored in the agent's own code. */
   external: string;
-  /** `⏺` — the in-progress todo item (pulses while the turn runs). */
+  /** `⏺` — an active in-progress state, such as a cancelling turn. */
   dotActive: string;
   /** `✓` — a completed tool or success state. */
   success: string;
@@ -103,7 +103,7 @@ export interface ThemeGlyphs {
   elbow: string;
   /** `▔` — strong full-width rule opening the bottom question panel. */
   hrule: string;
-  /** `─` — light rule segment framing the end-of-turn stats line. */
+  /** `─` — light rule segment framing drawers and panel boundaries. */
   dash: string;
   /** `▏` — the synthetic input caret. */
   caret: string;
@@ -115,16 +115,8 @@ export interface ThemeGlyphs {
   arrowUp: string;
   /** `↓` — output (response) tokens in the token-flow segment. */
   arrowDown: string;
-  /** `↯` — Fast mode (Gateway priority tier) marker beside a model id. */
+  /** `↯` — intrinsic speed or Fast mode (Gateway priority tier) marker. */
   fast: string;
-  /** `●` — a track notch below the current position (already covered). */
-  trackFilled: string;
-  /** `◉` — the track notch at the current position. */
-  trackCurrent: string;
-  /** `○` — a track notch above the current position. */
-  trackEmpty: string;
-  /** `─` — the connector segment between track notches. */
-  trackLine: string;
   /** `↵` — the Enter affordance inside a selection badge. */
   enter: string;
   /** `▪` — the marker beside an in-flight validation badge. */
@@ -160,11 +152,8 @@ const UNICODE_GLYPHS: ThemeGlyphs = {
   ellipsis: "…",
   arrowUp: "↑",
   arrowDown: "↓",
+  // Emoji-width glyphs can wrap full-width build status lines in tmux.
   fast: "↯",
-  trackFilled: "●",
-  trackCurrent: "◉",
-  trackEmpty: "○",
-  trackLine: "─",
   enter: "↵",
   validating: "▪",
 };
@@ -199,10 +188,6 @@ const ASCII_GLYPHS: ThemeGlyphs = {
   arrowUp: "^",
   arrowDown: "v",
   fast: ">>",
-  trackFilled: "*",
-  trackCurrent: "O",
-  trackEmpty: ".",
-  trackLine: "-",
   enter: "<-'",
   validating: "o",
 };
@@ -218,7 +203,7 @@ export interface Theme {
   readonly spinner: readonly string[];
 }
 
-export interface CreateThemeOptions {
+interface CreateThemeOptions {
   /** Whether to emit ANSI color. Defaults to `true`. */
   color?: boolean;
   /** Whether the terminal renders Unicode glyphs. Defaults to `true`. */

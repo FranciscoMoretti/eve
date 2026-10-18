@@ -111,6 +111,24 @@ When the user asks about weather, call the weather tool before answering.`),
     );
   });
 
+  it("treats metadata outside eve's flat string map as a no-op", () => {
+    expect(
+      lowerSkillMarkdown(`---
+description: Use the Lark CLI before answering document questions.
+metadata:
+  requires:
+    bins: [lark-cli]
+  enabled: true
+---
+Use lark-cli to answer the question.`),
+    ).toEqual(
+      defineSkill({
+        description: "Use the Lark CLI before answering document questions.",
+        markdown: "Use lark-cli to answer the question.",
+      }),
+    );
+  });
+
   it("derives flat skill metadata from plain markdown when no frontmatter is present", () => {
     expect(
       lowerSkillMarkdown("Use the weather tool before answering forecast questions.", {
@@ -214,14 +232,14 @@ plain markdown`),
   });
 
   it("rejects JavaScript frontmatter in skill markdown instead of evaluating it", () => {
-    // gray-matter's built-in `javascript` engine would `eval()` the frontmatter
-    // body, so a `---javascript` fence must throw rather than execute code.
     const malicious = `---javascript
 globalThis.__eveMarkdownRce = true
 ---
 When the user asks about weather, call the weather tool before answering.`;
 
-    expect(() => lowerSkillMarkdown(malicious)).toThrow("JavaScript frontmatter is not supported.");
+    expect(() => lowerSkillMarkdown(malicious)).toThrow(
+      'Frontmatter language "javascript" is not supported.',
+    );
     expect(Reflect.get(globalThis, "__eveMarkdownRce")).toBeUndefined();
   });
 
@@ -232,7 +250,7 @@ globalThis.__eveScheduleRce = true
 body`;
 
     expect(() => lowerScheduleMarkdown(malicious)).toThrow(
-      "JavaScript frontmatter is not supported.",
+      'Frontmatter language "js" is not supported.',
     );
     expect(Reflect.get(globalThis, "__eveScheduleRce")).toBeUndefined();
   });

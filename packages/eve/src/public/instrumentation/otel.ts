@@ -5,20 +5,19 @@
  * can only hold one of, and an integration is a destination, of which there may
  * be as many as there are files.
  *
- * Reachable only with `experimental.instrumentationProviders` on. With the flag
- * off nothing discovers that directory, so these compile but never run.
+ * Each destination is declared in its own path-named provider file.
  */
 
 import {
   createLocalTracesProcessor,
   resolveLocalTracesExportPolicy,
-} from "#tracing/local-traces.js";
+} from "#tracing/local/traces.js";
 import {
   agentRunsIntegration,
   managedOtelIntegration,
   type ManagedTraceOptions,
   type OtelIntegration,
-} from "#tracing/otel-declaration.js";
+} from "#tracing/eve/otel-declaration.js";
 
 export {
   isOtelDeclaration,
@@ -38,7 +37,7 @@ export {
   type TraceCaptureContext,
   type TraceCapturePolicy,
   type TracePolicyDecision,
-} from "#tracing/otel-declaration.js";
+} from "#tracing/eve/otel-declaration.js";
 
 export type { SpanExporter, SpanProcessor } from "#compiled/@vercel/otel/index.js";
 

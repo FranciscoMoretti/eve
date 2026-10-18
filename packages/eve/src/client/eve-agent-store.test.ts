@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { detachEveAgentStore, EveAgentStore } from "#client/eve-agent-store.js";
-import { defaultMessageReducer } from "#client/message-reducer.js";
-import { stampTestEvents } from "#internal/testing/events.js";
 import {
+  attachEveAgentStore,
+  detachEveAgentStore,
+  EveAgentStore,
+} from "#client/eve-agent-store.js";
+import { Client } from "#client/client.js";
+import { defaultMessageReducer } from "#client/message-reducer.js";
+import { conversationReducer } from "#client/conversation-reducer.js";
+import type { ConversationState } from "#client/conversation-state.js";
+import { TEST_USAGE, stampTestEvent, stampTestEvents } from "#internal/testing/events.js";
+import {
+  createApprovalSettledEvent,
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
   createMessageAppendedEvent,
@@ -11,8 +19,16 @@ import {
   createMessageReceivedEvent,
   createSessionFailedEvent,
   createSessionWaitingEvent,
+  createAgentStartedEvent,
+  createInputRequestedEvent,
+  createInputResolvedEvent,
+  createStepStartedEvent,
+  createTaskSettledEvent,
+  createTaskStartedEvent,
+  createTurnCompletedEvent,
   createTurnCancelledEvent,
   createTurnStartedEvent,
+  createTurnWaitingEvent,
   EVE_MESSAGE_STREAM_VERSION,
   EVE_SESSION_ID_HEADER,
   EVE_STREAM_VERSION_HEADER,
@@ -34,7 +50,7 @@ function turnEvents(): MessageStreamEvent[] {
       stepIndex: 0,
       turnId: "turn_1",
     }),
-    createSessionWaitingEvent(),
+    createSessionWaitingEvent(TEST_USAGE),
   ] as UnstampedMessageStreamEvent[]);
 }
 
@@ -61,7 +77,7 @@ function streamingTurnEvents(): MessageStreamEvent[] {
       stepIndex: 0,
       turnId: "turn_1",
     }),
-    createSessionWaitingEvent(),
+    createSessionWaitingEvent(TEST_USAGE),
   ] as UnstampedMessageStreamEvent[]);
 }
 
@@ -186,6 +202,34 @@ function preV20MessageCompletedEvent(): MessageStreamEvent {
 }
 
 const cleanupStores: Array<() => void> = [];
+function colorApprovalRequested(requestId: string): MessageStreamEvent {
+  return stampTestEvents([
+    {
+      type: "input.requested",
+      data: {
+        requests: [
+          {
+            action: {
+              callId: `${requestId}-call`,
+              input: {},
+              kind: "tool-call",
+              toolName: "random_color",
+            },
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [{ id: "approve", label: "Approve" }],
+            prompt: "Approve color?",
+            requestId,
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      },
+    } as UnstampedMessageStreamEvent,
+  ])[0]!;
+}
+
 function createStore<TData>(
   init: ConstructorParameters<typeof EveAgentStore<TData>>[0],
 ): EveAgentStore<TData> {
@@ -198,6 +242,427 @@ afterEach(() => {
   for (const cleanup of cleanupStores.splice(0)) cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("EveAgentStore lifecycle", () => {
+  it("starts in ready status with empty data", () => {
+    const store = createStore({ reducer: defaultMessageReducer() });
+
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data.messages).toEqual([]);
+    expect(store.snapshot.error).toBeUndefined();
+    expect(store.snapshot.events).toEqual([]);
+  });
+
+  it("sends a message and projects streamed events", async () => {
+    const events = turnEvents();
+    const start = Promise.withResolvers<Response>();
+    vi.spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(start.promise)
+      .mockResolvedValueOnce(streamResponse(events));
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const seenEvents: MessageStreamEvent[] = [];
+    const seenStreamIndexes: Array<number | undefined> = [];
+    store.setCallbacks({
+      onEvent: (event) => seenEvents.push(event),
+      onSessionChange: (session) => seenStreamIndexes.push(session?.streamIndex),
+    });
+
+    const sending = store.send({ message: "Hello" });
+    await Promise.resolve();
+
+    expect(store.snapshot.status).toBe("submitted");
+    expect(store.snapshot.data).toMatchObject({
+      messages: [
+        {
+          id: expect.stringMatching(/^optimistic:/),
+          metadata: { optimistic: true, status: "submitted" },
+          parts: [{ text: "Hello", type: "text" }],
+          role: "user",
+        },
+      ],
+    });
+
+    start.resolve(startedResponse());
+    await sending;
+
+    expect(seenEvents).toEqual(events);
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data).toMatchObject({
+      messages: [
+        {
+          id: expect.stringMatching(/^evt_.+:user$/),
+          metadata: { status: "complete", turnId: "turn_1" },
+          parts: [{ state: "done", text: "Hello", type: "text" }],
+          role: "user",
+        },
+        {
+          id: "turn_1:assistant",
+          metadata: { status: "complete", turnId: "turn_1" },
+          parts: [
+            { type: "step-start" },
+            {
+              id: expect.stringMatching(/^evt_/),
+              state: "done",
+              stepIndex: 0,
+              text: "Hi there.",
+              type: "text",
+            },
+          ],
+          role: "assistant",
+        },
+      ],
+    });
+    expect(seenStreamIndexes).toEqual([0, 1, 2, 3, 3]);
+  });
+
+  it("reconciles optimistic conversation messages while a custom reducer counts server events", async () => {
+    const live = controlledStreamResponse();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(startedResponse("delivery_1"))
+      .mockResolvedValueOnce(live.response);
+    const store = createStore({
+      reducer: {
+        initial: () => 0,
+        reduce: (count: number, event: { type: string }) =>
+          event.type === "message.received" ? count + 1 : count,
+      },
+    });
+    const sending = store.send({ message: "Hello" });
+    await vi.waitFor(() =>
+      expect(store.snapshot.conversation.messages[0]?.metadata?.optimistic).toBe(true),
+    );
+    expect(store.snapshot.data).toBe(0);
+    const events = turnEvents().map((event) => ({
+      ...event,
+      meta: { ...event.meta, deliveryIds: ["delivery_1"] },
+    }));
+    for (const event of events) live.emit(event);
+    await sending;
+    expect(store.snapshot.data).toBe(1);
+    expect(
+      store.snapshot.conversation.messages.filter((message) => message.role === "user"),
+    ).toHaveLength(1);
+    expect(store.snapshot.conversation.messages[0]?.metadata?.optimistic).toBeUndefined();
+  });
+
+  it("surfaces transport errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("Network failed"));
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const onError = vi.fn();
+    store.setCallbacks({ onError });
+
+    await store.send({ message: "Hello" });
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(new Error("Network failed"));
+    expect(store.snapshot.status).toBe("error");
+    expect(store.snapshot.error?.message).toBe("Network failed");
+  });
+
+  it("resets state and creates a new session", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("fail"));
+    const store = createStore({ reducer: defaultMessageReducer() });
+
+    await store.send({ message: "Hello" });
+    expect(store.snapshot.status).toBe("error");
+
+    store.reset();
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data.messages).toEqual([]);
+    expect(store.snapshot.conversation.messages).toEqual([]);
+    expect(store.snapshot.error).toBeUndefined();
+    expect(store.snapshot.events).toEqual([]);
+  });
+
+  it("unsubscribe removes the listener", () => {
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const listener = vi.fn();
+    const unsubscribe = store.subscribe(listener);
+
+    store.reset();
+    expect(listener).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    store.reset();
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it("projects input responses before the resumed stream returns", async () => {
+    const start = Promise.withResolvers<Response>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) =>
+      init?.method === "POST"
+        ? await start.promise
+        : streamResponse(stampTestEvents([createSessionWaitingEvent(TEST_USAGE)])),
+    );
+    const store = createStore<readonly string[]>({
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: {
+        initial: () => [],
+        reduce: (data, event) => [...data, event.type],
+      },
+    });
+
+    const sending = store.send({
+      inputResponses: [{ optionId: "cancel", requestId: "approval_1" }],
+    });
+    await Promise.resolve();
+
+    expect(store.snapshot.status).toBe("submitted");
+    expect(store.snapshot.data).toEqual(["client.input.responded"]);
+    expect(store.snapshot.conversation.inputs).toEqual({});
+
+    start.resolve(startedResponse());
+    await sending;
+
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data).toEqual(["client.input.responded", "session.waiting"]);
+  });
+});
+
+describe("EveAgentStore held turns", () => {
+  it("resolves a send where its open turn waits on a question and streams until the turn ends", async () => {
+    const live = controlledStreamResponse();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(live.response)
+      .mockResolvedValueOnce(startedResponse("delivery_1"));
+    const store = createStore({
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: conversationReducer,
+    });
+    const sending = store.send({ message: "Ask the researcher about Alice's region." });
+    const parked = stampTestEvents([
+      createMessageReceivedEvent({
+        message: "Ask the researcher about Alice's region.",
+        sequence: 0,
+        turnId: "turn_1",
+      }),
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createTaskStartedEvent({
+        callId: "call_1",
+        kind: "agent",
+        name: "researcher",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createInputRequestedEvent({
+        requests: [
+          {
+            action: { callId: "lookup", input: {}, kind: "tool-call", toolName: "lookup" },
+            kind: "tool-approval",
+            prompt: "Approve the researcher's lookup?",
+            requestId: "req_1",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createTurnWaitingEvent({ on: "tasks", usage: TEST_USAGE, sequence: 0, turnId: "turn_1" }),
+    ]).map((event) => ({ ...event, meta: { ...event.meta, deliveryIds: ["delivery_1"] } }));
+    for (const event of parked) live.emit(event);
+    await sending;
+    expect(store.snapshot.status).toBe("streaming");
+    expect(store.snapshot.data.turns.turn_1).toMatchObject({ status: "active", waiting: true });
+    expect(store.snapshot.data.inputs.req_1).toMatchObject({ status: "open", taskId: "task_1" });
+
+    const resumed = stampTestEvents([
+      {
+        type: "input.resolved",
+        data: {
+          resolutions: [{ kind: "tool-approval", outcome: "approved", requestId: "req_1" }],
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+      },
+      createTaskSettledEvent({
+        callId: "call_1",
+        output: "Alice works in the west region.",
+        status: "completed",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createTurnCompletedEvent({ sequence: 1, turnId: "turn_1" }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ]).map((event) => ({ ...event, meta: { ...event.meta, id: `resumed-${event.meta.id}` } }));
+    live.emit(resumed[0]!);
+    await vi.waitFor(() => expect(store.snapshot.data.inputs.req_1?.status).toBe("settled"));
+    expect(store.snapshot.status).toBe("streaming");
+    for (const event of resumed.slice(1)) live.emit(event);
+    await vi.waitFor(() => expect(store.snapshot.status).toBe("ready"));
+  });
+});
+
+describe("EveAgentStore agent-session following", () => {
+  /** The root's history of one researcher call, already settled. */
+  const researcherCall = (settled = true, ended = false) =>
+    stampTestEvents([
+      createTaskStartedEvent({
+        callId: "call_1",
+        kind: "agent",
+        name: "research",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createAgentStartedEvent({
+        callId: "call_1",
+        name: "research",
+        parentSessionId: "session_1",
+        sessionId: "child_1",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      ...(settled
+        ? [
+            createTaskSettledEvent({
+              callId: "call_1",
+              output: "Alice's notes are filed.",
+              status: "completed",
+              taskId: "task_1",
+              turnId: "turn_1",
+            }),
+          ]
+        : []),
+      ...(ended
+        ? [
+            createTurnCompletedEvent({ sequence: 1, turnId: "turn_1" }),
+            createSessionWaitingEvent(TEST_USAGE),
+          ]
+        : []),
+    ]);
+
+  /** The researcher session's reply to that call. */
+  const researcherReply = (...deltas: string[]) =>
+    stampTestEvents([
+      createTurnStartedEvent({ sequence: 0, turnId: "child_turn" }),
+      createMessageReceivedEvent({
+        message: "File Alice's notes.",
+        sequence: 0,
+        turnId: "child_turn",
+      }),
+      ...deltas.map((messageDelta, sequence) =>
+        createMessageAppendedEvent({ messageDelta, sequence, stepIndex: 0, turnId: "child_turn" }),
+      ),
+      createTurnCompletedEvent({ sequence: 1, turnId: "child_turn" }),
+    ]);
+
+  const childText = (conversation: ConversationState) => {
+    const observation = conversation.agents.child_1?.observation;
+    if (observation === undefined || observation.status === "not-followed") return undefined;
+    return observation.conversation?.messages
+      .flatMap((message) => (message.role === "assistant" ? message.parts : []))
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("");
+  };
+
+  const childStore = (parent: readonly MessageStreamEvent[], followSubagents = true) =>
+    createStore({
+      host: "http://localhost",
+      initialSession: { sessionId: "session_1", streamIndex: parent.length },
+      initialEvents: parent,
+      reducer: conversationReducer,
+      followSubagents,
+    });
+
+  it("follows agent sessions from a streamed session without changing a custom view", async () => {
+    const parent = researcherCall(true, true);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).includes("child_1")
+        ? streamResponse(researcherReply("Filed."))
+        : boundedStreamResponse([], parent.length - 1),
+    );
+    const store = createStore({
+      host: "http://localhost",
+      initialSession: { sessionId: "session_1", streamIndex: parent.length },
+      initialEvents: parent,
+      followSubagents: true,
+      reducer: { initial: () => 0, reduce: (count: number) => count + 1 },
+    });
+    const statuses: string[] = [];
+    store.subscribe(() =>
+      statuses.push(store.snapshot.conversation.agents.child_1?.observation.status ?? "missing"),
+    );
+    await store.resume();
+    await vi.waitFor(() =>
+      expect(store.snapshot.conversation.agents.child_1?.observation.status).toBe("idle"),
+    );
+    expect(store.snapshot.data).toBe(parent.length);
+    expect(statuses).toContain("following");
+    expect(childText(store.snapshot.conversation)).toBe("Filed.");
+  });
+
+  it("records agent sessions without subscribing when following is disabled", () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const store = childStore(researcherCall(), false);
+    attachEveAgentStore(store);
+    expect(store.snapshot.data.agents.child_1).toMatchObject({
+      callId: "call_1",
+      taskId: "task_1",
+      observation: { status: "not-followed" },
+    });
+    expect(store.snapshot.data.tasks.task_1?.calls.call_1?.status).toBe("completed");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("resumes a partially observed session after detach without replaying its events", async () => {
+    const parent = researcherCall();
+    const reply = researcherReply("First ", "second");
+    const first = controlledStreamResponse();
+    const childCursors: number[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.includes("child_1")) {
+        const index = Number(url.searchParams.get("startIndex") ?? 0);
+        childCursors.push(index);
+        return index === 0 ? first.response : streamResponse(reply.slice(index));
+      }
+      return boundedStreamResponse([], 0);
+    });
+    const store = childStore(parent);
+    attachEveAgentStore(store);
+    await vi.waitFor(() => expect(childCursors).toEqual([0]));
+    for (const event of reply.slice(0, 3)) first.emit(event);
+    await vi.waitFor(() => expect(childText(store.snapshot.data)).toBe("First "));
+    detachEveAgentStore(store);
+    attachEveAgentStore(store);
+    await vi.waitFor(() =>
+      expect(store.snapshot.data.agents.child_1?.observation.status).toBe("idle"),
+    );
+    expect(childCursors).toEqual([0, 3]);
+    expect(childText(store.snapshot.data)).toBe("First second");
+    expect(store.snapshot.events).toEqual(parent);
+    detachEveAgentStore(store);
+    attachEveAgentStore(store);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(childCursors).toEqual([0, 3]);
+  });
+
+  it("keeps followed session detail through optimistic root reconciliation", async () => {
+    const parent = researcherCall(false);
+    const live = controlledStreamResponse();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).includes("child_1")) return streamResponse(researcherReply("Filed."));
+      if (init?.method === "POST") return startedResponse("delivery_1");
+      return live.response;
+    });
+    const store = childStore(parent);
+    attachEveAgentStore(store);
+    await vi.waitFor(() => expect(childText(store.snapshot.data)).toBe("Filed."));
+    const sending = store.send({ message: "New question" });
+    const confirmation = stampTestEvents([
+      createMessageReceivedEvent({ message: "New question", sequence: 1, turnId: "turn_2" }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ]).map((event, index) => ({
+      ...event,
+      meta: { ...event.meta, id: `confirmation_${index}`, deliveryIds: ["delivery_1"] },
+    }));
+    for (const event of confirmation) live.emit(event);
+    await sending;
+    expect(childText(store.snapshot.data)).toBe("Filed.");
+    expect(store.snapshot.data.agents.child_1?.observation.status).toBe("following");
+    expect(store.snapshot.events).toEqual([...parent, ...confirmation]);
+  });
 });
 
 describe("EveAgentStore prewarming", () => {
@@ -262,7 +727,9 @@ describe("EveAgentStore prewarming", () => {
       .spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(error)
       .mockResolvedValueOnce(startedResponse())
-      .mockResolvedValueOnce(streamResponse(stampTestEvents([createSessionWaitingEvent()])));
+      .mockResolvedValueOnce(
+        streamResponse(stampTestEvents([createSessionWaitingEvent(TEST_USAGE)])),
+      );
     const onError = vi.fn();
     const store = createStore({ reducer: defaultMessageReducer() });
     store.setCallbacks({ onError });
@@ -369,7 +836,9 @@ describe("EveAgentStore prewarming", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockReturnValueOnce(accepted.promise)
-      .mockResolvedValueOnce(streamResponse(stampTestEvents([createSessionWaitingEvent()])));
+      .mockResolvedValueOnce(
+        streamResponse(stampTestEvents([createSessionWaitingEvent(TEST_USAGE)])),
+      );
     const onFinish = vi.fn();
     const onSessionChange = vi.fn();
     const prepareSend = vi.fn();
@@ -443,7 +912,7 @@ describe("EveAgentStore prewarming", () => {
     expect(store.snapshot.session?.streamIndex).toBe(6);
   });
 
-  it("projects a background turn that arrives while another message is being accepted", async () => {
+  it("projects an unsolicited turn that arrives while another message is being accepted", async () => {
     const live = controlledStreamResponse();
     const accepted = Promise.withResolvers<Response>();
     const fetchMock = vi
@@ -457,21 +926,21 @@ describe("EveAgentStore prewarming", () => {
     const sending = store.send({ message: "Next question" });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
-    const background = stampTestEvents([
-      createTurnStartedEvent({ sequence: 0, turnId: "turn_background" }),
+    const unsolicited = stampTestEvents([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_scheduled" }),
       createMessageCompletedEvent({
         finishReason: "stop",
-        message: "Background result",
+        message: "Scheduled result",
         sequence: 1,
         stepIndex: 0,
-        turnId: "turn_background",
+        turnId: "turn_scheduled",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ]).map((event) => ({
       ...event,
-      meta: { ...event.meta, deliveryIds: ["background-delivery"] },
+      meta: { ...event.meta, deliveryIds: ["scheduled-delivery"] },
     }));
-    for (const event of background) live.emit(event);
+    for (const event of unsolicited) live.emit(event);
     await vi.waitFor(() => expect(store.snapshot.events).toHaveLength(3));
     expect(store.snapshot.data.messages.some((message) => message.metadata?.optimistic)).toBe(true);
 
@@ -488,7 +957,7 @@ describe("EveAgentStore prewarming", () => {
     await vi.waitFor(() => expect(store.snapshot.events).toHaveLength(6));
     await sending;
 
-    expect(store.snapshot.events).toEqual([...background, ...messageTurn]);
+    expect(store.snapshot.events).toEqual([...unsolicited, ...messageTurn]);
     expect(store.snapshot.data.messages.some((message) => message.metadata?.optimistic)).toBe(
       false,
     );
@@ -568,6 +1037,139 @@ describe("EveAgentStore prewarming", () => {
   });
 });
 
+describe("EveAgentStore with followIdle disabled", () => {
+  function streamRequests(fetchMock: { mock: { calls: unknown[][] } }) {
+    return fetchMock.mock.calls
+      .map(([request, init]) => ({ url: String(request), init: init as RequestInit | undefined }))
+      .filter(({ init }) => init?.method !== "POST");
+  }
+
+  it("opens the stream for each turn and reopens it from the session cursor", async () => {
+    const first = controlledStreamResponse();
+    const second = controlledStreamResponse();
+    let delivery = 0;
+    let streams = 0;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      if (init?.method === "POST") return startedResponse(`delivery_${(delivery += 1)}`);
+      streams += 1;
+      return streams === 1 ? first.response : second.response;
+    });
+    const store = createStore({ followIdle: false, reducer: defaultMessageReducer() });
+    const emitTurn = (live: typeof first, deliveryId: string, idPrefix: string) => {
+      for (const event of turnEvents()) {
+        live.emit({
+          ...event,
+          meta: { ...event.meta, deliveryIds: [deliveryId], id: `${idPrefix}-${event.meta.id}` },
+        });
+      }
+    };
+
+    await store.prewarm();
+    expect(streamRequests(fetchMock)).toHaveLength(0);
+
+    const firstSend = store.send({ message: "Hello" });
+    await vi.waitFor(() => expect(streamRequests(fetchMock)).toHaveLength(1));
+    emitTurn(first, "delivery_2", "first");
+    await firstSend;
+    expect(store.snapshot.status).toBe("ready");
+    expect(streamRequests(fetchMock)[0]!.init?.signal?.aborted).toBe(true);
+
+    const secondSend = store.send({ message: "Hello again" });
+    await vi.waitFor(() => expect(streamRequests(fetchMock)).toHaveLength(2));
+    expect(streamRequests(fetchMock)[1]!.url).toContain("startIndex=3");
+    emitTurn(second, "delivery_3", "second");
+    await secondSend;
+
+    expect(store.snapshot.events).toHaveLength(6);
+    expect(store.snapshot.session?.streamIndex).toBe(6);
+    expect(streamRequests(fetchMock)[1]!.init?.signal?.aborted).toBe(true);
+  });
+
+  it("keeps the stream open until a task that outlives its turn settles", async () => {
+    const live = controlledStreamResponse();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (_request, init) =>
+        init?.method === "POST" ? startedResponse() : live.response,
+      );
+    const store = createStore({
+      followIdle: false,
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: defaultMessageReducer(),
+    });
+    const withDelivery = (events: MessageStreamEvent[]) =>
+      events.map((event) => ({ ...event, meta: { ...event.meta, deliveryIds: ["delivery_1"] } }));
+
+    const send = store.send({ message: "Research Alice's region" });
+    await vi.waitFor(() => expect(streamRequests(fetchMock)).toHaveLength(1));
+    for (const event of withDelivery(
+      stampTestEvents([
+        createMessageReceivedEvent({
+          message: "Research Alice's region",
+          sequence: 0,
+          turnId: "turn_1",
+        }),
+        createTaskStartedEvent({
+          callId: "call_1",
+          kind: "agent",
+          name: "researcher",
+          taskId: "task_1",
+          turnId: "turn_1",
+        }),
+        createTurnCompletedEvent({ sequence: 1, turnId: "turn_1" }),
+        createSessionWaitingEvent(TEST_USAGE),
+      ]),
+    ))
+      live.emit(event);
+    await send;
+    const stream = streamRequests(fetchMock)[0]!;
+    expect(stream.init?.signal?.aborted).toBe(false);
+
+    for (const event of stampTestEvents([
+      createTaskSettledEvent({
+        callId: "call_1",
+        output: "Alice works in the west region.",
+        status: "completed",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_2" }),
+      createMessageCompletedEvent({
+        finishReason: "stop",
+        message: "Alice works in the west region.",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_2",
+      }),
+      createTurnCompletedEvent({ sequence: 2, turnId: "turn_2" }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ]).map((event) => ({ ...event, meta: { ...event.meta, id: `task-${event.meta.id}` } })))
+      live.emit(event);
+
+    await vi.waitFor(() => expect(stream.init?.signal?.aborted).toBe(true));
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.events).toHaveLength(9);
+  });
+
+  it("closes the stream after resuming a settled session", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => boundedStreamResponse(turnEvents()));
+    const store = createStore({
+      followIdle: false,
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: defaultMessageReducer(),
+    });
+
+    await store.resume();
+
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.events).toHaveLength(3);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(streamRequests(fetchMock)[0]!.init?.signal?.aborted).toBe(true);
+  });
+});
+
 describe("EveAgentStore stream overlap", () => {
   it("reconstructs a split message across an in-memory stream reconnect", async () => {
     const events = streamingTurnEvents();
@@ -587,12 +1189,14 @@ describe("EveAgentStore stream overlap", () => {
 
     expect(streamingText).toContain("Hel");
     expect(streamingText).toContain("Hello");
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "Hello",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "Hello",
+        type: "text",
+      }),
+    );
     expect(
       fetchMock.mock.calls
         .slice(1)
@@ -642,12 +1246,14 @@ describe("EveAgentStore stream overlap", () => {
 
       expect(streamingText).toContain("Hel");
       expect(streamingText).toContain("Hello");
-      expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-        state: "done",
-        stepIndex: 0,
-        text: "Hello",
-        type: "text",
-      });
+      expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+        expect.objectContaining({
+          state: "done",
+          stepIndex: 0,
+          text: "Hello",
+          type: "text",
+        }),
+      );
       expect(
         fetchMock.mock.calls
           .slice(1)
@@ -714,13 +1320,19 @@ describe("EveAgentStore stream overlap", () => {
     expect(assistant).toHaveLength(1);
     expect(assistant[0]?.parts).toEqual([
       { type: "step-start" },
-      { state: "done", stepIndex: 0, text: "Hi there.", type: "text" },
+      {
+        id: expect.stringMatching(/^evt_/),
+        state: "done",
+        stepIndex: 0,
+        text: "Hi there.",
+        type: "text",
+      },
     ]);
   });
 
   it("applies a pre-v20 event whose envelope has no id", async () => {
     const legacy = preV20MessageCompletedEvent();
-    const boundary = stampTestEvents([createSessionWaitingEvent()])[0]!;
+    const boundary = stampTestEvents([createSessionWaitingEvent(TEST_USAGE)])[0]!;
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(startedResponse())
       .mockResolvedValueOnce(streamResponse([legacy, boundary]));
@@ -736,7 +1348,13 @@ describe("EveAgentStore stream overlap", () => {
     const assistant = store.snapshot.data.messages.find((message) => message.role === "assistant");
     expect(assistant?.parts).toEqual([
       { type: "step-start" },
-      { state: "done", stepIndex: 0, text: "Legacy response.", type: "text" },
+      {
+        id: "turn_legacy:assistant:text:1",
+        state: "done",
+        stepIndex: 0,
+        text: "Legacy response.",
+        type: "text",
+      },
     ]);
   });
 
@@ -765,6 +1383,56 @@ describe("EveAgentStore stream overlap", () => {
 });
 
 describe("EveAgentStore session resume", () => {
+  it("resumes a saved session when Symbol.dispose is unavailable", async () => {
+    const originalSymbol = globalThis.Symbol;
+    const missingDisposeSymbol = new Proxy(
+      function (description?: string) {
+        return originalSymbol(description);
+      },
+      {
+        get(_target, property) {
+          if (property === "dispose") return undefined;
+          return Reflect.get(originalSymbol, property);
+        },
+      },
+    ) as typeof Symbol;
+    Object.defineProperty(globalThis, "Symbol", {
+      configurable: true,
+      value: missingDisposeSymbol,
+      writable: true,
+    });
+    vi.resetModules();
+
+    try {
+      const [{ EveAgentStore: FreshEveAgentStore }, { detachEveAgentStore: detachFreshStore }] =
+        await Promise.all([import("#client/index.js"), import("#client/eve-agent-store.js")]);
+      const events = turnEvents();
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(boundedStreamResponse(events))
+        .mockResolvedValueOnce(boundedStreamResponse([], events.length - 1));
+      const store = new FreshEveAgentStore({
+        initialSession: { sessionId: "session_1", streamIndex: 0 },
+        reducer: defaultMessageReducer(),
+      });
+
+      try {
+        await store.resume();
+      } finally {
+        detachFreshStore(store);
+      }
+
+      expect(store.snapshot.events).toEqual(events);
+      expect(store.snapshot.status).toBe("ready");
+    } finally {
+      Object.defineProperty(globalThis, "Symbol", {
+        configurable: true,
+        value: originalSymbol,
+        writable: true,
+      });
+      vi.resetModules();
+    }
+  });
+
   it("resumes an unused prewarmed session and sends its first message on the same stream", async () => {
     const live = controlledStreamResponse();
     live.response.headers.set("x-eve-stream-tail-index", "-1");
@@ -812,7 +1480,7 @@ describe("EveAgentStore session resume", () => {
           stepIndex: 0,
           turnId: "turn_0",
         }),
-        createSessionWaitingEvent(),
+        createSessionWaitingEvent(TEST_USAGE),
       ]).map((event, index) =>
         index < 2 ? event : { ...event, meta: { ...event.meta, deliveryIds: ["delivery_1"] } },
       );
@@ -889,12 +1557,14 @@ describe("EveAgentStore session resume", () => {
       ),
     ).toBe(String(prefix.length));
     expect(streamingText).toContain("Hello");
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "Hello",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "Hello",
+        type: "text",
+      }),
+    );
   });
 
   it("replays a split message from index zero when only its cursor was retained", async () => {
@@ -921,12 +1591,14 @@ describe("EveAgentStore session resume", () => {
       ),
     ).toBeNull();
     expect(streamingText).toContain("Hello");
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "Hello",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "Hello",
+        type: "text",
+      }),
+    );
   });
 
   it("keeps a settled hydrated snapshot resuming until catch-up returns ready", async () => {
@@ -991,7 +1663,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const initialEvents = [received!, started!];
     const live = controlledStreamResponse();
@@ -1027,6 +1699,7 @@ describe("EveAgentStore session resume", () => {
       createSessionFailedEvent({
         code: "SESSION_FAILED",
         message: "Session failed.",
+        usage: TEST_USAGE,
         sessionId: "session_1",
       }),
     ])[0]!;
@@ -1091,7 +1764,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
       createMessageReceivedEvent({ message: "Again", sequence: 0, turnId: "turn_2" }),
       createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
       createMessageCompletedEvent({
@@ -1101,7 +1774,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_2",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const settled = events.slice(0, 3);
     const live = controlledStreamResponse();
@@ -1125,12 +1798,14 @@ describe("EveAgentStore session resume", () => {
       "message.completed",
       "session.waiting",
     ]);
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "A second reply.",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "A second reply.",
+        type: "text",
+      }),
+    );
   });
 
   it("reads past intermediate boundaries before following the latest turn", async () => {
@@ -1146,7 +1821,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_3",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ]);
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -1164,6 +1839,108 @@ describe("EveAgentStore session resume", () => {
     expect(store.snapshot.session?.streamIndex).toBe(events.length);
   });
 
+  it("settles callback authorization independently of the custom view", async () => {
+    const [required, waiting, completed, settled] = stampTestEvents([
+      createAuthorizationRequiredEvent({
+        attemptId: "attempt_1",
+        description: "Linear",
+        name: "linear",
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+        webhookUrl: "https://agent.example.com/callback",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+      createAuthorizationCompletedEvent({
+        attemptId: "attempt_1",
+        name: "linear",
+        outcome: "authorized",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ] as UnstampedMessageStreamEvent[]);
+    const live = controlledStreamResponse();
+    live.response.headers.set("x-eve-stream-tail-index", "1");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(live.response);
+    const store = createStore({
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: { initial: () => 0, reduce: (count: number) => count + 1 },
+    });
+    const resuming = store.resume();
+    live.emit(required!);
+    live.emit(waiting!);
+    await vi.waitFor(() => expect(store.snapshot.status).toBe("streaming"));
+    expect(store.snapshot.data).toBe(2);
+    expect(store.snapshot.conversation.messages[0]?.parts).toContainEqual(
+      expect.objectContaining({ awaitsCallback: true, state: "required", type: "authorization" }),
+    );
+    live.emit(completed!);
+    live.emit(settled!);
+    await resuming;
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data).toBe(4);
+  });
+
+  it("keeps a custom view streaming until both same-name callback attempts settle", async () => {
+    const [first, second, waiting, firstCompleted, stillWaiting, secondCompleted, settled] =
+      stampTestEvents([
+        ...["first", "second"].map((attemptId, sequence) =>
+          createAuthorizationRequiredEvent({
+            attemptId,
+            description: "Linear",
+            name: "linear",
+            sequence,
+            stepIndex: 0,
+            turnId: "turn_1",
+            webhookUrl: `https://agent.example.com/callback/${attemptId}`,
+          }),
+        ),
+        createSessionWaitingEvent(TEST_USAGE),
+        createAuthorizationCompletedEvent({
+          attemptId: "first",
+          name: "linear",
+          outcome: "authorized",
+          sequence: 2,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+        createSessionWaitingEvent(TEST_USAGE),
+        createAuthorizationCompletedEvent({
+          attemptId: "second",
+          name: "linear",
+          outcome: "authorized",
+          sequence: 3,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+        createSessionWaitingEvent(TEST_USAGE),
+      ] as UnstampedMessageStreamEvent[]);
+    const live = controlledStreamResponse();
+    live.response.headers.set("x-eve-stream-tail-index", "2");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(live.response);
+    const store = createStore({
+      initialSession: { sessionId: "session_1", streamIndex: 0 },
+      reducer: { initial: () => 0, reduce: (count: number) => count + 1 },
+    });
+    const resuming = store.resume();
+    for (const event of [first, second, waiting]) live.emit(event!);
+    await vi.waitFor(() => expect(store.snapshot.status).toBe("streaming"));
+    for (const event of [firstCompleted, stillWaiting]) live.emit(event!);
+    await vi.waitFor(() => expect(store.snapshot.events).toHaveLength(5));
+    expect(store.snapshot.status).toBe("streaming");
+    expect(
+      store.snapshot.conversation.messages.flatMap((message) =>
+        message.parts.filter((part) => part.type === "authorization" && part.state === "required"),
+      ),
+    ).toHaveLength(1);
+    for (const event of [secondCompleted, settled]) live.emit(event!);
+    await resuming;
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.data).toBe(7);
+  });
+
   it("keeps following when catch-up ends with pending authorization", async () => {
     const events = stampTestEvents([
       createMessageReceivedEvent({ message: "Hello", sequence: 0, turnId: "turn_1" }),
@@ -1174,7 +1951,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
       createAuthorizationRequiredEvent({
         authorization: { url: "https://idp.example.com/authorize" },
         description: "Linear",
@@ -1184,7 +1961,7 @@ describe("EveAgentStore session resume", () => {
         turnId: "turn_2",
         webhookUrl: "https://agent.example.com/eve/v1/connections/linear/callback/hook",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
       createAuthorizationCompletedEvent({
         name: "linear",
         outcome: "authorized",
@@ -1192,7 +1969,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_2",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const settled = events.slice(0, 3);
     const fetchMock = vi
@@ -1221,7 +1998,7 @@ describe("EveAgentStore session resume", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const live = controlledStreamResponse();
     const requests: string[] = [];
@@ -1250,18 +2027,112 @@ describe("EveAgentStore session resume", () => {
     await resuming;
 
     expect(store.snapshot.status).toBe("ready");
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "Hi there.",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "Hi there.",
+        type: "text",
+      }),
+    );
     expect(new URL(requests[0]!, "http://localhost").searchParams.get("startIndex")).toBeNull();
     expect(new URL(requests[1]!, "http://localhost").searchParams.get("startIndex")).toBe("2");
   });
 });
 
 describe("EveAgentStore steering", () => {
+  it("answers an approval while a turn is active and settles it through that turn", async () => {
+    const live = controlledStreamResponse();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(startedResponse())
+      .mockResolvedValueOnce(live.response)
+      .mockResolvedValueOnce(startedResponse("delivery_2"));
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const first = store.send({ message: "Alice asks for two colors" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    live.emit(colorApprovalRequested("color-a"));
+    await vi.waitFor(() =>
+      expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("open"),
+    );
+
+    const answering = store.send({
+      inputResponses: [{ requestId: "color-a", optionId: "approve" }],
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]!.body))).toMatchObject({
+      inputResponses: [{ requestId: "color-a", optionId: "approve" }],
+    });
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("responded");
+    await expect(
+      store.send({ inputResponses: [{ requestId: "color-a", optionId: "approve" }] }),
+    ).rejects.toThrow("Input request color-a was already answered.");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    live.emit(
+      stampTestEvent(
+        createApprovalSettledEvent({
+          outcome: "approved",
+          requestId: "color-a",
+          responderPrincipalId: "alice",
+          sequence: 1,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+        1,
+      ),
+    );
+    live.emit(stampTestEvent(createSessionWaitingEvent(TEST_USAGE), 2));
+    await Promise.all([first, answering]);
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("settled");
+  });
+
+  it("leaves a request answerable when its answer never reaches the server", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      if (init?.method === "POST") throw new TypeError("fetch failed");
+      return streamResponse([]);
+    });
+    const store = createStore({
+      initialEvents: [colorApprovalRequested("color-a")],
+      initialSession: { sessionId: "session_1", streamIndex: 1 },
+      reducer: defaultMessageReducer(),
+    });
+
+    await store.send({ inputResponses: [{ requestId: "color-a", optionId: "approve" }] });
+    expect(store.snapshot.error?.message).toBe("fetch failed");
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("open");
+  });
+
+  it("steers a first turn that is still creating its session", async () => {
+    const live = controlledStreamResponse();
+    const created = Promise.withResolvers<Response>();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(created.promise)
+      .mockResolvedValueOnce(live.response)
+      .mockResolvedValueOnce(startedResponse("delivery_2"));
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const first = store.send({ message: "Write Alice a story." });
+    const steering = store.send({ message: "Make it short.", turnPolicy: "steer" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+    created.resolve(startedResponse());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]!.body))).toMatchObject({
+      message: "Make it short.",
+      turnPolicy: "steer",
+    });
+    for (const event of turnEvents()) live.emit(event);
+    for (const event of turnEvents())
+      live.emit({
+        ...event,
+        meta: { ...event.meta, id: `steer-${event.meta.id}`, deliveryIds: ["delivery_2"] },
+      });
+    await Promise.all([first, steering]);
+    expect(store.snapshot.status).toBe("ready");
+  });
+
   it("prepares a steering message once when the active turn finishes during preparation", async () => {
     const live = controlledStreamResponse();
     const fetchMock = vi
@@ -1324,6 +2195,49 @@ describe("EveAgentStore steering", () => {
     expect(store.snapshot.error).toBeUndefined();
   });
 
+  it("keeps a failed steered send ahead of the active reply after replay", async () => {
+    const active = controlledStreamResponse();
+    const failedSend = Promise.withResolvers<Response>();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(startedResponse())
+      .mockResolvedValueOnce(active.response)
+      .mockReturnValueOnce(failedSend.promise);
+    const store = createStore({ reducer: defaultMessageReducer() });
+    const first = store.send({ message: "First" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const events = stampTestEvents([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createMessageReceivedEvent({ message: "First", sequence: 1, turnId: "turn_1" }),
+      createMessageCompletedEvent({
+        finishReason: "stop",
+        message: "Reply",
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ]);
+    for (const event of events.slice(0, 3)) active.emit(event);
+    await vi.waitFor(() =>
+      expect(store.snapshot.data.messages.some((message) => message.role === "assistant")).toBe(
+        true,
+      ),
+    );
+    const steering = store.send({ message: "Second", turnPolicy: "steer" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    failedSend.reject(new Error("Steering failed"));
+    await expect(steering).rejects.toThrow("Steering failed");
+    expect(store.snapshot.data.messages.map((message) => message.role)).toEqual([
+      "user",
+      "user",
+      "assistant",
+    ]);
+    expect(store.snapshot.data.messages[1]?.metadata?.status).toBe("failed");
+    active.emit(events[3]!);
+    await first;
+  });
+
   it.each([true, false])(
     "completes steering received in the active turn (optimistic=%s)",
     async (optimistic) => {
@@ -1339,7 +2253,7 @@ describe("EveAgentStore steering", () => {
           stepIndex: 1,
           turnId: "turn_1",
         }),
-        createSessionWaitingEvent(),
+        createSessionWaitingEvent(TEST_USAGE),
       ] as UnstampedMessageStreamEvent[]).map((event) => ({
         ...event,
         meta: { ...event.meta, deliveryIds: ["delivery_1"] },
@@ -1365,6 +2279,62 @@ describe("EveAgentStore steering", () => {
     },
   );
 
+  it.each([true, false])(
+    "groups a late steered message before its turn's assistant response (optimistic=%s)",
+    async (optimistic) => {
+      const activeStream = controlledStreamResponse();
+      const events = stampTestEvents([
+        createMessageReceivedEvent({ message: "First", sequence: 0, turnId: "turn_1" }),
+        createTurnStartedEvent({ sequence: 1, turnId: "turn_1" }),
+        createMessageCompletedEvent({
+          finishReason: "stop",
+          message: "Reply",
+          sequence: 2,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+        createMessageReceivedEvent({ message: "Second", sequence: 3, turnId: "turn_1" }),
+        createSessionWaitingEvent(TEST_USAGE),
+      ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
+        ...event,
+        meta: { ...event.meta, deliveryIds: [index === 3 ? "second" : "first"] },
+      }));
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(startedResponse("first"))
+        .mockResolvedValueOnce(activeStream.response)
+        .mockResolvedValueOnce(startedResponse("second"));
+      const store = createStore({ optimistic, reducer: defaultMessageReducer() });
+      const initial = store.send({ message: "First" });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      for (const event of events.slice(0, 3)) activeStream.emit(event);
+      await vi.waitFor(() => expect(store.snapshot.events).toHaveLength(3));
+      const followUp = store.send({ message: "Second", turnPolicy: "steer" });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      if (optimistic) {
+        expect(store.snapshot.data.messages.map((message) => message.role)).toEqual([
+          "user",
+          "user",
+          "assistant",
+        ]);
+        expect(store.snapshot.data.messages[1]?.metadata?.optimistic).toBe(true);
+      }
+      for (const event of events.slice(3)) activeStream.emit(event);
+      await Promise.all([initial, followUp]);
+      expect(store.snapshot.data.messages.map((message) => message.role)).toEqual([
+        "user",
+        "user",
+        "assistant",
+      ]);
+      expect(store.snapshot.data.messages[1]?.parts).toContainEqual({
+        state: "done",
+        text: "Second",
+        type: "text",
+      });
+      activeStream.close();
+    },
+  );
+
   it("settles steering whose delivery event arrives before its response", async () => {
     const activeStream = controlledStreamResponse();
     const steeringAccepted = Promise.withResolvers<Response>();
@@ -1379,7 +2349,7 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
       ...event,
       meta: {
@@ -1414,6 +2384,63 @@ describe("EveAgentStore steering", () => {
     );
   });
 
+  it("follows a late steering delivery across its sign-in callback", async () => {
+    const activeStream = controlledStreamResponse();
+    const events = stampTestEvents([
+      createMessageReceivedEvent({ message: "First", sequence: 0, turnId: "turn_1" }),
+      createTurnStartedEvent({ sequence: 1, turnId: "turn_1" }),
+      createSessionWaitingEvent(TEST_USAGE),
+      createMessageReceivedEvent({ message: "Use Linear", sequence: 0, turnId: "turn_2" }),
+      createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
+      createAuthorizationRequiredEvent({
+        attemptId: "attempt_1",
+        description: "Linear",
+        name: "linear",
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_2",
+        webhookUrl: "https://agent.example.com/callback",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+      createAuthorizationCompletedEvent({
+        attemptId: "attempt_1",
+        name: "linear",
+        outcome: "authorized",
+        sequence: 3,
+        stepIndex: 0,
+        turnId: "turn_2",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
+      ...event,
+      meta: { ...event.meta, deliveryIds: [index < 3 ? "first-delivery" : "delivery_1"] },
+    }));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(startedResponse("first-delivery"))
+      .mockResolvedValueOnce(activeStream.response)
+      .mockResolvedValueOnce(startedResponse());
+    const store = createStore({ reducer: defaultMessageReducer() });
+
+    const firstSend = store.send({ message: "First" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    activeStream.emit(events[0]!);
+    activeStream.emit(events[1]!);
+    const steering = store.send({ message: "Use Linear", turnPolicy: "steer" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    let settled = false;
+    const finished = Promise.all([firstSend, steering]).then(() => {
+      settled = true;
+    });
+    for (const event of events.slice(2, 7)) activeStream.emit(event);
+    await vi.waitFor(() => expect(store.snapshot.events).toHaveLength(7));
+    expect(settled).toBe(false);
+
+    for (const event of events.slice(7)) activeStream.emit(event);
+    await finished;
+    expect(store.snapshot.status).toBe("ready");
+  });
+
   it("follows a late steering delivery after the active turn settles", async () => {
     const activeStream = controlledStreamResponse();
     const [
@@ -1435,7 +2462,7 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
       createMessageReceivedEvent({ message: "Instead", sequence: 0, turnId: "turn_2" }),
       createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
       createMessageCompletedEvent({
@@ -1445,14 +2472,14 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_2",
       }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
       ...event,
       meta: { ...event.meta, deliveryIds: [index < 4 ? "first-delivery" : "delivery_1"] },
     }));
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(startedResponse())
+      .mockResolvedValueOnce(startedResponse("first-delivery"))
       .mockResolvedValueOnce(activeStream.response)
       .mockResolvedValueOnce(startedResponse());
     const store = createStore({ reducer: defaultMessageReducer() });
@@ -1495,12 +2522,14 @@ describe("EveAgentStore steering", () => {
       secondCompleted,
       secondWaiting,
     ]);
-    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
-      state: "done",
-      stepIndex: 0,
-      text: "Follow-up reply.",
-      type: "text",
-    });
+    expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual(
+      expect.objectContaining({
+        state: "done",
+        stepIndex: 0,
+        text: "Follow-up reply.",
+        type: "text",
+      }),
+    );
   });
 });
 
@@ -1510,6 +2539,7 @@ describe("EveAgentStore terminal failure", () => {
       createSessionFailedEvent({
         code: "SESSION_FAILED",
         message: "Session failed.",
+        usage: TEST_USAGE,
         sessionId: "session_1",
       }),
     ])[0]!;
@@ -1540,7 +2570,7 @@ describe("EveAgentStore cancellation", () => {
     const [turnStarted, turnCancelled, boundary] = stampTestEvents([
       createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
       createTurnCancelledEvent({ sequence: 1, turnId: "turn_1" }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -1586,6 +2616,63 @@ describe("EveAgentStore cancellation", () => {
     await expect(store.cancel()).resolves.toEqual({ status: "no_active_turn" });
   });
 
+  it("cancels a turn resumed by an approval answer", async () => {
+    const events = stampTestEvents([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      colorApprovalRequested("color-a"),
+      createTurnWaitingEvent({ on: "input", sequence: 1, turnId: "turn_1", usage: TEST_USAGE }),
+      createInputResolvedEvent({
+        resolutions: [
+          {
+            kind: "tool-approval",
+            outcome: "approved",
+            requestId: "color-a",
+            response: { optionId: "approve", requestId: "color-a" },
+          },
+        ],
+        sequence: 2,
+        stepIndex: 1,
+        turnId: "turn_1",
+      }),
+      createStepStartedEvent({ modelId: "mock", sequence: 3, stepIndex: 1, turnId: "turn_1" }),
+      createTurnCancelledEvent({ sequence: 4, turnId: "turn_1" }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ] as UnstampedMessageStreamEvent[]);
+    const parked = events.slice(0, 3);
+    const resumed = events.slice(3);
+    const live = controlledStreamResponse();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (init?.method !== "POST") return live.response;
+      return String(url).endsWith("/cancel") ? acceptedCancellationResponse() : startedResponse();
+    });
+    const cancelRequests = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url) === "/eve/v1/session/session_1/cancel");
+    const store = createStore({
+      initialEvents: parked,
+      initialSession: { sessionId: "session_1", streamIndex: parked.length },
+      reducer: defaultMessageReducer(),
+    });
+
+    const answering = store.send({
+      inputResponses: [{ optionId: "approve", requestId: "color-a" }],
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    live.emit(resumed[0]!);
+    live.emit(resumed[1]!);
+    await vi.waitFor(() => expect(store.snapshot.status).toBe("streaming"));
+
+    const cancellation = store.cancel();
+    await vi.waitFor(() => expect(cancelRequests()).toHaveLength(1));
+    expect(JSON.parse(String(cancelRequests()[0]?.[1]?.body))).toEqual({ turnId: "turn_1" });
+
+    live.emit(resumed[2]!);
+    live.emit(resumed[3]!);
+    live.close();
+    await expect(cancellation).resolves.toEqual({ sessionId: "session_1", status: "accepted" });
+    await answering;
+    expect(store.snapshot.status).toBe("ready");
+  });
+
   it("resolves a queued cancellation when reset wins before dispatch", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     const store = createStore({ reducer: defaultMessageReducer() });
@@ -1622,5 +2709,162 @@ describe("EveAgentStore cancellation", () => {
     expect(signal?.aborted).toBe(true);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(store.snapshot.status).toBe("ready");
+  });
+});
+
+describe("EveAgentStore session controls", () => {
+  const initialSession = { sessionId: "session_1", streamIndex: 0 };
+
+  it("echoes a message while caller preparation is still pending", async () => {
+    vi.spyOn(globalThis, "fetch");
+    const store = createStore({ reducer: conversationReducer, host: "http://localhost:3000" });
+    const preparation = Promise.withResolvers<never>();
+    store.setCallbacks({ prepareSend: () => preparation.promise });
+    const controller = new AbortController();
+    const send = store.send({ message: "Ask Bob about the release.", signal: controller.signal });
+
+    expect(store.snapshot.status).toBe("submitted");
+    expect(store.snapshot.conversation.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        metadata: expect.objectContaining({ optimistic: true }),
+        parts: [expect.objectContaining({ text: "Ask Bob about the release." })],
+      }),
+    ]);
+    controller.abort();
+    await send;
+  });
+
+  it("re-echoes a payload that preparation replaced, for both kinds of turn", async () => {
+    const approval = (requestId: string) => ({
+      action: {
+        callId: `call_${requestId}`,
+        input: {},
+        kind: "tool-call" as const,
+        toolName: "save",
+      },
+      kind: "tool-approval" as const,
+      prompt: "Save Alice's notes?",
+      requestId,
+    });
+    const initialEvents = stampTestEvents([
+      createInputRequestedEvent({
+        requests: [approval("req_1"), approval("req_2")],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createSessionWaitingEvent(TEST_USAGE),
+    ]);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) =>
+      init?.method === "POST"
+        ? new Promise<Response>((_resolve, reject) =>
+            init.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            }),
+          )
+        : controlledStreamResponse().response,
+    );
+    const store = createStore({
+      reducer: conversationReducer,
+      host: "http://localhost:3000",
+      initialEvents,
+      initialSession: { sessionId: "session_1", streamIndex: initialEvents.length },
+    });
+    const optimisticText = () =>
+      store.snapshot.conversation.messages.flatMap((message) =>
+        message.metadata?.optimistic === true
+          ? message.parts.flatMap((part) => (part.type === "text" ? [part.text] : []))
+          : [],
+      );
+    store.setCallbacks({
+      prepareSend: (input) =>
+        input.message === undefined
+          ? { message: "Bob will decide instead.", turnPolicy: "steer" }
+          : { inputResponses: [{ optionId: "approve", requestId: "req_1" }] },
+    });
+
+    const first = store.send({ message: "Approve the first save." });
+    await vi.waitFor(() =>
+      expect(store.snapshot.conversation.inputs.req_1?.status).toBe("responded"),
+    );
+    expect(optimisticText()).toEqual([]);
+
+    const second = store.send({ inputResponses: [{ optionId: "approve", requestId: "req_2" }] });
+    await vi.waitFor(() => expect(optimisticText()).toEqual(["Bob will decide instead."]));
+    expect(store.snapshot.conversation.inputs.req_2?.status).toBe("open");
+    detachEveAgentStore(store);
+    await Promise.allSettled([first, second]);
+  });
+
+  it("reports compaction and clearing without a session instead of sending requests", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const store = createStore({ reducer: conversationReducer, host: "http://localhost:3000" });
+
+    await expect(store.compact()).resolves.toEqual({ status: "no_active_session" });
+    await expect(store.clear()).resolves.toEqual({ status: "no_active_session" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("compacts the current session through the configured client", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ ok: true, sessionId: "session_1", status: "accepted" }));
+    const store = createStore({
+      reducer: conversationReducer,
+      client: new Client({ host: "http://agent.example.com" }),
+      initialSession,
+    });
+
+    await expect(store.compact()).resolves.toEqual({ sessionId: "session_1", status: "accepted" });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "http://agent.example.com/eve/v1/session/session_1/compact",
+    );
+  });
+
+  it("retires the server session before the next send starts fresh", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ ok: true, previousSessionId: "session_1", status: "reset" }),
+    );
+    const store = createStore({
+      reducer: conversationReducer,
+      host: "http://localhost:3000",
+      initialSession,
+      initialEvents: turnEvents(),
+    });
+
+    await expect(store.retire()).resolves.toEqual({
+      previousSessionId: "session_1",
+      status: "reset",
+    });
+    expect(store.snapshot.session).toBeUndefined();
+    expect(store.snapshot.conversation.messages).toEqual([]);
+  });
+
+  it("keeps the session and conversation when retiring fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 503 }));
+    const store = createStore({
+      reducer: conversationReducer,
+      host: "http://localhost:3000",
+      initialSession,
+      initialEvents: turnEvents(),
+    });
+
+    await expect(store.retire()).rejects.toThrow();
+    expect(store.snapshot.session?.sessionId).toBe("session_1");
+    expect(store.snapshot.conversation.messages).not.toEqual([]);
+  });
+
+  it("leaves a caller-supplied session to its owner instead of retiring it", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const store = createStore({
+      reducer: conversationReducer,
+      session: new Client({ host: "http://localhost:3000" }).sessions.attach("session_1"),
+      initialEvents: turnEvents(),
+    });
+
+    await expect(store.retire()).rejects.toThrow("retire() needs a store-owned session");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.snapshot.conversation.messages).not.toEqual([]);
   });
 });

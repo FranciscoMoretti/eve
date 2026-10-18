@@ -55,19 +55,28 @@ function makeEvalResult(overrides: Partial<EveEvalResult> = {}): EveEvalResult {
           },
         ],
         toolCallCount: 1,
+        skillLoads: [],
         subagentCalls: [],
         subagentCallCount: 0,
         inputRequests: [],
         parked: false,
         messageCount: 1,
         reasoningBlockCount: 0,
+        models: [],
       },
       sessionId: "session-123",
       traceContexts: [],
     },
     assertions: [
-      { name: "succeeded", score: 1, severity: "gate", passed: true },
-      { name: "similarity", score: 1, severity: "soft", threshold: 0.6, passed: true },
+      { name: "succeeded", score: 1, severity: "gate", passed: true, errored: false },
+      {
+        name: "similarity",
+        score: 1,
+        severity: "soft",
+        threshold: 0.6,
+        passed: true,
+        errored: false,
+      },
     ],
     verdict: "passed",
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -96,14 +105,6 @@ describe("Braintrust", () => {
       log: braintrustMocks.log,
       summarize: braintrustMocks.summarize,
     });
-  });
-
-  it("creates a reporter", () => {
-    const reporter = Braintrust(makeConfig());
-    expect(reporter).toBeDefined();
-    expect(reporter.onRunStart).toBeTypeOf("function");
-    expect(reporter.onEvalComplete).toBeTypeOf("function");
-    expect(reporter.onRunComplete).toBeTypeOf("function");
   });
 
   it("onEvalComplete is a no-op when experiment is not initialized", () => {
@@ -144,8 +145,9 @@ describe("Braintrust", () => {
               input: "Name the source.",
               rationale: "No source was cited.",
             },
-            name: "judge.autoevals.closedQA",
+            name: "judge.boolean",
             passed: false,
+            errored: false,
             score: 0,
             severity: "soft",
             threshold: 0.8,
@@ -166,8 +168,9 @@ describe("Braintrust", () => {
                 input: "Name the source.",
                 rationale: "No source was cited.",
               },
-              name: "judge.autoevals.closedQA",
+              name: "judge.boolean",
               passed: false,
+              errored: false,
               score: 0,
               severity: "soft",
               threshold: 0.8,
@@ -205,26 +208,75 @@ describe("Braintrust", () => {
     );
   });
 
-  it("keeps duplicate assertion scores under stable keys", async () => {
+  it("logs an empty output for an eval that produced no agent output", async () => {
+    const reporter = Braintrust(makeConfig());
+    await reporter.onRunStart([makeEval()], makeTarget());
+    const result = makeEvalResult();
+
+    reporter.onEvalComplete({
+      ...result,
+      result: { ...result.result, finalMessage: null, output: null },
+    });
+
+    // Braintrust rejects a null or undefined output with "output must be specified".
+    expect(braintrustMocks.log).toHaveBeenCalledWith(expect.objectContaining({ output: "" }));
+  });
+
+  it("scores repeated assertions by their lowest member and keeps each score in metadata", async () => {
     const reporter = Braintrust(makeConfig());
     await reporter.onRunStart([makeEval()], makeTarget());
 
     reporter.onEvalComplete(
       makeEvalResult({
         assertions: [
-          { name: "similarity", passed: true, score: 0.8, severity: "soft" },
-          { name: "similarity", passed: true, score: 0.6, severity: "soft" },
+          { name: "similarity", passed: true, score: 0.8, severity: "soft", errored: false },
+          { name: "similarity", passed: true, score: 0.6, severity: "soft", errored: false },
+          { name: "similarity", passed: true, score: 1, severity: "gate", errored: false },
         ],
       }),
     );
 
     expect(braintrustMocks.log).toHaveBeenCalledWith(
       expect.objectContaining({
-        scores: {
-          similarity: 0.8,
-          "similarity#2": 0.6,
-        },
+        scores: { similarity: 0.6, "gate:similarity": 1 },
+        metadata: expect.objectContaining({
+          eveAssertionScores: [
+            { name: "similarity", severity: "soft", score: 0.8 },
+            { name: "similarity", severity: "soft", score: 0.6 },
+            { name: "similarity", severity: "gate", score: 1 },
+          ],
+        }),
       }),
+    );
+  });
+
+  it("logs labeled assertions under their label", async () => {
+    const reporter = Braintrust(makeConfig());
+    await reporter.onRunStart([makeEval()], makeTarget());
+
+    reporter.onEvalComplete(
+      makeEvalResult({
+        assertions: [
+          {
+            name: "score [grounding]",
+            key: "grounding",
+            score: 0.8,
+            severity: "soft",
+            errored: false,
+          },
+          {
+            name: "judge.boolean [citation]",
+            key: "citation",
+            score: 1,
+            severity: "gate",
+            errored: false,
+          },
+        ],
+      }),
+    );
+
+    expect(braintrustMocks.log).toHaveBeenCalledWith(
+      expect.objectContaining({ scores: { grounding: 0.8, "gate:citation": 1 } }),
     );
   });
 });

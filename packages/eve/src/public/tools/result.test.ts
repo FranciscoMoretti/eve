@@ -5,8 +5,8 @@ import type { RuntimeActionResult } from "#shared/action-types.js";
 import { defineMcpClientConnection } from "#public/definitions/connections/mcp.js";
 import { defineTool } from "#tools/definition.js";
 import {
+  connectionDefinitionKey,
   registerDefinitionSource,
-  stampDefinitionKey,
 } from "#internal/authored-definition/source-identity.js";
 import {
   toolResultFrom,
@@ -58,14 +58,16 @@ describe("toolResultFrom", () => {
     description: "Linear",
   });
 
-  registerDefinitionSource("tool:Get the current weather for a city.", {
-    kind: "tool",
-    name: "get_weather",
-  });
-  registerDefinitionSource("connection:https://mcp.linear.app", {
-    kind: "connection",
-    name: "linear",
-  });
+  registerDefinitionSource(
+    weatherTool,
+    { kind: "tool", name: "get_weather" },
+    "tool:Get the current weather for a city.",
+  );
+  registerDefinitionSource(
+    linearConnection,
+    { kind: "connection", name: "linear" },
+    connectionDefinitionKey("https://mcp.linear.app", "Linear"),
+  );
 
   it("matches an authored tool result and returns typed output", () => {
     const result = toolResultFrom(
@@ -133,7 +135,7 @@ describe("toolResultFrom", () => {
     expect(result!.output).toEqual({ city: "NY", tempF: 65 });
   });
 
-  it("uses source-derived keys to distinguish tools with the same description", () => {
+  it("uses loaded definitions to distinguish tools with the same description", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const first = defineTool({
       description: "Run the shared action.",
@@ -146,28 +148,16 @@ describe("toolResultFrom", () => {
       inputSchema: z.object({}),
     });
 
-    stampDefinitionKey(first, "tool-source:first-source");
-    stampDefinitionKey(second, "tool-source:second-source");
-    registerDefinitionSource("tool-source:first-source", {
-      kind: "tool",
-      logicalPath: "tools/first.ts",
-      name: "first_tool",
-    });
-    registerDefinitionSource("tool-source:second-source", {
-      kind: "tool",
-      logicalPath: "tools/second.ts",
-      name: "second_tool",
-    });
-    registerDefinitionSource("tool:Run the shared action.", {
-      kind: "tool",
-      logicalPath: "tools/first.ts",
-      name: "first_tool",
-    });
-    registerDefinitionSource("tool:Run the shared action.", {
-      kind: "tool",
-      logicalPath: "tools/second.ts",
-      name: "second_tool",
-    });
+    registerDefinitionSource(
+      first,
+      { kind: "tool", logicalPath: "tools/first.ts", name: "first_tool" },
+      "tool:Run the shared action.",
+    );
+    registerDefinitionSource(
+      second,
+      { kind: "tool", logicalPath: "tools/second.ts", name: "second_tool" },
+      "tool:Run the shared action.",
+    );
 
     expect(warn).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
@@ -196,16 +186,16 @@ describe("toolResultFrom", () => {
       inputSchema: z.object({}),
     });
 
-    registerDefinitionSource("tool:Run the fallback action.", {
-      kind: "tool",
-      logicalPath: "tools/first.ts",
-      name: "first_tool",
-    });
-    registerDefinitionSource("tool:Run the fallback action.", {
-      kind: "tool",
-      logicalPath: "tools/second.ts",
-      name: "second_tool",
-    });
+    registerDefinitionSource(
+      {},
+      { kind: "tool", logicalPath: "tools/first.ts", name: "first_tool" },
+      "tool:Run the fallback action.",
+    );
+    registerDefinitionSource(
+      {},
+      { kind: "tool", logicalPath: "tools/second.ts", name: "second_tool" },
+      "tool:Run the fallback action.",
+    );
 
     expect(warn).toHaveBeenCalledOnce();
     expect(toolResultFrom(toolResult("first_tool", { source: "first" }), copy)).toBeUndefined();
@@ -232,44 +222,32 @@ describe("toolResultFrom", () => {
     expect(result).toBeUndefined();
   });
 
-  it("uses source-derived keys to distinguish connections with the same URL", () => {
+  it("uses loaded definitions to distinguish connections with the same URL and description", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const first = defineMcpClientConnection({
       url: "https://mcp.example.test",
-      description: "First",
+      description: "Shared",
     });
     const second = defineMcpClientConnection({
       url: "https://mcp.example.test",
-      description: "Second",
+      description: "Shared",
     });
 
-    stampDefinitionKey(first, "connection-source:first-source");
-    stampDefinitionKey(second, "connection-source:second-source");
-    registerDefinitionSource("connection-source:first-source", {
-      kind: "connection",
-      logicalPath: "connections/first.ts",
-      name: "first",
-    });
-    registerDefinitionSource("connection-source:second-source", {
-      kind: "connection",
-      logicalPath: "connections/second.ts",
-      name: "second",
-    });
-    registerDefinitionSource("connection:https://mcp.example.test", {
-      kind: "connection",
-      logicalPath: "connections/first.ts",
-      name: "first",
-    });
-    registerDefinitionSource("connection:https://mcp.example.test", {
-      kind: "connection",
-      logicalPath: "connections/second.ts",
-      name: "second",
-    });
+    registerDefinitionSource(
+      first,
+      { kind: "connection", logicalPath: "connections/first.ts", name: "first" },
+      connectionDefinitionKey("https://mcp.example.test", "Shared"),
+    );
+    registerDefinitionSource(
+      second,
+      { kind: "connection", logicalPath: "connections/second.ts", name: "second" },
+      connectionDefinitionKey("https://mcp.example.test", "Shared"),
+    );
 
     expect(warn).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        'eve could not assign a unique toolResultFrom identity for "connection:https://mcp.example.test"',
+        `eve could not assign a unique toolResultFrom identity for ${JSON.stringify(connectionDefinitionKey("https://mcp.example.test", "Shared"))}`,
       ),
     );
     expect(warn).toHaveBeenCalledWith(

@@ -1,46 +1,33 @@
-import type { RunSessionLimits } from "#channel/types.js";
-import {
-  createDurableSessionState,
-  type DurableSessionState,
-} from "#execution/durable-session-store.js";
-import { resolveEffectiveAgentRuntimeFromConfig } from "#execution/effective-agent-config.js";
-import { readSessionCheckpoint } from "#execution/read-session-checkpoint.js";
-import { readSessionTranscriptPrefix } from "#execution/read-session-transcript-prefix.js";
-import { restoreSessionCheckpoint } from "#execution/restore-session-checkpoint.js";
-import { restoreSessionHistory } from "#execution/restore-session-history-step.js";
-import { resolveInheritedTokenLimit } from "#execution/run-session-limits.js";
-import { recordLocalSessionSandboxIdentity } from "#execution/sandbox/local-session-identity.js";
-import type { SessionForkReference } from "#execution/session-checkpoint-contract.js";
-import type { SessionSandboxIdentityReceipt } from "#execution/session-sandbox-identity-contract.js";
-import {
-  prepareSessionTranscriptSeed,
-  type SessionTranscriptSeed,
-} from "#execution/session-transcript-seed.js";
-import { createSession } from "#execution/session.js";
-import { markSeedAttachmentsPending } from "#harness/attachment-staging.js";
-import { setHarnessEmissionState } from "#harness/emission-state.js";
-import {
-  createSessionWaitingEvent,
-  encodeMessageStreamEvent,
-  stampMessageStreamEvent,
-} from "#protocol/message.js";
-import { getRuntimeCompiledArtifactsSandboxAppRoot } from "#runtime/compiled-artifacts-source.js";
+import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import {
   type DurableCompiledArtifactsSource,
   resolveDurableCompiledArtifactsSource,
 } from "#runtime/durable-compiled-artifacts-source.js";
-import { getResolvedRuntimeAgentNode } from "#runtime/graph.js";
-import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
-import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
+import {
+  createDurableSessionValues,
+  type DurableSessionState,
+} from "#execution/durable-session-store.js";
+import {
+  prepareSessionTranscriptSeed,
+  type SessionTranscriptSeed,
+} from "#execution/session-transcript-seed.js";
+import { markSeedAttachmentsPending } from "#harness/seed-attachments.js";
+import type { HarnessModelMessage } from "#harness/messages.js";
+import { createSession } from "#execution/session.js";
+import { resolveInheritedTokenLimit } from "#execution/run-session-limits.js";
+import type { RunSessionLimits } from "#channel/types.js";
 import type { JsonObject } from "#shared/json.js";
+import { resolveEffectiveAgentRuntimeFromConfig } from "#execution/effective-agent-config.js";
+import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
 
 /**
  * Result returned by {@link createSessionStep}.
  *
- * Exposes the projected {@link DurableSessionState} the owner needs to
- * drive the turn loop.
+ * Exposes the projected {@link DurableSessionState} and the history the
+ * owner needs to drive the turn loop.
  */
 export interface CreateSessionStepResult {
+  readonly history: HarnessModelMessage[];
   readonly state: DurableSessionState;
 }
 
@@ -51,10 +38,8 @@ export interface CreateSessionStepResult {
  * the root agent.
  */
 export async function createSessionStep(input: {
-  readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
-  readonly identityWritable?: WritableStream<SessionSandboxIdentityReceipt>;
-  readonly fork?: SessionForkReference;
   readonly seed?: SessionTranscriptSeed;
+  readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
   readonly continuationToken: string;
   readonly dynamicSubagentAgentConfig?: DynamicSubagentAgentConfig;
   readonly inheritedLimits?: RunSessionLimits;
@@ -62,26 +47,16 @@ export async function createSessionStep(input: {
   readonly nodeId?: string;
   readonly rootSessionId?: string;
   readonly sessionId: string;
-  readonly taskId?: string;
 }): Promise<CreateSessionStepResult> {
   "use step";
 
-  if (input.seed && (input.fork || input.rootSessionId || input.taskId || input.nodeId))
-    throw new Error("Transcript seeds require a fresh root conversation.");
-  const transcriptFork = input.fork && "beforeMessageId" in input.fork ? input.fork : undefined;
   if (
-    transcriptFork &&
-    (input.rootSessionId ||
-      input.taskId ||
-      input.nodeId ||
-      transcriptFork.sessionId === input.sessionId)
-  )
-    throw new Error("Imported forks require a fresh root conversation.");
-  const preparedSeed = input.seed
-    ? prepareSessionTranscriptSeed(input.seed)
-    : transcriptFork
-      ? await readSessionTranscriptPrefix(transcriptFork)
-      : undefined;
+    input.seed !== undefined &&
+    (input.rootSessionId !== undefined || input.nodeId !== undefined)
+  ) {
+    throw new Error("Transcript seeds require a fresh root session.");
+  }
+  const prepared = input.seed === undefined ? undefined : prepareSessionTranscriptSeed(input.seed);
   const bundle = await getCompiledRuntimeAgentBundle({
     compiledArtifactsSource: resolveDurableCompiledArtifactsSource(input.compiledArtifactsSource),
     nodeId: input.nodeId,
@@ -119,88 +94,16 @@ export async function createSessionStep(input: {
     outputSchema: input.outputSchema,
     rootSessionId: input.rootSessionId,
     sessionId: input.sessionId,
-    taskId: input.taskId,
     turnAgent: effectiveAgent.turnAgent,
   });
 
-  const initialSession = preparedSeed
-    ? setHarnessEmissionState(
-        {
+  const seeded =
+    prepared === undefined
+      ? session
+      : markSeedAttachmentsPending({
           ...session,
-          history: [...(transcriptFork ? [] : session.history), ...preparedSeed.history],
-        },
-        { sessionStarted: false, sequence: 0, stepIndex: 0, turnId: "" },
-      )
-    : input.fork && "beforeTurnId" in input.fork
-      ? restoreSessionCheckpoint({
-          target: { ...session, history: [] },
-          checkpoint: await readSessionCheckpoint(input.fork),
-        })
-      : session;
-  const registered = getResolvedRuntimeAgentNode(bundle.graph, input.nodeId).sandboxRegistry
-    .sandbox;
-  const definition = registered.inheritance?.definition ?? registered.definition;
-  const localSandboxIdentity = process.env.VERCEL
-    ? undefined
-    : await recordLocalSessionSandboxIdentity({
-        appRoot:
-          getRuntimeCompiledArtifactsSandboxAppRoot(bundle.compiledArtifactsSource) ??
-          process.cwd(),
-        backendName: definition.backend.name,
-        sessionId: input.sessionId,
-      });
-  if (input.identityWritable) {
-    const writer = input.identityWritable.getWriter();
-    try {
-      await writer.write({
-        version: 1,
-        snapshotVersion: 2,
-        sessionId: input.sessionId,
-        local: localSandboxIdentity ?? null,
-      });
-    } finally {
-      writer.releaseLock();
-    }
-  }
-  return {
-    state: createDurableSessionState({
-      session: {
-        ...(input.seed?.attachments === "channel" || transcriptFork
-          ? markSeedAttachmentsPending(initialSession)
-          : initialSession),
-        localSandboxIdentity,
-      },
-    }),
-  };
-}
-
-/** Restores the display prefix in a discoverable native workflow step. */
-export async function restoreSessionHistoryStep(input: {
-  readonly fork: SessionForkReference;
-  readonly writable: WritableStream<Uint8Array>;
-}): Promise<void> {
-  "use step";
-
-  await restoreSessionHistory(input);
-}
-
-/** Emits only seeded display and idle lifecycle; never dispatches a model or tool. */
-export async function emitSessionTranscriptSeedStep(input: {
-  readonly seed: SessionTranscriptSeed;
-  readonly continuationToken: string;
-  readonly writable: WritableStream<Uint8Array>;
-}): Promise<void> {
-  "use step";
-  const prepared = prepareSessionTranscriptSeed(input.seed);
-  const writer = input.writable.getWriter();
-  try {
-    for (const event of [
-      { type: "history.seeded" as const, data: { messages: prepared.messages } },
-      createSessionWaitingEvent(input.continuationToken),
-    ]) {
-      await writer.write(encodeMessageStreamEvent(stampMessageStreamEvent(event)));
-    }
-  } finally {
-    writer.releaseLock();
-  }
+          history: [...session.history, ...prepared.history],
+        });
+  const { history, sessionState } = createDurableSessionValues(seeded);
+  return { history, state: sessionState };
 }

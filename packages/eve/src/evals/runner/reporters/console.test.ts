@@ -25,12 +25,13 @@ describe("Console", () => {
       assertions: [
         {
           message: [
-            'prompt: "Name the source."',
-            'criteria: "cites a source"',
-            'rationale: "No source was cited."',
+            'state: {"input":"Name the source."}',
+            'question: {"type":"boolean","instructions":"cites a source"}',
+            'answer: {"type":"boolean","probability":0}',
           ].join("\n"),
-          name: "judge.autoevals.closedQA",
+          name: "judge.boolean",
           passed: false,
+          errored: false,
           score: 0,
           severity: "soft",
           threshold: 0.8,
@@ -50,9 +51,76 @@ describe("Console", () => {
       verdict: "scored",
     });
 
-    expect(lines).toContain('  ✗ judge.autoevals.closedQA (0% < 80%): prompt: "Name the source."');
-    expect(lines).toContain('    criteria: "cites a source"');
-    expect(lines).toContain('    rationale: "No source was cited."');
+    expect(lines).toContain('  ✗ judge.boolean (0% < 80%): state: {"input":"Name the source."}');
+    expect(lines).toContain('    question: {"type":"boolean","instructions":"cites a source"}');
+    expect(lines).toContain('    answer: {"type":"boolean","probability":0}');
+  });
+
+  it("warns when repeated soft assertions merge different scores and leaves gates quiet", () => {
+    const lines: string[] = [];
+    const reporter = Console({ color: false, log: (line) => lines.push(line) });
+
+    reporter.onEvalComplete({
+      assertions: [
+        { name: "judge.boolean", passed: true, errored: false, score: 0.9, severity: "soft" },
+        { name: "judge.boolean", passed: true, errored: false, score: 0.4, severity: "soft" },
+        { name: "judge.boolean", passed: true, errored: false, score: 1, severity: "gate" },
+        { name: "succeeded", passed: true, errored: false, score: 1, severity: "gate" },
+        {
+          name: "succeeded",
+          passed: false,
+          errored: false,
+          score: 0,
+          severity: "gate",
+          threshold: 1,
+        },
+      ],
+      completedAt: "2026-01-01T00:00:01.000Z",
+      id: "quality",
+      result: {
+        derived: createEmptyDerivedFacts(),
+        events: [],
+        finalMessage: "ok",
+        output: "ok",
+        status: "completed",
+        traceContexts: [],
+      },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      verdict: "failed",
+    });
+
+    expect(lines).toEqual([
+      "✗  quality  gates 2/3  judge.boolean: 90%  judge.boolean: 40%",
+      "  ✗ succeeded (0% < 100%)",
+      "  ⚠ judge.boolean recorded 2 times with different scores; Braintrust and Datadog keep only the lowest. Add .label() to tell them apart.",
+    ]);
+  });
+
+  it("aggregates repeated soft scores as one value per eval in the run summary", () => {
+    const lines: string[] = [];
+    const reporter = Console({ color: false, log: (line) => lines.push(line) });
+    const result: EveEvalResult = {
+      assertions: [
+        { name: "judge.boolean", passed: true, errored: false, score: 0.9, severity: "soft" },
+        { name: "judge.boolean", passed: true, errored: false, score: 0.4, severity: "soft" },
+      ],
+      completedAt: "2026-01-01T00:00:01.000Z",
+      id: "quality",
+      result: {
+        derived: createEmptyDerivedFacts(),
+        events: [],
+        finalMessage: "ok",
+        output: "ok",
+        status: "completed",
+        traceContexts: [],
+      },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      verdict: "passed",
+    };
+
+    reporter.onRunComplete(summary(result));
+
+    expect(lines).toContain("  judge.boolean: 40% (1 evals)");
   });
 
   it("does not print diagnostics for passing assertions", () => {
@@ -64,8 +132,9 @@ describe("Console", () => {
         {
           message: 'prompt: "Successful prompt details"',
           metadata: { rationale: "Successful rationale details" },
-          name: "judge.autoevals.closedQA",
+          name: "judge.boolean",
           passed: true,
+          errored: false,
           score: 1,
           severity: "gate",
         },

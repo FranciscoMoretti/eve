@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,19 @@ vi.mock("#shared/resolve-eve-binary.js", async () => {
       join(nextRoot, "node_modules", "eve", "bin", "eve.js"),
   };
 });
+
+interface SpawnOptions {
+  readonly cwd: string;
+  readonly env: Record<string, string | undefined>;
+}
+
+const spawnMock = vi.hoisted(() =>
+  vi.fn<(command: string, args: readonly string[], options: SpawnOptions) => EventEmitter>(),
+);
+
+vi.mock("node:child_process", () => ({
+  spawn: spawnMock,
+}));
 
 import { withEve, type EveNextConfig, type EveNextRewriteSections } from "./index.js";
 
@@ -39,23 +53,97 @@ describe("withEve Vercel config", () => {
   const originalCwd = process.cwd();
 
   afterEach(() => {
+    spawnMock.mockReset();
     process.chdir(originalCwd);
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
-  it("requires a local eve build outside Vercel", async () => {
+  it("requires a local eve build when next start loads config outside Vercel", async () => {
     const appRoot = await createTempAppRoot();
     process.chdir(appRoot);
     vi.stubEnv("NODE_ENV", "production");
 
-    const config = await resolveConfig(withEve<TestConfig>({}));
-    await expect(config.rewrites?.()).rejects.toThrow(
-      /Run eve build from .+ before starting Next\.js\./u,
-    );
+    await expect(
+      withEve<TestConfig>({})("phase-production-server", { defaultConfig: {} }),
+    ).rejects.toThrow(/Run eve build from .+ before starting Next\.js\./u);
+    expect(spawnMock).not.toHaveBeenCalled();
     await expect(
       readFile(join(appRoot, ".vercel", "output", "config.json"), "utf8"),
     ).rejects.toThrow();
+  });
+
+  it("starts each managed agent once when next start loads config, without rewrites()", async () => {
+    const appRoot = await createTempAppRoot();
+    process.chdir(appRoot);
+    const resolvedAppRoot = process.cwd();
+    vi.stubEnv("NODE_ENV", "production");
+    await writeBuiltAgent(join(resolvedAppRoot, "agents", "billing"));
+    await writeBuiltAgent(join(resolvedAppRoot, "agents", "support"));
+    spawnListeningServer();
+    const config = withEve<TestConfig>(
+      {},
+      { agents: { billing: "./agents/billing", support: "./agents/support" } },
+    );
+
+    await config("phase-production-server", { defaultConfig: {} });
+    expect(spawnedServers()).toEqual([
+      { cwd: join(resolvedAppRoot, "agents", "billing"), port: "4274" },
+      { cwd: join(resolvedAppRoot, "agents", "support"), port: "4275" },
+    ]);
+
+    const reloaded = await config("phase-production-server", { defaultConfig: {} });
+    const rewrites = await reloaded.rewrites?.();
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(getBeforeFiles(rewrites)).toEqual([
+      { destination: "http://127.0.0.1:4274/eve/v1/:path+", source: "/eve/billing/v1/:path+" },
+      { destination: "http://127.0.0.1:4275/eve/v1/:path+", source: "/eve/support/v1/:path+" },
+    ]);
+  });
+
+  it("starts one managed server per port when named agents share a root", async () => {
+    const appRoot = await createTempAppRoot();
+    process.chdir(appRoot);
+    const sharedRoot = join(process.cwd(), "agents", "shared");
+    vi.stubEnv("NODE_ENV", "production");
+    await writeBuiltAgent(sharedRoot);
+    spawnListeningServer();
+    const config = withEve<TestConfig>(
+      {},
+      { agents: { billing: "./agents/shared", support: "./agents/shared" } },
+    );
+
+    await config("phase-production-server", { defaultConfig: {} });
+    const reloaded = await config("phase-production-server", { defaultConfig: {} });
+    const rewrites = await reloaded.rewrites?.();
+
+    expect(spawnedServers()).toEqual([
+      { cwd: sharedRoot, port: "4274" },
+      { cwd: sharedRoot, port: "4275" },
+    ]);
+    expect(getBeforeFiles(rewrites)).toEqual([
+      { destination: "http://127.0.0.1:4274/eve/v1/:path+", source: "/eve/billing/v1/:path+" },
+      { destination: "http://127.0.0.1:4275/eve/v1/:path+", source: "/eve/support/v1/:path+" },
+    ]);
+  });
+
+  it("does not start a managed agent on Vercel, for a hosted origin, or while building", async () => {
+    const appRoot = await createTempAppRoot();
+    process.chdir(appRoot);
+    vi.stubEnv("NODE_ENV", "production");
+    await writeBuiltAgent(process.cwd());
+    spawnListeningServer();
+
+    await withEve<TestConfig>({})("phase-production-build", { defaultConfig: {} });
+    vi.stubEnv("EVE_NEXT_PRODUCTION_ORIGIN", "https://agent.example.com");
+    await withEve<TestConfig>({})("phase-production-server", { defaultConfig: {} });
+    vi.stubEnv("EVE_NEXT_PRODUCTION_ORIGIN", "");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_URL", "preview.example.com");
+    await withEve<TestConfig>({})("phase-production-server", { defaultConfig: {} });
+
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("writes Build Output config in Vercel even when no linked project is detected", async () => {
@@ -129,11 +217,16 @@ describe("withEve Vercel config", () => {
     });
   });
 
-  it("writes Build Output config to the closest existing .vercel directory", async () => {
+  it("writes fallback Build Output config under the app in a linked monorepo", async () => {
     const projectRoot = await createTempAppRoot();
     const appRoot = join(projectRoot, "apps", "web");
     await mkdir(join(projectRoot, ".vercel"), { recursive: true });
-    await writeFile(join(projectRoot, ".vercel", "project.json"), "{}\n");
+    await writeFile(
+      join(projectRoot, ".vercel", "project.json"),
+      JSON.stringify({ settings: { rootDirectory: "apps/web" } }),
+    );
+    await mkdir(join(projectRoot, "custom-staging"));
+    await writeFile(join(projectRoot, "custom-staging", "builds.json"), "{}\n");
     await mkdir(appRoot, { recursive: true });
     process.chdir(appRoot);
     vi.stubEnv("NODE_ENV", "production");
@@ -142,7 +235,7 @@ describe("withEve Vercel config", () => {
 
     await resolveConfig(withEve<TestConfig>({}));
 
-    const outputConfig = await readJsonFile(join(projectRoot, ".vercel", "output", "config.json"));
+    const outputConfig = await readJsonFile(join(appRoot, ".vercel", "output", "config.json"));
 
     expect(outputConfig).toEqual({
       routes: [
@@ -157,7 +250,7 @@ describe("withEve Vercel config", () => {
       services: {
         eve: {
           buildCommand:
-            "cd '../../..' && export EVE_INTERNAL_BUILD_OUTPUT_DIRECTORY='.eve/vercel-services/eve/.vercel/output' && export EVE_INTERNAL_HOST_BUILD_OUTPUT_DIRECTORY='../../.vercel/output' && node 'node_modules/eve/bin/eve.js' build",
+            "cd '../../..' && export EVE_INTERNAL_BUILD_OUTPUT_DIRECTORY='.eve/vercel-services/eve/.vercel/output' && export EVE_INTERNAL_HOST_BUILD_OUTPUT_DIRECTORY='.vercel/output' && node 'node_modules/eve/bin/eve.js' build",
           framework: "eve",
           outputDirectory: ".vercel/output",
           routes: [
@@ -178,7 +271,7 @@ describe("withEve Vercel config", () => {
       version: 3,
     });
     await expect(
-      readFile(join(appRoot, ".vercel", "output", "config.json"), "utf8"),
+      readFile(join(projectRoot, ".vercel", "output", "config.json"), "utf8"),
     ).rejects.toThrow();
   });
 
@@ -339,6 +432,38 @@ describe("withEve Vercel config", () => {
     expect(rewrites).toBeUndefined();
   });
 
+  it("discovers a peer workspace through eveRoot", async () => {
+    const workspaceRoot = await createTempAppRoot();
+    const nextRoot = join(workspaceRoot, "apps", "web");
+    await Promise.all([
+      mkdir(join(workspaceRoot, "agents", "support", "agent"), { recursive: true }),
+      mkdir(join(workspaceRoot, "agents", "research", "agent"), { recursive: true }),
+      mkdir(nextRoot, { recursive: true }),
+      writeFile(
+        join(workspaceRoot, "package.json"),
+        JSON.stringify({ dependencies: { eve: "*" } }),
+      ),
+    ]);
+    process.chdir(nextRoot);
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_URL", "preview.example.com");
+
+    await resolveConfig(withEve<TestConfig>({}, { eveRoot: "../.." }));
+    const outputConfig = await readJsonFile(join(nextRoot, ".vercel", "output", "config.json"));
+
+    expect(outputConfig).toMatchObject({
+      routes: expect.arrayContaining([
+        expect.objectContaining({ src: "^/eve/research/v1/(.*)$" }),
+        expect.objectContaining({ src: "^/eve/support/v1/(.*)$" }),
+      ]),
+      services: expect.objectContaining({
+        "eve-research": expect.objectContaining({ routePrefix: "/eve/research" }),
+        "eve-support": expect.objectContaining({ routePrefix: "/eve/support" }),
+      }),
+    });
+  });
+
   it("accepts a custom eve service build command", async () => {
     const appRoot = await createTempAppRoot();
     process.chdir(appRoot);
@@ -366,6 +491,28 @@ describe("withEve Vercel config", () => {
         },
       },
     });
+  });
+
+  it("discovers workspace members from an absolute eveRoot with a trailing slash", async () => {
+    const appRoot = await createTempAppRoot();
+    process.chdir(appRoot);
+    await mkdir(join(appRoot, "agents", "a", "agent"), { recursive: true });
+    await mkdir(join(appRoot, "agents", "b", "agent"), { recursive: true });
+    await writeFile(
+      join(appRoot, "package.json"),
+      `${JSON.stringify({ dependencies: { eve: "0.0.0" } })}\n`,
+    );
+    await writeFile(join(appRoot, "agents", "a", "agent", "agent.ts"), "export default {};\n");
+    await writeFile(join(appRoot, "agents", "b", "agent", "agent.ts"), "export default {};\n");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+
+    await resolveConfig(withEve<TestConfig>({}, { eveRoot: `${appRoot}/` }));
+    const outputConfig = (await readJsonFile(
+      join(appRoot, ".vercel", "output", "config.json"),
+    )) as { services?: Record<string, unknown> };
+
+    expect(Object.keys(outputConfig.services ?? {})).toEqual(["eve-a", "eve-b"]);
   });
 
   it("writes one Build Output service and route for each named agent", async () => {
@@ -636,6 +783,38 @@ describe("withEve Vercel config", () => {
     });
   });
 });
+
+async function writeBuiltAgent(agentRoot: string): Promise<void> {
+  await mkdir(join(agentRoot, ".output", "server"), { recursive: true });
+  await writeFile(join(agentRoot, ".output", "server", "index.mjs"), "// built agent\n");
+}
+
+/** Each spawned child reports it is listening on the port it was given. */
+function spawnListeningServer(): void {
+  spawnMock.mockImplementation((_command, _args, options) => {
+    const child = Object.assign(new EventEmitter(), {
+      killed: false,
+      kill: () => undefined,
+      pid: 12345,
+      stderr: new EventEmitter(),
+      stdout: new EventEmitter(),
+    });
+    setImmediate(() => {
+      child.stdout.emit(
+        "data",
+        Buffer.from(`Listening on: http://127.0.0.1:${options.env.PORT ?? ""}/\n`),
+      );
+    });
+    return child;
+  });
+}
+
+function spawnedServers(): readonly { readonly cwd: string; readonly port: string }[] {
+  return spawnMock.mock.calls.map(([, , options]) => ({
+    cwd: options.cwd,
+    port: options.env.PORT ?? "",
+  }));
+}
 
 function getBeforeFiles(
   rewrites: Awaited<ReturnType<NonNullable<TestConfig["rewrites"]>>> | undefined,

@@ -27,19 +27,26 @@ export default defineEval({
     if (callbackUrl.origin !== new URL(t.target.url).origin) {
       throw new Error("Fixture OAuth callback targeted an unexpected origin.");
     }
-    const callback = await fetch(callbackUrl);
+    // The responder's sign-in holds the turn, so this read stops there; the
+    // callback resumes the same turn.
+    const held = await approvalTurn.result();
+    held.event("approval.candidate", {
+      data: { outcome: "pending", requestId: approval.requestId },
+      count: 1,
+    });
+    held.event("authorization.required", { count: 1 });
+    held.event("turn.waiting", { data: { on: "input" } });
+    const resumedTurn = t.target.watchTurn(held.sessionId, {
+      startIndex: held.session.state.streamIndex,
+    });
+    const callback = await t.target.fetch(`${callbackUrl.pathname}${callbackUrl.search}`);
     if (!callback.ok) {
       throw new Error(
         `Fixture OAuth callback failed (${String(callback.status)}): ${await callback.text()}`,
       );
     }
 
-    const resumed = await approvalTurn.result();
-    resumed.event("approval.candidate", {
-      data: { outcome: "pending", requestId: approval.requestId },
-      count: 1,
-    });
-    resumed.event("authorization.required", { count: 1 });
+    const resumed = await resumedTurn.result();
     resumed.expectOk();
     resumed.event("authorization.completed", {
       data: { candidateId: required.data.candidateId, outcome: "authorized" },

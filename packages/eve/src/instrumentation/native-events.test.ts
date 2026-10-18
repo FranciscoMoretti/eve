@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { TEST_USAGE } from "#internal/testing/events.js";
+import { describe, expect, it, vi } from "vitest";
 
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { ActiveChannelDeliveriesKey } from "#context/keys.js";
@@ -27,6 +28,7 @@ import {
   sessionIdempotencyKey,
   turnIdempotencyKey,
 } from "#instrumentation/lifecycle.js";
+import { createRuntimeToolResultFromToolError } from "#harness/action-result-helpers.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 
 describe("createInstrumentationHandleEvent", () => {
@@ -39,6 +41,7 @@ describe("createInstrumentationHandleEvent", () => {
         code: "MODEL_CALL_FAILED",
         message: "failed",
         sequence: 0,
+        terminal: false,
         turnId: "turn_0",
       }),
     ],
@@ -53,6 +56,7 @@ describe("createInstrumentationHandleEvent", () => {
         },
         policyAgentName: "weather",
         rootSessionId: "session-1",
+        traceSessionId: "session-1",
         sequence: 0,
         sessionId: "session-1",
         turnId: "turn_0",
@@ -118,7 +122,7 @@ describe("createInstrumentationHandleEvent", () => {
       }),
     );
     await handleEvent(createTurnCompletedEvent({ sequence: 0, turnId: "turn-1" }));
-    await handleEvent(createSessionWaitingEvent());
+    await handleEvent(createSessionWaitingEvent(TEST_USAGE));
 
     expect(order).toEqual([
       "durable:session.started",
@@ -176,7 +180,7 @@ describe("createInstrumentationHandleEvent", () => {
       turnId: "turn-1",
     })!;
 
-    await handleEvent(createSessionWaitingEvent());
+    await handleEvent(createSessionWaitingEvent(TEST_USAGE));
 
     expect(events).toEqual([
       {
@@ -257,7 +261,6 @@ describe("createInstrumentationHandleEvent", () => {
           nodeId: "workers",
           subagentName: "worker",
         },
-        { callId: "skill-1", input: { name: "research" }, kind: "load-skill" },
         {
           callId: "remote-1",
           description: "Call a remote agent.",
@@ -284,12 +287,19 @@ describe("createInstrumentationHandleEvent", () => {
     await contextStorage.run(context, async () => {
       const handleEvent = createInstrumentationHandleEvent({
         getAttemptScope: () => scope,
-        handleEvent: async () => {},
+        handleEvent: async () => {
+          clock.mockReturnValue(2_000);
+        },
         hooks: { capturesContent: true, publish: async (event) => void events.push(event) },
         sessionId: "session-1",
       })!;
-      await handleEvent(requested);
-      await handleEvent(requested);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      try {
+        await handleEvent(requested);
+        await handleEvent(requested);
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     const restored = await deserializeContext(await serializeContext(context));
@@ -304,11 +314,29 @@ describe("createInstrumentationHandleEvent", () => {
         createActionResultEvent({
           result: {
             callId: "delegate-1",
-            kind: "subagent-result",
-            origin: "dispatch",
-            output: "unavailable",
             isError: true,
+            kind: "subagent-result",
+            origin: "child",
+            outcome: {
+              kind: "terminal",
+              result: { kind: "failed", error: "unavailable" },
+              usageDelta: {
+                cacheReadTokens: 1,
+                cacheWriteTokens: 2,
+                costUsd: 0.003,
+                inputTokens: 4,
+                outputTokens: 2,
+              },
+            },
+            output: "unavailable",
             subagentName: "worker",
+            usage: {
+              cacheReadTokens: 1,
+              cacheWriteTokens: 2,
+              costUsd: 0.003,
+              inputTokens: 4,
+              outputTokens: 2,
+            },
           },
           sequence: 0,
           stepIndex: 0,
@@ -336,6 +364,7 @@ describe("createInstrumentationHandleEvent", () => {
             usage: {
               cacheReadTokens: 3,
               cacheWriteTokens: 4,
+              costUsd: 0.012,
               inputTokens: 10,
               outputTokens: 5,
             },
@@ -360,85 +389,151 @@ describe("createInstrumentationHandleEvent", () => {
       );
     });
 
-    expect(events.slice(0, 5)).toEqual([
+    expect(events.slice(0, 4)).toEqual([
       {
         callId: "delegate-1",
+        frameworkTool: false,
+        startedAtMs: 1_000,
         idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "delegate-1"),
         input: { task: "research" },
         kind: "subagent-call",
-        name: "delegate",
+        toolName: "delegate",
+        isWorkflowTool: true,
         scope,
-        type: "action.started",
-      },
-      {
-        callId: "skill-1",
-        idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "skill-1"),
-        input: { name: "research" },
-        kind: "load-skill",
-        name: "load_skill",
-        scope,
-        type: "action.started",
+        type: "tool.call.started",
       },
       {
         callId: "remote-1",
+        frameworkTool: false,
+        startedAtMs: 1_000,
         idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "remote-1"),
         input: { task: "analyze" },
         kind: "remote-agent-call",
-        name: "remote",
+        toolName: "remote",
+        isWorkflowTool: true,
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       },
       {
         callId: "add-1",
+        frameworkTool: false,
+        startedAtMs: 1_000,
         idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "add-1"),
         input: { a: 1, b: 2 },
         kind: "tool-call",
-        name: "add",
+        toolName: "add",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       },
       {
         callId: "workflow-1",
+        frameworkTool: false,
+        startedAtMs: 1_000,
         idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "workflow-1"),
         input: { report: "weekly" },
         isWorkflowTool: true,
         kind: "tool-call",
-        name: "publish",
+        toolName: "publish",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       },
     ]);
-    expect(events[5]).toMatchObject({
+    const terminals = events.filter(
+      (event) =>
+        (event as { type: string }).type === "tool.call.failed" ||
+        (event as { type: string }).type === "tool.call.completed",
+    );
+    expect(terminals[0]).toMatchObject({
       errorCode: "ACTION_RESULT_FAILED",
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "delegate-1"),
       outcome: "failed",
       scope,
-      type: "action.failed",
+      type: "tool.call.failed",
+      usage: {
+        costUsd: 0.003,
+        inputTokenDetails: { cacheReadTokens: 1, cacheWriteTokens: 2 },
+        inputTokens: 4,
+        outputTokens: 2,
+      },
     });
-    expect(events[6]).toEqual({
+    expect(terminals[1]).toEqual({
       acceptedAtMs: 1_234,
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "remote-1"),
       outcome: "completed",
       output: { output: "done", type: "result" },
       scope,
-      type: "action.completed",
+      type: "tool.call.completed",
       usage: {
+        costUsd: 0.012,
         inputTokenDetails: { cacheReadTokens: 3, cacheWriteTokens: 4 },
         inputTokens: 10,
         outputTokens: 5,
       },
     });
-    expect(events[7]).toEqual({
+    expect(terminals[2]).toEqual({
       acceptedAtMs: undefined,
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "add-1"),
       outcome: "completed",
       output: { output: 3, type: "result" },
       scope,
-      type: "action.completed",
+      type: "tool.call.completed",
       usage: undefined,
     });
-    expect(events).toHaveLength(8);
+    expect(events).toHaveLength(7);
     expect(events.every(Object.isFrozen)).toBe(true);
+  });
+
+  // https://github.com/vercel/eve/issues/4820
+  it("keeps the class name of the error a tool threw", async () => {
+    class QuotaError extends Error {
+      override name = "QuotaError";
+    }
+    const events: InstrumentationEvent[] = [];
+    const handleEvent = createInstrumentationHandleEvent({
+      getAttemptScope: () => ({
+        attemptId: "session-1:turn-1:0:0",
+        attemptIndex: 0,
+        sessionId: "session-1",
+        stepIndex: 0,
+        turnId: "turn-1",
+      }),
+      handleEvent: async () => {},
+      hooks: {
+        capturesContent: true,
+        publish: async (event) => void events.push(event),
+      },
+      sessionId: "session-1",
+    })!;
+
+    await contextStorage.run(new ContextContainer(), async () => {
+      await handleEvent(
+        createActionsRequestedEvent({
+          actions: [{ callId: "charge-1", input: {}, kind: "tool-call", toolName: "charge" }],
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        }),
+      );
+      await handleEvent(
+        createActionResultEvent({
+          result: createRuntimeToolResultFromToolError({
+            error: new QuotaError("quota exceeded"),
+            input: {},
+            toolCallId: "charge-1",
+            toolName: "charge",
+            type: "tool-error",
+          }),
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn-1",
+        }),
+      );
+    });
+
+    const failed = events.find((event) => event.type === "tool.call.failed");
+    expect(failed).toMatchObject({ outcome: "failed", type: "tool.call.failed" });
+    expect(failed).toHaveProperty("error.message", "quota exceeded");
+    expect(failed).toHaveProperty("error.name", "QuotaError");
   });
 
   it("publishes each input request and resolves it in a replacement worker", async () => {

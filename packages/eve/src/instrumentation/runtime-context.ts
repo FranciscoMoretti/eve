@@ -13,9 +13,9 @@ import {
   InitiatorAuthKey,
   ParentSessionKey,
 } from "#context/keys.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { TurnPosition } from "#harness/session-machine/view.js";
 import type { HarnessSession } from "#harness/types.js";
-import type { RuntimeContextResolver } from "#tracing/otel-declaration.js";
+import type { RuntimeContextResolver } from "#tracing/eve/otel-declaration.js";
 import {
   normalizeInstrumentationChannelKind,
   resolveInstrumentationProjection,
@@ -23,19 +23,17 @@ import {
 import { createLogger, formatError } from "#internal/logging.js";
 import type {
   InstrumentationChannel,
-  InstrumentationEvents,
   InstrumentationRuntimeContext,
   InstrumentationStepStartedEventInput,
 } from "#public/instrumentation/index.js";
-import { parseJsonObject, parseJsonValue, type JsonObject, type JsonValue } from "#shared/json.js";
+import { parseJsonValue, type JsonObject, type JsonValue } from "#shared/json.js";
 
 const log = createLogger("harness.instrumentation-runtime-context");
 
 export interface BuildTelemetryRuntimeContextInput {
   readonly capturesContent: boolean;
   readonly context?: InstrumentationRuntimeContextSnapshot;
-  readonly eveVersion: string;
-  readonly emissionState: HarnessEmissionState;
+  readonly emissionState: TurnPosition;
   readonly environment: string;
   readonly modelInput: {
     readonly instructions: string | SystemModelMessage | undefined;
@@ -43,7 +41,6 @@ export interface BuildTelemetryRuntimeContextInput {
   };
   readonly providerResolvers?: readonly RuntimeContextResolver[];
   readonly session: HarnessSession;
-  readonly stepStartedResolver: InstrumentationEvents["step.started"];
 }
 
 export interface InstrumentationRuntimeContextSnapshot {
@@ -75,43 +72,28 @@ export function snapshotInstrumentationRuntimeContext(
 /**
  * Builds per-model-call runtime context for AI SDK telemetry spans.
  *
- * Authored runtime context is parsed defensively. Invalid event results,
- * reserved `eve.*` keys, and callback failures are warning-only so
- * instrumentation cannot compromise the normal turn flow.
+ * Runtime context is parsed defensively. Invalid results, reserved `eve.*`
+ * keys, and callback failures are warning-only.
  */
 export function buildTelemetryRuntimeContext(
   input: BuildTelemetryRuntimeContextInput,
 ): Record<string, unknown> | undefined {
-  const hasStepStartedResolver = input.stepStartedResolver !== undefined;
   const hasProviderResolvers =
     input.providerResolvers !== undefined && input.providerResolvers.length > 0;
-  if (!hasStepStartedResolver && !hasProviderResolvers) {
+  if (!hasProviderResolvers) {
     return undefined;
   }
 
-  const authoredRuntimeContext = resolveStepStartedRuntimeContext(input);
   const providerRuntimeContext = resolveProviderRuntimeContext(input);
-  const context = input.context ?? snapshotInstrumentationRuntimeContext(contextStorage.getStore());
-  const projection = context.channel;
 
   return {
-    ...authoredRuntimeContext,
     ...providerRuntimeContext,
-    "eve.channel.kind": normalizeInstrumentationChannelKind(projection?.kind),
     "eve.environment": input.environment,
-    "eve.session.id": input.session.sessionId,
-    "eve.step.index": String(input.emissionState.stepIndex),
-    "eve.turn.id": input.emissionState.turnId,
-    "eve.turn.sequence": String(input.emissionState.sequence),
-    "eve.version": input.eveVersion,
   };
 }
 
 function buildInstrumentationStepStartedInput(
-  input: Omit<
-    BuildTelemetryRuntimeContextInput,
-    "eveVersion" | "environment" | "stepStartedResolver"
-  >,
+  input: Omit<BuildTelemetryRuntimeContextInput, "environment">,
 ): InstrumentationStepStartedEventInput {
   const context = input.context ?? snapshotInstrumentationRuntimeContext(contextStorage.getStore());
   const projection = context.channel;
@@ -163,52 +145,11 @@ function filterAuthoredRuntimeContext(
   return Object.keys(runtimeContext).length > 0 ? runtimeContext : undefined;
 }
 
-function resolveStepStartedRuntimeContext(
-  input: BuildTelemetryRuntimeContextInput,
-): InstrumentationRuntimeContext | undefined {
-  const resolver = input.stepStartedResolver;
-  if (resolver === undefined) {
-    return undefined;
-  }
-
-  const source = 'events["step.started"]';
-  const invoke = () => {
-    const stepStartedInput = buildInstrumentationStepStartedInput(input);
-    return resolver(stepStartedInput);
-  };
-  const result = resolveInstrumentationProjection({
-    invoke,
-    log,
-    source,
-  });
-  if (result === undefined) {
-    return undefined;
-  }
-
-  if (!("runtimeContext" in result)) {
-    log.warn("ignoring instrumentation event result because runtimeContext is missing", { source });
-    return undefined;
-  }
-
-  let runtimeContext: JsonObject;
-  try {
-    runtimeContext = parseJsonObject(result.runtimeContext);
-  } catch (error) {
-    log.warn("ignoring instrumentation event result because runtimeContext is invalid", {
-      error: formatError(error),
-      source,
-    });
-    return undefined;
-  }
-
-  return filterAuthoredRuntimeContext(runtimeContext, source);
-}
-
 /**
  * Collects `runtimeContext` contributions from every provider resolver,
- * invoking each with a snapshot of the same input the legacy `step.started`
- * hook receives. Failures are warning-only so one provider cannot break the
- * turn. Later providers override earlier ones on key collision.
+ * invoking each with a snapshot of the model attempt. Failures are warning-only
+ * so one destination cannot break the turn. Later destinations override earlier
+ * ones on key collision.
  */
 function resolveProviderRuntimeContext(
   input: BuildTelemetryRuntimeContextInput,

@@ -53,6 +53,18 @@ describe("defineChannel", () => {
     expect(channel.cors).toBeUndefined();
   });
 
+  it("carries a merged upload policy on the adapter", () => {
+    const adapter = getAdapter(
+      defineChannel({
+        routes: [POST("/x", async () => new Response("ok"))],
+        uploadPolicy: { maxBytes: 1024 },
+      }),
+    );
+
+    expect(adapter.kind).not.toBe("http");
+    expect(adapter.uploadPolicy).toEqual({ allowedMediaTypes: "*", maxBytes: 1024 });
+  });
+
   it("normalizes channel CORS options", () => {
     const channel = defineChannel({
       cors: {
@@ -174,7 +186,6 @@ describe("defineChannel", () => {
         caller: { type: "anonymous" },
         channel: { kind: "http" },
         environment: "production",
-        mode: "conversation",
         state: undefined,
       }),
     ).toBe("public");
@@ -204,7 +215,6 @@ describe("defineChannel", () => {
         caller: { type: "anonymous" },
         channel: { kind: "channel:legacy" },
         environment: "production",
-        mode: "conversation",
         state: adapter.state,
       }),
     ).toBe("public");
@@ -480,7 +490,7 @@ describe("defineChannel", () => {
 
     expect(capturedCtx).toBeDefined();
     expect(typeof capturedCtx.getSandbox).toBe("function");
-    expect(typeof capturedCtx.getSkill).toBe("function");
+    expect(capturedCtx).not.toHaveProperty("getSkill");
     expect(capturedCtx.session.id).toBe("sess-channel-test");
     expect(capturedCtx.session.turn).toEqual({ id: "turn-1", sequence: 0 });
     expect(capturedChannel.session).toBeUndefined();

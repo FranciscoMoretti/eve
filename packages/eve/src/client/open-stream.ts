@@ -1,3 +1,4 @@
+import { throwIfAborted } from "#client/abort-signal.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import {
   EVE_STREAM_CONTROL_VERSION,
@@ -5,8 +6,11 @@ import {
   EVE_STREAM_TAIL_INDEX_HEADER,
 } from "#protocol/message.js";
 import type { MessageStreamVersion } from "#protocol/message-version.js";
-import { createEveSessionStreamRoutePath } from "#protocol/routes.js";
-import { ClientError } from "#client/client-error.js";
+import {
+  ClientError,
+  ClientSessionStrandedError,
+  createClientError,
+} from "#client/client-error.js";
 import { isStreamDisconnectError, readNdjsonStream } from "#client/ndjson.js";
 import { readMessageStreamVersion } from "#client/stream-version.js";
 import type {
@@ -97,7 +101,8 @@ interface FollowStreamInput {
   readonly streamReadIdleTimeoutMs?: number;
   readonly resolveHeaders: () => Promise<Headers>;
   readonly redirect?: ClientRedirectPolicy;
-  readonly sessionId: string;
+  /** eve stream route path, such as a session stream or a parent-origin subagent stream. */
+  readonly path: string;
   readonly signal?: AbortSignal;
   readonly startIndex: number;
   /** Follow the live stream after the durable tail (default). `false` bounds the read at the tail. */
@@ -110,13 +115,15 @@ interface OpenStreamInput extends FollowStreamInput {
 }
 
 /**
- * Follows a session's durable event stream from an absolute cursor,
+ * Follows one durable event stream route from an absolute cursor,
  * transparently reconnecting whenever the transport ends.
  *
  * Transport endings reconnect from the advanced cursor. Progress resets the
- * idle budget; repeated empty streams eventually stop the follow. Callers own
- * boundary handling. Negative tail-relative cursors use one connection because
- * they cannot be advanced safely.
+ * idle budget; repeated empty streams eventually stop the follow. A
+ * `session.completed` or `session.failed` event ends the follow, since a
+ * session records nothing after it; callers own turn-boundary handling.
+ * Negative tail-relative cursors use one connection because they cannot be
+ * advanced safely.
  *
  * With `follow: false`, the first connection fixes the bound: the iterator
  * yields events until the cursor passes that tail, reconnecting as needed,
@@ -208,6 +215,7 @@ export async function* followStreamIterable(
           caughtUp = true;
           input.onCaughtUp?.();
         }
+        if (event.type === "session.failed" || event.type === "session.completed") return;
         if (input.follow === false && tailIndex !== undefined && startIndex > tailIndex) {
           return;
         }
@@ -284,17 +292,21 @@ export async function openStreamBody(
   if (input.requestTailIndex === true) {
     searchParams.includeTailIndex = "1";
   }
+  // Recorded history stays readable after the session can no longer run.
+  if (input.follow === false) {
+    searchParams.follow = "false";
+  }
 
   for (let attempt = 0; attempt < openRetryPolicy.maxAttempts; attempt += 1) {
-    input.signal?.throwIfAborted();
+    throwIfAborted(input.signal);
     const url = createClientUrl(
       input.host,
-      createEveSessionStreamRoutePath(input.sessionId),
+      input.path,
       Object.keys(searchParams).length > 0 ? searchParams : undefined,
     );
 
     const headers = await input.resolveHeaders();
-    input.signal?.throwIfAborted();
+    throwIfAborted(input.signal);
     const connectionController = new AbortController();
     const signal = input.signal
       ? AbortSignal.any([input.signal, connectionController.signal])
@@ -347,8 +359,13 @@ export async function openStreamBody(
     lastBody = await response.text();
     lastHeaders = response.headers;
 
-    if (!retryPolicy.retryableErrorStatuses.has(response.status)) {
-      throw new ClientError(response.status, lastBody, response.headers);
+    const error = createClientError(response.status, lastBody, response.headers);
+    // 409 is retryable by default, but a stranded session's 409 is final.
+    if (
+      error instanceof ClientSessionStrandedError ||
+      !retryPolicy.retryableErrorStatuses.has(response.status)
+    ) {
+      throw error;
     }
 
     if (attempt < openRetryPolicy.maxAttempts - 1) {

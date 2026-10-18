@@ -4,6 +4,7 @@ import type { SessionAuthContext, TurnPolicy } from "#channel/types.js";
 import type { TrustedForwarders } from "#channel/forwarded-principal.js";
 import type { AuthFn } from "#public/channels/auth.js";
 import type { UploadPolicyInput } from "#public/channels/upload-policy.js";
+import type { FetchFileFunction } from "#shared/channel-definition.js";
 import type {
   AudienceContext,
   Channel,
@@ -12,6 +13,8 @@ import type {
   ChannelMethod,
 } from "#public/definitions/channel.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
+
+export type { ForwardedAssertion, TrustedForwarders } from "#channel/forwarded-principal.js";
 
 /**
  * Event-handler channel context exposed by `eveChannel({ events })`. The default eve HTTP channel
@@ -53,6 +56,8 @@ export type EveChannelCors = boolean | EveChannelCorsOptions;
 export interface EveHandle {
   /** Route-auth result for the request; `onMessage` chooses session auth by returning `{ auth }`. */
   readonly caller: SessionAuthContext | null;
+  /** Replay-stable identity of a trusted remote-subagent create operation. */
+  readonly invocation?: { readonly operationId: string };
   readonly request: Request;
   /** Existing runtime session id for follow-up requests. */
   readonly sessionId?: string;
@@ -90,35 +95,13 @@ export function defaultEveAuth(ctx: EveMessageContext): SessionAuthContext | nul
  * `uploadPolicy`, `onMessage`, and `events` refine the default HTTP behavior.
  */
 export interface EveChannelInput {
-  /** Resolve owned attachment URLs through the standard sandbox staging pipeline. */
-  readonly fetchFile?: import("#shared/channel-definition.js").FetchFileFunction;
-  /**
-   * Authorizes an immutable copy operation for this principal and supplies its completed
-   * public transcript. Omit to deny seed creation; return null to deny an operation.
-   * The caller must bind operationId to one source revision/projection and destination-owned
-   * resources before returning. No browser-provided history or checkpoint is accepted.
-   * Runs only when the operation has no durable session yet. Accepted retries recover
-   * that session without consulting the source. Seed requests do not invoke onMessage.
-   * Uses the directly authenticated principal; forwardedPrincipal is not accepted.
-   */
+  /** Resolve an accepted destination transcript for an authenticated seed-only create. Never accepts browser transcript data. */
   readonly resolveSeed?: (input: {
     readonly auth: SessionAuthContext;
     readonly operationId: string;
   }) =>
     | import("#execution/session-transcript-seed.js").SessionTranscriptSeed
-    | null
-    | Promise<import("#execution/session-transcript-seed.js").SessionTranscriptSeed | null>;
-
-  /**
-   * Explicit source-session access policy for native forks. Omit to deny forks.
-   * Runs before operation lookup and again if onMessage replaces the principal.
-   * Authentication alone never grants access to another session's history.
-   */
-  readonly authorizeFork?: (input: {
-    readonly auth: SessionAuthContext;
-    readonly sourceSessionId: string;
-  }) => boolean | Promise<boolean>;
-
+    | Promise<import("#execution/session-transcript-seed.js").SessionTranscriptSeed>;
   /**
    * Route auth policy: a single {@link AuthFn} or an ordered array walked by {@link routeAuth}.
    * The first entry returning a {@link SessionAuthContext} wins; `null` / `undefined` skips to
@@ -133,7 +116,7 @@ export interface EveChannelInput {
    * trace consumers treat as non-public.
    *
    * Pass a constant audience, or a function receiving the authenticated
-   * principal, channel, run mode, and deployment environment. Continuation
+   * principal, channel, and deployment environment. Continuation
    * turns from a different caller do not reclassify an existing session.
    */
   readonly audience?:
@@ -143,11 +126,18 @@ export interface EveChannelInput {
    * The trusted-forwarders policy: which transport-authenticated callers may
    * assert a forwarded principal, callback-marked public trace audience, or
    * remote parent lineage. The predicate receives the *verified* route-auth
-   * principal of the forwarder — who is asserting, never what is asserted —
-   * and must match it precisely (for example `(forwarder) =>
-   * forwarder.subject === vercelSubject({ teamSlug, projectName })`). A
-   * permissive predicate lets any authenticated forwarder assert any principal,
+   * principal of the forwarder and must match it precisely (for example
+   * `(forwarder) => forwarder.subject === vercelSubject({ teamSlug, projectName })`).
+   * A permissive predicate lets any authenticated forwarder assert any principal,
    * public trace audience, or remote lineage.
+   *
+   * The second argument carries what the forwarder asserts. `assertion.principal`
+   * holds the stamped `current` and `initiator` contexts the forwarder asserts,
+   * so a receiver can limit a forwarder to the identities it may speak for, such as
+   * one authenticator and issuer. `initiator` takes effect only on session
+   * creation; on continuation it is the asserted value, not the session's pinned
+   * initiator. `assertion.principal` is absent when the predicate decides remote
+   * parent lineage for a request that forwards no principal.
    *
    * When a trusted forwarder's assertion is accepted on session creation, the
    * forwarded principal replaces `session.auth.current` and
@@ -162,9 +152,21 @@ export interface EveChannelInput {
   readonly trustedForwarders?: TrustedForwarders;
   /**
    * Attachment policy for inbound file parts. Omit for the framework default (25 MB cap, all media
-   * types); `"disabled"` rejects every attachment; a partial config is merged onto the default. Violations reject with 413 (too large) or 415 (bad type).
+   * types); `"disabled"` rejects every attachment; a partial config is merged onto the default. Violations in the
+   * request reject with 413 (too large) or 415 (bad type). eve also checks every file it stages, including URLs, on
+   * its final bytes and verified media type; a file that breaks the policy there reaches the model as a note.
    */
   readonly uploadPolicy?: UploadPolicyInput;
+  /**
+   * Loads a file part whose `data` is a URL, such as a browser upload that went
+   * to your own storage first. The bytes then skip the request body limit and
+   * the workflow start payload, and load inside the workflow step.
+   *
+   * Return bytes or `{ bytes, mediaType?, filename? }` to stage the file, or
+   * `null` when the URL is not yours: eve then downloads a public `https:` URL
+   * itself. Fetched bytes must pass {@link uploadPolicy}.
+   */
+  readonly fetchFile?: FetchFileFunction;
   /**
    * Browser CORS policy for the eve HTTP routes. Omit or pass `false` to leave
    * CORS untouched, pass `true` for fully permissive CORS, or pass an options

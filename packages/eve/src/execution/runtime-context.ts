@@ -3,6 +3,7 @@ import { ContextContainer, contextStorage } from "#context/container.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import {
   AuthKey,
+  ToolStubsKey,
   CapabilitiesKey,
   ChannelInstrumentationKey,
   ChannelDeliveryKey,
@@ -12,18 +13,20 @@ import {
   ConversationIdKey,
   DynamicSubagentAgentConfigKey,
   InitiatorAuthKey,
-  ModeKey,
+  OccurrenceIdKey,
   ParentSessionKey,
   ParentTraceContextKey,
-  ActivityObserverKey,
   ScheduleIdKey,
+  ScheduleInstanceKey,
   SessionCallbackKey,
+  LegacyRemoteAgentCallerKey,
   SessionTitleKey,
+  TraceRootKey,
 } from "#context/keys.js";
 import { deriveSessionTitle } from "#execution/eve-workflow-attributes.js";
 import { BundleKey, type CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
-import { readConversationId } from "#tracing/conversation-context.js";
+import { readConversationId } from "#shared/conversation-identity.js";
 import { buildConversationContext } from "#channel/conversation-context.js";
 import { ConversationContextKey } from "#shared/conversation-context.js";
 import { resolveInstrumentationEnvironment } from "#internal/application/dev-environment.js";
@@ -48,7 +51,7 @@ export function buildRunContext(input: {
     ConversationContextKey,
     buildConversationContext(run, resolveInstrumentationEnvironment()),
   );
-  if (run.parent === undefined) {
+  if (run.parent === undefined || run.traceRoot?.kind === "own") {
     const title = deriveSessionTitle(run.title ?? run.input.message);
     if (title !== undefined) ctx.set(SessionTitleKey, title);
   }
@@ -66,8 +69,11 @@ export function buildRunContext(input: {
     ctx.set(ContinuationTokenKey, run.continuationToken);
     ctx.set(ContinuationHookTokensKey, [run.continuationToken]);
   }
-  ctx.set(ModeKey, run.mode);
+  const occurrenceId =
+    run.schedule?.occurrenceId ?? contextStorage.getStore()?.get(OccurrenceIdKey);
+  if (occurrenceId !== undefined) ctx.set(OccurrenceIdKey, occurrenceId);
   ctx.set(AuthKey, auth);
+  if (run.toolStubs !== undefined) ctx.set(ToolStubsKey, run.toolStubs);
   if (run.initiatorAuth !== undefined || run.input.message !== undefined) {
     ctx.set(InitiatorAuthKey, run.initiatorAuth ?? auth);
   }
@@ -84,7 +90,9 @@ export function buildRunContext(input: {
     ctx.set(ChannelRequestIdKey, run.requestId);
   }
 
-  const scheduleId = contextStorage.getStore()?.get(ScheduleIdKey);
+  const instance = run.schedule?.instance ?? contextStorage.getStore()?.get(ScheduleInstanceKey);
+  if (instance !== undefined) ctx.set(ScheduleInstanceKey, instance);
+  const scheduleId = run.schedule?.definition ?? contextStorage.getStore()?.get(ScheduleIdKey);
   if (scheduleId !== undefined) {
     ctx.set(ScheduleIdKey, scheduleId);
   }
@@ -96,12 +104,15 @@ export function buildRunContext(input: {
   if (run.callback !== undefined) {
     ctx.set(SessionCallbackKey, run.callback);
   }
-  if (run.activityObserver !== undefined) {
-    ctx.set(ActivityObserverKey, run.activityObserver);
+  if (run.legacyRemoteAgentCaller !== undefined) {
+    ctx.set(LegacyRemoteAgentCallerKey, run.legacyRemoteAgentCaller);
   }
 
   if (run.parent !== undefined) {
     ctx.set(ParentSessionKey, run.parent);
+  }
+  if (run.traceRoot !== undefined) {
+    ctx.set(TraceRootKey, run.traceRoot);
   }
 
   if (run.parentTraceContext !== undefined) {

@@ -1,5 +1,11 @@
 import type { FilePart, UserContent } from "ai";
+import { REMOTE_AGENT_PROTOCOL_VERSION } from "#protocol/remote-agent-protocol.js";
 import { describe, expect, it, vi } from "vitest";
+import {
+  RunExpiredError,
+  StreamExpiredError,
+  WorkflowRunNotFoundError,
+} from "#compiled/@workflow/errors/index.js";
 
 import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler, type ChannelAdapter } from "#channel/adapter.js";
@@ -8,7 +14,13 @@ import { readClientContext } from "#internal/client-context.js";
 import { attachRouteSessionCreator } from "#internal/nitro/routes/channel-route-context.js";
 import { mockChannelContext } from "#internal/testing/mocks/mock-channel-operations.js";
 import { type AuthFn, none } from "#public/channels/auth.js";
-import { eveChannel, defaultEveAuth, type EveChannelInput } from "#public/channels/eve.js";
+import {
+  eveChannel,
+  defaultEveAuth,
+  type EveChannelInput,
+  type ForwardedAssertion,
+  type TrustedForwarders,
+} from "#public/channels/eve.js";
 import type { RunInput, SessionAuthContext } from "#channel/types.js";
 import type { RouteHandlerArgs, SendPayload } from "#channel/routes.js";
 import type { Session } from "#channel/session.js";
@@ -20,8 +32,10 @@ import {
   SessionKey,
   type Session as RuntimeSession,
 } from "#context/keys.js";
-import { deriveOperationContinuationToken } from "#eve-channel/request.js";
 import { createMessageCompletedEvent } from "#protocol/message.js";
+import { writeForwardedParentSessionBaggage } from "#protocol/baggage.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 /**
  * Unit coverage for the inbound HTTP route's message-body parser and
@@ -50,14 +64,7 @@ const OVERRIDE_AUTH: SessionAuthContext = {
 
 type MockSendOptions = Pick<
   RunInput,
-  | "auth"
-  | "callback"
-  | "capabilities"
-  | "continuationToken"
-  | "activityObserver"
-  | "initiatorAuth"
-  | "mode"
-  | "title"
+  "auth" | "callback" | "capabilities" | "continuationToken" | "initiatorAuth" | "title"
 >;
 
 function createJsonMessageRequest(body: unknown): Request {
@@ -92,6 +99,7 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
 
 function createRouteArgs(): RouteHandlerArgs {
   return {
+    ...mockAgentRouteArgs(),
     ...mockChannelContext(vi.fn()),
     attachSession: () => createMockSession(),
     to: vi.fn() as never,
@@ -136,14 +144,9 @@ function createEveCreateHandler(
       callback: runInput.callback,
       capabilities: runInput.capabilities,
       continuationToken: runInput.continuationToken,
-      activityObserver: runInput.activityObserver,
       initiatorAuth: runInput.initiatorAuth,
-      mode: runInput.mode,
       title: runInput.title,
     } satisfies MockSendOptions);
-    if (runInput.continuationToken !== undefined) {
-      resolveSession.mockResolvedValue(createMockSession());
-    }
     return {
       events: new ReadableStream(),
       sessionId: "test-session-id",
@@ -489,6 +492,25 @@ describe("eveChannel — events", () => {
     });
   });
 
+  it("hands staging its fetchFile and the upload policy it holds every file to", async () => {
+    const fetchFile = vi.fn(async (url: string) =>
+      url.startsWith("https://uploads.example.com/") ? Buffer.from("ok") : null,
+    );
+    const adapter = getEveAdapter({
+      auth: none(),
+      fetchFile,
+      uploadPolicy: { allowedMediaTypes: ["image/*"], maxBytes: 4 },
+    });
+
+    await expect(adapter.fetchFile!("https://uploads.example.com/a")).resolves.toEqual(
+      Buffer.from("ok"),
+    );
+    await expect(adapter.fetchFile!("https://elsewhere.example.com/a")).resolves.toBeNull();
+    expect(adapter.uploadPolicy).toEqual({ allowedMediaTypes: ["image/*"], maxBytes: 4 });
+    // Without either option the channel keeps the framework's HTTP adapter.
+    expect(getEveAdapter({ auth: none() }).kind).toBe("http");
+  });
+
   it("passes configured event handlers through with session context", async () => {
     const observed: string[] = [];
     const adapter = getEveAdapter({
@@ -567,15 +589,28 @@ describe("eveChannel — stream cursor", () => {
     await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
   });
 
-  it("forwards negative tail-relative start indices", async () => {
+  it.each([-1, 42])("forwards start index %i to the durable stream", async (startIndex) => {
     const handler = createEveStreamHandler({ auth: none() });
 
     const response = await handler.fetch(
-      "https://eve.test/eve/v1/session/test-session-id/stream?startIndex=-1",
+      `https://eve.test/eve/v1/session/test-session-id/stream?startIndex=${startIndex}`,
     );
 
     expect(response.status).toBe(200);
-    expect(handler.getEventStream).toHaveBeenCalledWith({ startIndex: -1 });
+    expect(handler.getEventStream).toHaveBeenCalledWith({ follow: true, startIndex });
+  });
+
+  it("bounds a historical read at the durable tail and asks for it without following", async () => {
+    const handler = createEveStreamHandler({ auth: none() });
+    handler.getStreamTailIndex.mockResolvedValueOnce(41);
+
+    const response = await handler.fetch(
+      "https://eve.test/eve/v1/session/test-session-id/stream?follow=false",
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-eve-stream-tail-index")).toBe("41");
+    expect(handler.getEventStream).toHaveBeenCalledWith({ follow: false, startIndex: undefined });
   });
 
   it.each(["1.5", "1junk", "0x10", "1e2", ""])(
@@ -591,14 +626,63 @@ describe("eveChannel — stream cursor", () => {
     },
   );
 
-  it("omits the tail index by default without paying for the lookup", async () => {
+  it("resolves the tail index by default without returning it", async () => {
     const handler = createEveStreamHandler({ auth: none() });
 
     const response = await handler.fetch("https://eve.test/eve/v1/session/test-session-id/stream");
 
     expect(response.status).toBe(200);
     expect(response.headers.get("x-eve-stream-tail-index")).toBeNull();
-    expect(handler.getStreamTailIndex).not.toHaveBeenCalled();
+    expect(handler.getStreamTailIndex).toHaveBeenCalledOnce();
+  });
+
+  it("returns 404 for an unknown session in follow mode", async () => {
+    const handler = createEveStreamHandler({ auth: none() });
+    handler.getStreamTailIndex.mockRejectedValueOnce(
+      new WorkflowRunNotFoundError("test-session-id"),
+    );
+
+    const response = await handler.fetch("https://eve.test/eve/v1/session/test-session-id/stream");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Session not found.", ok: false });
+  });
+
+  it.each([
+    ["stream", new StreamExpiredError("Stream expired.", "test-session-id")],
+    ["run", new RunExpiredError("Run expired.", "test-session-id")],
+  ])("returns a terminal 410 when the session %s passed retention", async (_, error) => {
+    const handler = createEveStreamHandler({ auth: none() });
+    handler.getStreamTailIndex.mockRejectedValueOnce(error);
+
+    const response = await handler.fetch("https://eve.test/eve/v1/session/test-session-id/stream");
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ code: "session_expired", ok: false });
+  });
+
+  it("cancels the early-opened event stream when the tail lookup fails", async () => {
+    const handler = createEveStreamHandler({ auth: none() });
+    const cancelled = vi.fn();
+    handler.getEventStream.mockResolvedValueOnce(new ReadableStream({ cancel: cancelled }));
+    handler.getStreamTailIndex.mockRejectedValueOnce(
+      new WorkflowRunNotFoundError("test-session-id"),
+    );
+
+    const response = await handler.fetch("https://eve.test/eve/v1/session/test-session-id/stream");
+
+    expect(response.status).toBe(404);
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+  });
+
+  it("returns 503 when the session lookup fails transiently", async () => {
+    const handler = createEveStreamHandler({ auth: none() });
+    handler.getStreamTailIndex.mockRejectedValueOnce(new Error("stream lookup failed"));
+
+    const response = await handler.fetch("https://eve.test/eve/v1/session/test-session-id/stream");
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Session stream unavailable.", ok: false });
   });
 
   it("reports the durable tail index when the request opts in", async () => {
@@ -758,6 +842,7 @@ describe("eveChannel — onMessage", () => {
   });
 
   it("rejects an invalid null onMessage result instead of returning an empty success", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       auth: none(),
       onMessage: (() => null) as never,
@@ -771,6 +856,9 @@ describe("eveChannel — onMessage", () => {
       error: "onMessage handler failed.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "onMessage handler failed" }),
+    );
   });
 
   it("allows onMessage to dispatch with an empty context array", async () => {
@@ -789,6 +877,7 @@ describe("eveChannel — onMessage", () => {
   });
 
   it("returns 500 without dispatching when onMessage throws", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       auth: none(),
       onMessage: () => {
@@ -804,6 +893,9 @@ describe("eveChannel — onMessage", () => {
       error: "onMessage handler failed.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "onMessage handler failed" }),
+    );
   });
 
   it("rejects combined messages and input responses on continue requests", async () => {
@@ -863,7 +955,6 @@ describe("eveChannel — onMessage", () => {
         callback: {
           callId: "call-2",
           subagentName: "research",
-          taskId: "task-2",
           token: "tok123",
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
@@ -878,7 +969,6 @@ describe("eveChannel — onMessage", () => {
         callback: {
           callId: "call-2",
           subagentName: "research",
-          taskId: "task-2",
           token: "tok123",
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
@@ -937,6 +1027,77 @@ describe("eveChannel — onMessage", () => {
 });
 
 describe("eveChannel — create session idempotency", () => {
+  it.each([true, false])(
+    "accepts library handoff only with trusted forwarded provenance (%s)",
+    async (trusted) => {
+      const { AsyncLocalStorageContextManager } =
+        await import("@opentelemetry/context-async-hooks");
+      const { context } = await import("@opentelemetry/api");
+      const manager = new AsyncLocalStorageContextManager().enable();
+      context.setGlobalContextManager(manager);
+      try {
+        const handler = createEveCreateHandler({
+          auth: () => ACCEPTED_AUTH,
+          trustedForwarders: () => trusted,
+        });
+        const request = createJsonMessageRequest({
+          callback: {
+            callId: "call-1",
+            subagentName: "research",
+            token: "tok123",
+            url: "https://caller.example.com/eve/v1/callback/tok123",
+          },
+          message: "hi",
+          protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
+          ...(trusted
+            ? {
+                forwardedPrincipal: {
+                  current: {
+                    attributes: {},
+                    authenticator: "api-key",
+                    principalId: "user",
+                    principalType: "user",
+                  },
+                },
+              }
+            : {}),
+        });
+        request.headers.set("traceparent", `00-${"a".repeat(32)}-${"b".repeat(16)}-01`);
+        request.headers.set(
+          "baggage",
+          writeForwardedParentSessionBaggage(undefined, {
+            callId: "call-1",
+            rootSessionId: "root",
+            sessionId: "parent",
+            turn: { id: "turn", sequence: 0 },
+          })!,
+        );
+        request.headers.set(
+          "x-agent-tracing",
+          JSON.stringify({
+            caller: { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: 1 },
+            conversationId: "handoff-conversation",
+            parentRunId: "parent",
+            parentCallId: "call-1",
+            agentName: "research",
+            capture: { emit: true, recordInputs: false, recordOutputs: false },
+          }),
+        );
+        expect((await handler.fetch(request)).status).toBe(202);
+        const options = handler.createSession.mock.calls[0]?.[0];
+        expect(options?.conversationId).toBe(trusted ? "handoff-conversation" : undefined);
+        if (trusted)
+          expect(options?.parentTraceContext?.decision).toEqual({
+            action: "record",
+            recordInputs: false,
+            recordOutputs: false,
+          });
+      } finally {
+        context.disable();
+        manager.disable();
+      }
+    },
+  );
   it("creates once for an operation id and uses it as the continuation token", async () => {
     const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
 
@@ -948,6 +1109,59 @@ describe("eveChannel — create session idempotency", () => {
     const token = handler.send.mock.calls[0]?.[1]?.continuationToken;
     expect(token).toMatch(/^eve:op:[0-9a-f]{32}$/);
     expect(handler.resolveSession).toHaveBeenCalledWith(token);
+  });
+
+  it("exposes a trusted remote invocation identity only for delegated creates", async () => {
+    const invocations: unknown[] = [];
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      trustedForwarders: () => true,
+      onMessage(ctx) {
+        invocations.push(ctx.eve.invocation);
+        return { auth: ctx.eve.caller };
+      },
+    });
+    const request = createJsonMessageRequest({
+      callback: {
+        callId: "call-1",
+        subagentName: "research",
+        token: "tok123",
+        url: "https://caller.example.com/eve/v1/callback/tok123",
+      },
+      message: "hi",
+      operationId: "remote-operation-1",
+      protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
+    });
+    request.headers.set(
+      "baggage",
+      writeForwardedParentSessionBaggage(undefined, {
+        callId: "call-1",
+        rootSessionId: "root-session",
+        sessionId: "parent-session",
+        turn: { id: "parent-turn", sequence: 1 },
+      })!,
+    );
+    expect((await handler.fetch(request)).status).toBe(202);
+    expect((await handler.fetch(createJsonMessageRequest({ message: "hi" }))).status).toBe(202);
+    expect(invocations).toEqual([{ operationId: "remote-operation-1" }, undefined]);
+
+    const noLineage = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      onMessage(ctx) {
+        expect(ctx.eve.invocation).toBeUndefined();
+        return { auth: ctx.eve.caller };
+      },
+    });
+    expect(
+      (
+        await noLineage.fetch(
+          createJsonMessageRequest({
+            message: "hi",
+            operationId: "ordinary-operation",
+          }),
+        )
+      ).status,
+    ).toBe(202);
   });
 
   it("returns the existing child for a replayed operation without dispatching again", async () => {
@@ -1037,6 +1251,7 @@ describe("eveChannel — create session idempotency", () => {
 
 describe("eveChannel — create session (text)", () => {
   it("returns a structured 500 when session creation fails", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({ auth: none() });
     handler.send.mockRejectedValue(new Error("backing store outage"));
 
@@ -1047,6 +1262,9 @@ describe("eveChannel — create session (text)", () => {
       error: "Failed to create the session.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-create request failed" }),
+    );
   });
 
   it("accepts a plain-string message and opens a new session", async () => {
@@ -1059,27 +1277,16 @@ describe("eveChannel — create session (text)", () => {
     expect(handler.send.mock.calls[0]?.[0]).toBe("hi");
   });
 
-  it("accepts task mode for callback-driven session creation", async () => {
-    const handler = createEveCreateHandler({ auth: none() });
-
-    const response = await handler.fetch(createJsonMessageRequest({ message: "hi", mode: "task" }));
-
-    expect(response.status).toBe(202);
-    expect(handler.send).toHaveBeenCalledTimes(1);
-    expect(handler.send.mock.calls[0]?.[1]).toMatchObject({ mode: "task" });
-  });
-
   it("accepts an explicit empty capability set for conversation sessions", async () => {
     const handler = createEveCreateHandler({ auth: none() });
 
     const response = await handler.fetch(
-      createJsonMessageRequest({ capabilities: {}, message: "hi", mode: "conversation" }),
+      createJsonMessageRequest({ capabilities: {}, message: "hi" }),
     );
 
     expect(response.status).toBe(202);
     expect(handler.send.mock.calls[0]?.[1]).toMatchObject({
       capabilities: {},
-      mode: "conversation",
     });
   });
 
@@ -1095,7 +1302,7 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "conversation",
+        protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
       }),
     );
 
@@ -1108,7 +1315,6 @@ describe("eveChannel — create session (text)", () => {
         token: "tok123",
         url: "https://caller.example.com/eve/v1/callback/tok123",
       },
-      mode: "conversation",
     });
   });
 
@@ -1124,7 +1330,7 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/support/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
+        protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
       }),
     );
 
@@ -1143,7 +1349,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1166,7 +1371,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/other-token",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1190,7 +1394,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1198,20 +1401,6 @@ describe("eveChannel — create session (text)", () => {
     expect(handler.send).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringContaining("Unrecognized key"),
-    });
-  });
-
-  it("rejects invalid create-session modes", async () => {
-    const handler = createEveCreateHandler({ auth: none() });
-
-    const response = await handler.fetch(
-      createJsonMessageRequest({ message: "hi", mode: "background" }),
-    );
-
-    expect(response.status).toBe(400);
-    expect(handler.send).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringContaining("mode"),
     });
   });
 
@@ -1337,6 +1526,106 @@ describe("eveChannel — create session (text)", () => {
 
     expect(response.status).toBe(400);
   });
+});
+
+describe("eveChannel — remote agent protocol 1 callers", () => {
+  const callback = {
+    callId: "call-1",
+    subagentName: "research",
+    token: "tok123",
+    url: "https://caller.example.com/eve/v1/callback/tok123",
+  };
+  // What an eve 0.66–0.68 background task adds when it delegates.
+  const legacyTaskFields = {
+    activityObserver: {
+      sink: {
+        url: "https://caller.example.com/eve/v1/activity/abcdefghijklmnopqrstuvwxyz123456",
+        version: 1,
+      },
+      workIdentity: {
+        callId: "call-1",
+        id: "work:caller:turn-1:call-1",
+        kind: "task",
+        name: "research",
+        rootSessionId: "caller",
+        rootTurnId: "turn-1",
+      },
+    },
+    callback: { ...callback, taskId: "task-1" },
+  };
+
+  it.each([
+    ["a direct call", { callback }, {}],
+    ["a background task", legacyTaskFields, { taskId: "task-1" }],
+  ])(
+    "serves an unversioned create from %s and answers protocol 1",
+    async (_caller, fields, legacyCaller) => {
+      const logs = captureLogRecords();
+      const handler = createEveCreateHandler({ auth: none() });
+
+      const response = await handler.fetch(
+        createJsonMessageRequest({ capabilities: {}, message: "hi", ...fields }),
+      );
+
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual({
+        ok: true,
+        protocolVersion: 1,
+        sessionId: "test-session-id",
+        status: "accepted",
+      });
+      const runInput = handler.createSession.mock.calls[0]?.[0];
+      expect(runInput?.callback).toEqual(callback);
+      expect(runInput?.legacyRemoteAgentCaller).toEqual(legacyCaller);
+      expect(logs.records).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "serving a remote agent protocol 1 caller",
+        }),
+      );
+    },
+  );
+
+  it("serves a protocol-1 continuation", async () => {
+    const handler = createEveContinueHandler({ auth: none() });
+
+    const response = await handler.fetch(
+      createJsonMessageRequest({ message: "and then?", ...legacyTaskFields }),
+    );
+
+    expect(response.status).toBe(202);
+    const options = handler.send.mock.calls[0]?.[1];
+    expect(options?.callback).toEqual(callback);
+  });
+
+  it("rejects a delegating caller on a protocol this deployment does not serve", async () => {
+    const handler = createEveCreateHandler({ auth: none() });
+
+    const response = await handler.fetch(
+      createJsonMessageRequest({ callback, message: "hi", protocolVersion: 3 }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "REMOTE_AGENT_PROTOCOL_MISMATCH",
+      protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
+    });
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "2"])(
+    "rejects a delegating create whose protocolVersion is %j instead of treating it as protocol 1",
+    async (protocolVersion) => {
+      const handler = createEveCreateHandler({ auth: none() });
+
+      const response = await handler.fetch(
+        createJsonMessageRequest({ callback, message: "hi", protocolVersion }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(handler.createSession).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("eveChannel — create session (UserContent array)", () => {
@@ -1624,6 +1913,7 @@ describe("eveChannel — continue session HITL (inputResponses)", () => {
   });
 
   it("returns a structured 500 when fixed-session delivery fails", async () => {
+    const logs = captureLogRecords();
     const handler = createEveContinueHandler({ auth: none() });
     handler.send.mockRejectedValue(new Error("backing store outage"));
 
@@ -1634,6 +1924,9 @@ describe("eveChannel — continue session HITL (inputResponses)", () => {
       error: "Failed to send the session message.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-message request failed" }),
+    );
   });
 
   it("converts clientContext on continue-session requests", async () => {
@@ -1887,6 +2180,7 @@ describe("eveChannel — cancel turn", () => {
   });
 
   it("returns 500 when the cancellation request fails unexpectedly", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCancelHandler({ auth: none() });
     handler.cancelTurn.mockRejectedValue(new Error("backing store outage"));
 
@@ -1897,6 +2191,9 @@ describe("eveChannel — cancel turn", () => {
       error: "Failed to cancel the turn.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "cancel-turn request failed" }),
+    );
   });
 });
 
@@ -1949,6 +2246,7 @@ describe("eveChannel — reset session", () => {
   });
 
   it("returns 500 when reset fails unexpectedly", async () => {
+    const logs = captureLogRecords();
     const handler = createEveResetHandler({ auth: none() });
     handler.reset.mockRejectedValue(new Error("backing store outage"));
 
@@ -1959,6 +2257,9 @@ describe("eveChannel — reset session", () => {
       error: "Failed to reset the session.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-reset request failed" }),
+    );
   });
 });
 
@@ -2044,8 +2345,33 @@ describe("eveChannel — forwarded principal", () => {
     subject: "U999",
   };
 
+  const PASSPORT_USER: SessionAuthContext = {
+    attributes: {},
+    authenticator: "vercel-passport",
+    issuer: "router",
+    principalId: "user-1",
+    principalType: "user",
+  };
+
   function forwardedRequest(forwardedPrincipal: unknown): Request {
-    return createJsonMessageRequest({ forwardedPrincipal, message: "hi", mode: "task" });
+    return createJsonMessageRequest({ forwardedPrincipal, message: "hi" });
+  }
+
+  function stamped(context: SessionAuthContext): SessionAuthContext {
+    return {
+      ...context,
+      attributes: { ...context.attributes, "eve:forwarded-by": ROUTER_CALLER.principalId },
+    };
+  }
+
+  /** The router may forward only its own Passport users, never Slack or other identities. */
+  function routerMayAssert(forwarder: SessionAuthContext, assertion: ForwardedAssertion): boolean {
+    if (forwarder.principalId !== ROUTER_CALLER.principalId) return false;
+    if (assertion.principal === undefined) return false;
+    const { current, initiator } = assertion.principal;
+    return (
+      current.authenticator === "vercel-passport" && initiator.authenticator === "vercel-passport"
+    );
   }
 
   it("rejects a forwarded body when the channel has no trustedForwarders", async () => {
@@ -2062,8 +2388,8 @@ describe("eveChannel — forwarded principal", () => {
   });
 
   it("rejects a caller the predicate refuses", async () => {
-    const trustedForwarders = vi.fn(
-      (caller: SessionAuthContext) => caller.principalId === "someone-else",
+    const trustedForwarders = vi.fn<TrustedForwarders>(
+      (caller) => caller.principalId === "someone-else",
     );
     const handler = createEveCreateHandler({
       trustedForwarders,
@@ -2073,12 +2399,46 @@ describe("eveChannel — forwarded principal", () => {
     const response = await handler.fetch(forwardedRequest({ current: FORWARDED_CURRENT }));
 
     expect(response.status).toBe(403);
-    expect(trustedForwarders).toHaveBeenCalledWith(ROUTER_CALLER);
+    expect(trustedForwarders).toHaveBeenCalledWith(ROUTER_CALLER, {
+      principal: { current: stamped(FORWARDED_CURRENT), initiator: stamped(FORWARDED_CURRENT) },
+    });
     expect(handler.send).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
       error: "Caller is not authorized to assert a forwarded principal.",
       ok: false,
     });
+  });
+
+  it.each([
+    { name: "a Slack current principal", forwarded: { current: FORWARDED_CURRENT } },
+    {
+      name: "a Slack initiator",
+      forwarded: { current: PASSPORT_USER, initiator: FORWARDED_INITIATOR },
+    },
+  ])("rejects a trusted forwarder asserting $name it may not assert", async ({ forwarded }) => {
+    const handler = createEveCreateHandler({
+      trustedForwarders: routerMayAssert,
+      auth: () => ROUTER_CALLER,
+    });
+
+    const response = await handler.fetch(forwardedRequest(forwarded));
+
+    expect(response.status).toBe(403);
+    expect(handler.send).not.toHaveBeenCalled();
+  });
+
+  it("accepts a trusted forwarder asserting a principal it may assert", async () => {
+    const handler = createEveCreateHandler({
+      trustedForwarders: routerMayAssert,
+      auth: () => ROUTER_CALLER,
+    });
+
+    const response = await handler.fetch(forwardedRequest({ current: PASSPORT_USER }));
+
+    expect(response.status).toBe(202);
+    const options = handler.send.mock.calls[0]?.[1] as MockSendOptions;
+    expect(options.auth).toEqual(stamped(PASSPORT_USER));
+    expect(options.initiatorAuth).toEqual(stamped(PASSPORT_USER));
   });
 
   it("rejects a malformed forwarded payload with 400", async () => {
@@ -2100,6 +2460,7 @@ describe("eveChannel — forwarded principal", () => {
   });
 
   it("returns 500 when the authored predicate throws", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       trustedForwarders: () => {
         throw new Error("boom");
@@ -2111,6 +2472,9 @@ describe("eveChannel — forwarded principal", () => {
 
     expect(response.status).toBe(500);
     expect(handler.send).not.toHaveBeenCalled();
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "trustedForwarders handler failed" }),
+    );
   });
 
   it("replaces the session principal when the forwarder is accepted", async () => {
@@ -2144,7 +2508,6 @@ describe("eveChannel — forwarded principal", () => {
         "eve:forwarded-by": ROUTER_CALLER.principalId,
       },
     });
-    expect(options.mode).toBe("task");
   });
 
   it("scopes create-once operations to the forwarded principal", async () => {
@@ -2323,6 +2686,51 @@ describe("eveChannel — forwarded principal", () => {
     );
   });
 
+  it("rejects a continuation asserting a principal the forwarder may not assert", async () => {
+    const handler = createEveContinueHandler({
+      auth: () => ROUTER_CALLER,
+      trustedForwarders: routerMayAssert,
+    });
+
+    const response = await handler.fetch(
+      new Request("https://example.com/eve/v1/session/test-session-id", {
+        body: JSON.stringify({ forwardedPrincipal: { current: FORWARDED_CURRENT }, message: "hi" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(handler.send).not.toHaveBeenCalled();
+  });
+
+  it("attributes a trusted remote input response to the forwarded human", async () => {
+    const handler = createEveContinueHandler({
+      auth: () => ROUTER_CALLER,
+      trustedForwarders: (forwarder) => forwarder.principalId === ROUTER_CALLER.principalId,
+    });
+    const response = await handler.fetch(
+      new Request("https://example.com/eve/v1/session/test-session-id", {
+        body: JSON.stringify({
+          forwardedPrincipal: { current: FORWARDED_CURRENT },
+          inputResponses: [{ requestId: "approval-1", optionId: "approve" }],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    expect(response.status).toBe(202);
+    expect(handler.respond).toHaveBeenCalledWith(
+      [{ requestId: "approval-1", optionId: "approve" }],
+      expect.objectContaining({
+        auth: expect.objectContaining({
+          principalId: FORWARDED_CURRENT.principalId,
+          attributes: expect.objectContaining({ "eve:forwarded-by": ROUTER_CALLER.principalId }),
+        }),
+      }),
+    );
+  });
+
   it("rejects a forwarded continuation when the channel has no trustedForwarders", async () => {
     const handler = createEveContinueHandler({ auth: () => ROUTER_CALLER });
 
@@ -2342,255 +2750,50 @@ describe("eveChannel — forwarded principal", () => {
   });
 });
 
-describe("eveChannel — native fork authorization", () => {
-  const fork = { sessionId: "source-session", beforeTurnId: "turn_1" };
-
-  it("denies forks by default before resolving a replayed operation", async () => {
-    const handler = createEveCreateHandler(
-      { auth: () => ACCEPTED_AUTH },
-      { activeSessionId: "existing" },
-    );
-    const response = await handler.fetch(
-      createJsonMessageRequest({ message: "edit", operationId: "retry", fork }),
-    );
-    expect(response.status).toBe(403);
-    expect(handler.resolveSession).not.toHaveBeenCalled();
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("passes only an explicitly authorized source reference to native creation", async () => {
-    const authorizeFork = vi.fn(() => true);
-    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, authorizeFork });
-    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
-    expect(response.status).toBe(202);
-    expect(authorizeFork).toHaveBeenCalledWith({
-      auth: ACCEPTED_AUTH,
-      sourceSessionId: fork.sessionId,
-    });
-    expect(handler.createSession.mock.calls[0]?.[0].fork).toEqual(fork);
-  });
-
-  it("rejects a source that the verified principal does not own", async () => {
-    const handler = createEveCreateHandler({
-      auth: () => ACCEPTED_AUTH,
-      authorizeFork: () => false,
-    });
-    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
-    expect(response.status).toBe(403);
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("denies anonymous forks even when the source policy allows them", async () => {
-    const authorizeFork = vi.fn(() => true);
-    const handler = createEveCreateHandler({ auth: none(), authorizeFork });
-    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
-    expect(response.status).toBe(403);
-    expect(authorizeFork).not.toHaveBeenCalled();
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("denies an onMessage downgrade to unauthenticated execution", async () => {
-    const handler = createEveCreateHandler({
-      auth: () => ACCEPTED_AUTH,
-      authorizeFork: () => true,
-      onMessage: () => ({ auth: null }),
-    });
-    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
-    expect(response.status).toBe(403);
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("reauthorizes a principal changed by onMessage", async () => {
-    const authorizeFork = vi.fn(
-      ({ auth }: { auth: SessionAuthContext }) => auth.principalId === ACCEPTED_AUTH.principalId,
-    );
-    const handler = createEveCreateHandler({
-      auth: () => ACCEPTED_AUTH,
-      authorizeFork,
-      onMessage: () => ({ auth: OVERRIDE_AUTH }),
-    });
-    const response = await handler.fetch(createJsonMessageRequest({ message: "edit", fork }));
-    expect(response.status).toBe(403);
-    expect(authorizeFork).toHaveBeenCalledTimes(2);
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    null,
-    {},
-    { sessionId: "source", beforeTurnId: "turn_-1" },
-    { ...fork, extra: "value" },
-  ])("rejects malformed fork references before authorization: %j", async (invalid) => {
-    const authorizeFork = vi.fn(() => true);
-    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, authorizeFork });
-    const response = await handler.fetch(
-      createJsonMessageRequest({ message: "edit", fork: invalid }),
-    );
-    expect(response.status).toBe(400);
-    expect(authorizeFork).not.toHaveBeenCalled();
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-});
-
-describe("eveChannel — server-authorized transcript seeds", () => {
-  const seed = {
+it("accepts only a trusted destination seed and separates its operation identity", async () => {
+  const resolveSeed = vi.fn(() => ({
+    attachments: "channel" as const,
     messages: [
-      { role: "user" as const, parts: [{ type: "text" as const, text: "Published content" }] },
+      { role: "user" as const, parts: [{ type: "text" as const, text: "accepted destination" }] },
     ],
-  };
-  const payload = { seed: true, operationId: "copy-1" };
-
-  it("uses only the resolver transcript and authenticated principal without invoking the message hook", async () => {
-    const resolveSeed = vi.fn(() => seed);
-    const onMessage = vi.fn(() => ({ auth: OVERRIDE_AUTH, context: ["Must not seed this"] }));
-    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed, onMessage });
-    const response = await handler.fetch(createJsonMessageRequest(payload));
-    expect(response.status).toBe(202);
-    expect(resolveSeed).toHaveBeenCalledExactlyOnceWith({
-      auth: ACCEPTED_AUTH,
-      operationId: "copy-1",
-    });
-    expect(onMessage).not.toHaveBeenCalled();
-    expect(handler.createSession).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        seed,
-        auth: ACCEPTED_AUTH,
-        input: {
-          message: undefined,
-          messageMetadata: undefined,
-          context: undefined,
-          outputSchema: undefined,
-        },
-        mode: "conversation",
-        fork: undefined,
-        callback: undefined,
-      }),
-    );
-    expect(handler.createSession.mock.calls[0]?.[0].seed).not.toBe(seed);
-    expect(handler.createSession.mock.calls[0]?.[0].seed?.messages).not.toBe(seed.messages);
-  });
-
-  it("recovers an accepted seed without consulting a revoked source or dispatching again", async () => {
-    const resolveSeed = vi.fn(() => null);
-    const handler = createEveCreateHandler(
-      { auth: () => ACCEPTED_AUTH, resolveSeed },
-      { activeSessionId: "independent-copy" },
-    );
-    const response = await handler.fetch(createJsonMessageRequest(payload));
-    expect(response.status).toBe(202);
-    await expect(response.json()).resolves.toMatchObject({ sessionId: "independent-copy" });
-    expect(resolveSeed).not.toHaveBeenCalled();
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("separates seed operation ownership from ordinary sends and other principals", async () => {
-    const ordinary = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
-    const first = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed: () => seed });
-    const other = createEveCreateHandler({ auth: () => OVERRIDE_AUTH, resolveSeed: () => seed });
-    for (const [handler, body] of [
-      [ordinary, { operationId: payload.operationId, message: "hi" }],
-      [first, payload],
-      [other, payload],
-    ] as const) {
-      expect((await handler.fetch(createJsonMessageRequest(body))).status).toBe(202);
-    }
-    const tokens = [ordinary, first, other].map(
-      (handler) => handler.createSession.mock.calls[0]?.[0].continuationToken,
-    );
-    expect(tokens.every((token) => typeof token === "string")).toBe(true);
-    expect(new Set(tokens).size).toBe(3);
-  });
-
-  it("rejects anonymous, unconfigured and unauthorized seed operations before native allocation", async () => {
-    const resolveSeed = vi.fn(() => seed);
-    const anonymous = createEveCreateHandler({ auth: none(), resolveSeed });
-    const disabled = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
-    const denied = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed: () => null });
-    for (const handler of [anonymous, disabled, denied]) {
-      expect((await handler.fetch(createJsonMessageRequest(payload))).status).toBe(403);
-      expect(handler.createSession).not.toHaveBeenCalled();
-    }
-    expect(resolveSeed).not.toHaveBeenCalled();
-    expect(anonymous.resolveSession).not.toHaveBeenCalled();
-    expect(disabled.resolveSession).not.toHaveBeenCalled();
-  });
-
-  it("does not expose resolver errors to the caller", async () => {
-    const handler = createEveCreateHandler({
-      auth: () => ACCEPTED_AUTH,
-      resolveSeed: () => {
-        throw new Error("private-source-internal-detail");
-      },
-    });
-    const response = await handler.fetch(createJsonMessageRequest(payload));
-    expect(response.status).toBe(500);
-    expect(await response.text()).not.toContain("private-source-internal-detail");
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("rejects private runtime metadata returned by a resolver before allocation", async () => {
-    const privateSeed = {
-      messages: [
-        {
-          role: "user" as const,
-          parts: [{ type: "text" as const, text: "Visible" }],
-          turnId: "owner-turn",
-        },
-      ],
-    };
-    const handler = createEveCreateHandler({
-      auth: () => ACCEPTED_AUTH,
-      resolveSeed: () => privateSeed,
-    });
-    expect((await handler.fetch(createJsonMessageRequest(payload))).status).toBe(500);
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-
-  it("does not resolve or allocate a browser-supplied transcript", async () => {
-    const resolveSeed = vi.fn(() => seed);
-    const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed });
-    expect(
-      (await handler.fetch(createJsonMessageRequest({ ...payload, messages: seed.messages })))
-        .status,
-    ).toBe(400);
-    expect(resolveSeed).not.toHaveBeenCalled();
-    expect(handler.resolveSession).not.toHaveBeenCalled();
-    expect(handler.createSession).not.toHaveBeenCalled();
-  });
-});
-
-it("looks up a seeded operation only in its explicit authenticated namespace", async () => {
-  const channel = eveChannel({ auth: () => ACCEPTED_AUTH });
-  const route = channel.routes.find(
-    (item) => item.method === "GET" && item.path === "/eve/v1/operation/:operationId",
+  }));
+  const handler = createEveCreateHandler({ auth: () => ACCEPTED_AUTH, resolveSeed });
+  const normal = createEveCreateHandler({ auth: () => ACCEPTED_AUTH });
+  expect(
+    (await handler.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(202);
+  expect(resolveSeed).toHaveBeenCalledWith({ auth: ACCEPTED_AUTH, operationId: "same" });
+  const accepted = handler.createSession.mock.calls[0]![0];
+  expect(accepted.seed?.messages[0]?.parts).toEqual([
+    { type: "text", text: "accepted destination" },
+  ]);
+  expect(accepted.input.message).toBeUndefined();
+  expect((await normal.fetch(createJsonMessageRequest({ operationId: "same" }))).status).toBe(202);
+  expect(accepted.continuationToken).not.toBe(
+    normal.createSession.mock.calls[0]![0].continuationToken,
   );
-  if (!route || route.method === "WEBSOCKET") throw new Error("Missing operation lookup route");
-  const seedToken = await deriveOperationContinuationToken({
-    auth: ACCEPTED_AUTH,
-    operationId: "copy-1",
-    kind: "seed",
+  for (const body of [
+    { operationId: "other", seed: { messages: [] } },
+    { operationId: "other", seed: true, message: "execute now" },
+    { seed: true },
+    { operationId: "other", seed: true, fork: { sessionId: "source" } },
+  ])
+    expect((await handler.fetch(createJsonMessageRequest(body))).status).toBe(400);
+  expect(resolveSeed).toHaveBeenCalledOnce();
+  expect(handler.createSession).toHaveBeenCalledOnce();
+  const foreign = createEveCreateHandler({
+    auth: () => OVERRIDE_AUTH,
+    resolveSeed: () => {
+      throw new Error("Destination is not owned");
+    },
   });
-  const resolveSession = vi.fn(async (token: string) =>
-    token === seedToken ? createMockSession({ id: "saved-copy" }) : undefined,
-  );
-  const args = { ...createRouteArgs(), params: { operationId: "copy-1" }, resolveSession };
-  const seeded = await route.handler(
-    new Request("https://example.com/eve/v1/operation/copy-1?kind=seed"),
-    args,
-  );
-  expect(seeded.status).toBe(200);
-  await expect(seeded.json()).resolves.toEqual({ sessionId: "saved-copy" });
-  expect(seeded.headers.get("cache-control")).toBe("no-store");
-  const ordinary = await route.handler(
-    new Request("https://example.com/eve/v1/operation/copy-1"),
-    args,
-  );
-  expect(ordinary.status).toBe(404);
-  resolveSession.mockClear();
-  const invalid = await route.handler(
-    new Request("https://example.com/eve/v1/operation/copy-1?kind=unknown"),
-    args,
-  );
-  expect(invalid.status).toBe(400);
-  expect(resolveSession).not.toHaveBeenCalled();
+  expect(
+    (await foreign.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(409);
+  expect(foreign.createSession).not.toHaveBeenCalled();
+  const anonymous = createEveCreateHandler({ auth: none(), resolveSeed });
+  expect(
+    (await anonymous.fetch(createJsonMessageRequest({ operationId: "same", seed: true }))).status,
+  ).toBe(400);
+  expect(anonymous.createSession).not.toHaveBeenCalled();
 });

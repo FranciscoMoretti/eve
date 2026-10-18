@@ -1,8 +1,8 @@
 import type { ModelMessage } from "ai";
+import { isFrameworkTool } from "#tools/provided/framework-tool.js";
 
 import { isWorkflowToolDefinition } from "#tools/workflow-definition.js";
 
-import { replayDynamicTools } from "#context/build-dynamic-tools.js";
 import { contextStorage, type AlsContext } from "#context/container.js";
 import type { ContextKey } from "#context/key.js";
 import {
@@ -19,13 +19,16 @@ import {
   type PersistedDynamicToolMetadata,
 } from "#context/dynamic-tool-metadata.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
-import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createLogger } from "#internal/logging.js";
 import type {
   SessionStartedStreamEvent,
   StepStartedStreamEvent,
   UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
+import { assertNotConnectionOwned } from "#connections/ownership.js";
+import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
+import { TOOL_SLUG_PATTERN, TOOL_SLUG_RULE } from "#discover/grammar.js";
+import { eveNamespaceReservation } from "#protocol/runtime-tools.js";
 import { ALLOWED_DYNAMIC_TOOL_EVENTS } from "#dynamic/definition.js";
 import { isBrandedToolEntry, type DynamicToolEntry } from "#tools/dynamic.js";
 import {
@@ -44,6 +47,8 @@ import { toErrorMessage } from "#shared/errors.js";
 import { parseJsonObject } from "#shared/json.js";
 import { hasSchemaValidator } from "#tools/durable-schema.js";
 import { serializeInputSchema, serializeOutputSchema } from "#tools/schema.js";
+import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
+import { workflowIdForHandling } from "#runtime/subagents/workflow-reference.js";
 import type { ResolvedDynamicToolResolver } from "#runtime/types.js";
 
 const log = createLogger("dynamic-tools");
@@ -62,20 +67,21 @@ function qualifyDynamicToolNames(
 
   const prefix =
     resolver.extensionNamespace === undefined ? "" : `${resolver.extensionNamespace}__`;
-  return keys.map((entryKey) => ({
-    entry: entries[entryKey]!,
-    entryKey,
-    name: `${prefix}${entryKey}`,
-  }));
-}
-
-/** Kept as the session-specific entry point for existing runtime consumers. */
-export function replayDynamicSessionTools(
-  metadata: readonly CurrentDynamicToolMetadata[],
-  _resolvers: readonly ResolvedDynamicToolResolver[],
-  sessionId: string,
-): readonly HarnessToolDefinition[] {
-  return replayDynamicTools(metadata, { sessionId, scope: "session" });
+  return keys.map((entryKey) => {
+    const name = `${prefix}${entryKey}`;
+    if (!TOOL_SLUG_PATTERN.test(name)) {
+      throw new Error(
+        `Dynamic tool resolver "${resolver.logicalPath}" returned illegal tool name "${name}". ${TOOL_SLUG_RULE}`,
+      );
+    }
+    const reservation = eveNamespaceReservation(name);
+    if (reservation !== undefined) {
+      throw new Error(
+        `Dynamic tool resolver "${resolver.logicalPath}" returned the reserved tool name "${name}". ${reservation}; rename the map key.`,
+      );
+    }
+    return { entry: entries[entryKey]!, entryKey, name };
+  });
 }
 
 function durableKeyForEvent(
@@ -199,6 +205,7 @@ export function validateDurableDynamicToolCallbacks(
       key !== "outputSchema" &&
       key !== "label" &&
       key !== "approvalKey" &&
+      key !== "approvalPrompt" &&
       key !== "approvalRequest" &&
       key !== "approvalResponse" &&
       key !== "toModelOutput",
@@ -210,10 +217,12 @@ export function validateDurableDynamicToolCallbacks(
   }
 
   const hasApproval = entry.approval !== undefined;
-  const hasApprovalResponse =
-    entry.approval !== undefined &&
-    typeof entry.approval !== "function" &&
-    entry.approval.response !== undefined;
+  const approvalConfiguration =
+    entry.approval !== undefined && typeof entry.approval !== "function"
+      ? entry.approval
+      : undefined;
+  const hasApprovalPrompt = approvalConfiguration?.prompt !== undefined;
+  const hasApprovalResponse = approvalConfiguration?.response !== undefined;
   const execute = validateReference({
     name,
     owner,
@@ -248,6 +257,13 @@ export function validateDurableDynamicToolCallbacks(
     phase: "approvalKey",
     stamped: raw.approvalKey,
     required: entry.approvalKey !== undefined,
+  });
+  const approvalPrompt = validateReference({
+    name,
+    owner,
+    phase: "approvalPrompt",
+    stamped: raw.approvalPrompt,
+    required: hasApprovalPrompt,
   });
   const approvalRequest = validateReference({
     name,
@@ -296,6 +312,7 @@ export function validateDurableDynamicToolCallbacks(
       start?: DurableDynamicCallbackReference;
     };
     approvalKey?: DurableDynamicCallbackReference;
+    approvalPrompt?: DurableDynamicCallbackReference;
     approvalRequest?: DurableDynamicCallbackReference;
     approvalResponse?: DurableDynamicCallbackReference;
     toModelOutput?: DurableDynamicCallbackReference;
@@ -310,6 +327,7 @@ export function validateDurableDynamicToolCallbacks(
     };
   }
   if (approvalKey !== undefined) callbacks.approvalKey = approvalKey;
+  if (approvalPrompt !== undefined) callbacks.approvalPrompt = approvalPrompt;
   if (approvalRequest !== undefined) callbacks.approvalRequest = approvalRequest;
   if (approvalResponse !== undefined) callbacks.approvalResponse = approvalResponse;
   if (toModelOutput !== undefined) callbacks.toModelOutput = toModelOutput;
@@ -326,6 +344,7 @@ function createMetadata(input: {
 }): CurrentDynamicToolMetadata {
   return {
     availableInSubagents: input.entry.availableInSubagents,
+    deferred: input.entry.deferred,
     callbacks: validateDurableDynamicToolCallbacks(input.name, input.entry, {
       sessionId: input.sessionId,
       scope: input.scope,
@@ -334,13 +353,42 @@ function createMetadata(input: {
       name: input.name,
     }),
     description: input.entry.description,
-    execution: input.entry.execution === "background" ? "background" : undefined,
+    frameworkTool: isFrameworkTool(input.entry) || undefined,
+    endsTurn: readDynamicEndsTurn(input.name, input.entry.endsTurn) || undefined,
     entryKey: input.entryKey,
     inputSchema: serializeInputSchema(input.entry.inputSchema),
     name: input.name,
     outputSchema: serializeOutputSchema(input.entry.outputSchema),
     resolverSlug: input.resolver.slug,
   };
+}
+
+/** Dynamic tool metadata is durable, so it can hold only a literal `endsTurn`. */
+function readDynamicEndsTurn(name: string, endsTurn: DynamicToolEntry["endsTurn"]): boolean {
+  if (typeof endsTurn === "function") {
+    throw new Error(
+      `Dynamic tool "${name}" sets endsTurn to a function, which dynamic tools do not support. Set endsTurn to true or false; the resolver runs for each event, so it can decide then.`,
+    );
+  }
+  return endsTurn === true;
+}
+
+/**
+ * The agent's workflow tools and agents. They run after the model step, so a
+ * dynamic tool, which runs in it, cannot take their names. A static subagent
+ * hidden with `tool: false` or `disableTool()` can be wrapped by one.
+ */
+function workflowToolNames(ctx: AlsContext): ReadonlySet<string> {
+  const bundle = ctx.get(BundleKey);
+  if (bundle === undefined) return new Set();
+  const { subagentRegistry, toolRegistry } = bundle;
+  return new Set([
+    ...[...toolRegistry.toolsByName.values()]
+      .filter(({ prepared }) => workflowIdForHandling(prepared.behavior?.handling) !== undefined)
+      .map(({ prepared }) => prepared.name),
+    ...subagentRegistry.preparedTools.map((tool) => tool.name),
+    ...subagentRegistry.dynamicResolvers.map((resolver) => resolver.name),
+  ]);
 }
 
 interface ResolvedDynamicToolEvent {
@@ -365,6 +413,21 @@ async function resolveToolsFromEvent(
         if (rawResult === null || rawResult === undefined) return null;
         const { entries, isSingle } = readDynamicToolResult(resolver, rawResult);
         const named = qualifyDynamicToolNames(resolver, isSingle, entries);
+        const connectionNames = ctx.get(ConnectionRegistryKey)?.getConnectionNames() ?? [];
+        const workflowNames = workflowToolNames(ctx);
+        for (const { name } of named) {
+          assertNotConnectionOwned({
+            connectionNames,
+            name,
+            remedy: "Rename the map key.",
+            subject: "Dynamic tool",
+          });
+          if (workflowNames.has(name)) {
+            throw new Error(
+              `Dynamic tool "${name}" from resolver "${resolver.logicalPath}" collides with the workflow tool or agent "${name}". Rename the map key.`,
+            );
+          }
+        }
         return {
           metadata: named.map(({ name, entryKey, entry }) =>
             createMetadata({ entry, entryKey, name, resolver, sessionId, scope }),
@@ -559,7 +622,7 @@ export async function refreshDynamicSessionToolsForRuntimeRevision(input: {
   input.ctx.set(SessionDynamicToolRuntimeRevisionKey, input.runtimeRevision);
 }
 
-/** Re-registers callbacks for compiled resolvers that explicitly support cold replay. */
+/** Re-registers missing callbacks while preserving the active turn's persisted tool set. */
 export async function rebindMissingCompiledDynamicToolCallbacks(input: {
   readonly ctx: AlsContext;
   readonly event: UnstampedMessageStreamEvent;
@@ -578,15 +641,19 @@ export async function rebindMissingCompiledDynamicToolCallbacks(input: {
   );
   if (needsResolution.length === 0) return;
   const resolverSlugs = new Set(needsResolution.map((entry) => entry.resolverSlug));
+  const matching = input.resolvers.filter((resolver) => resolverSlugs.has(resolver.slug));
+  // Framework resolvers opt into strict recovery because their persisted tool
+  // set represents locked runtime state. Authored resolvers rebind best-effort;
+  // a missing callback stays local to execution instead of blocking the turn.
+  const strictResolverSlugs = new Set(
+    matching
+      .filter((resolver) => resolver.rebindMissingCallbacks === true)
+      .map((resolver) => resolver.slug),
+  );
   const oldResolverSlugs = new Set(
     persisted
       .filter((entry) => !isCurrentDynamicToolMetadata(entry))
       .map((entry) => entry.resolverSlug),
-  );
-  const matching = input.resolvers.filter(
-    (resolver) =>
-      resolverSlugs.has(resolver.slug) &&
-      (oldResolverSlugs.has(resolver.slug) || resolver.rebindMissingCallbacks === true),
   );
   if (matching.length === 0) {
     input.ctx.set(TurnDynamicToolMetadataKey, toCurrentDynamicToolMetadataList(persisted));
@@ -597,11 +664,14 @@ export async function rebindMissingCompiledDynamicToolCallbacks(input: {
     input.ctx,
     async () => await resolveToolsFromEvent(input.ctx, matching, input.event, input.messages),
   );
+  // Keep the active turn's persisted tools and closures. Re-resolution only
+  // registers callback implementations; newly returned tools are not advertised.
   const updated = toCurrentDynamicToolMetadataList(persisted, resolved.metadata);
   input.ctx.set(TurnDynamicToolMetadataKey, updated);
 
   const unresolved = updated.filter(
     (entry) =>
+      (strictResolverSlugs.has(entry.resolverSlug) || oldResolverSlugs.has(entry.resolverSlug)) &&
       needsResolution.some(
         (candidate) =>
           candidate.resolverSlug === entry.resolverSlug && candidate.name === entry.name,

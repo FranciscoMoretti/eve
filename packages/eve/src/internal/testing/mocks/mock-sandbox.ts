@@ -12,8 +12,12 @@ import type {
   SandboxWriteFileOptions,
   SandboxWriteTextFileOptions,
 } from "#public/definitions/sandbox.js";
-import type { SandboxAccess, SandboxState } from "#sandbox/state.js";
 import type { SandboxNetworkPolicy } from "#shared/sandbox-network-policy.js";
+type NetworkPolicySandboxSession = SandboxSession & {
+  readonly name: string;
+  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
+};
+import type { SandboxAccess, SandboxState } from "#sandbox/state.js";
 import { bufferToStream, streamToBuffer } from "#execution/sandbox/stream-utils.js";
 
 /**
@@ -26,13 +30,15 @@ import { bufferToStream, streamToBuffer } from "#execution/sandbox/stream-utils.
  * `MockSandbox` after running a tool to assert on ordering, arguments,
  * or file contents without touching disk or spawning processes.
  */
-export interface MockSandboxInput {
+interface MockSandboxInput {
   /** Callback invoked when authored runtime code deletes this sandbox. */
   readonly delete?: () => Promise<void> | void;
   /**
    * Stable sandbox identifier. Defaults to `"sbx_mock"`.
    */
   readonly id?: string;
+  /** Sandbox name exposed by Vercel sessions. Defaults to `"sbx_mock"`. */
+  readonly name?: string;
   /**
    * Initial file contents visible to the sandbox.
    *
@@ -83,7 +89,7 @@ export interface MockSandbox {
    * Direct handle to the underlying sandbox session. Exposed for tests that
    * want to call the session surface outside a `ctx` scope.
    */
-  readonly session: SandboxSession;
+  readonly session: NetworkPolicySandboxSession;
   /** Ordered log of every command received through `run`/`spawn`. */
   readonly commandLog: readonly string[];
   /** Ordered log of every path received through `removePath`. */
@@ -116,7 +122,6 @@ export interface MockSandbox {
  * Builds an in-memory {@link MockSandbox} from a declarative descriptor.
  */
 export function mockSandbox(input: MockSandboxInput = {}): MockSandbox {
-  const sandboxId = input.id ?? "sbx_mock";
   const files = new Map<string, string>();
   const fileBytes = new Map<string, Buffer>();
   const writes: MockSandboxWrite[] = [];
@@ -178,8 +183,8 @@ export function mockSandbox(input: MockSandboxInput = {}): MockSandbox {
     }
   }
 
-  const baseSession: SandboxSession = {
-    id: sandboxId,
+  const baseSession: NetworkPolicySandboxSession = {
+    name: input.name ?? "sbx_mock",
     resolvePath(path: string): string {
       return resolveWorkspacePath(path);
     },
@@ -249,15 +254,12 @@ export function mockSandbox(input: MockSandboxInput = {}): MockSandbox {
 
   const access: SandboxAccess = {
     async captureState(): Promise<SandboxState> {
-      return {
-        initialized: false,
-        session: null,
-      };
+      return { session: null };
     },
     async delete(): Promise<void> {
       await input.delete?.();
     },
-    async get(): Promise<SandboxSession> {
+    async get(): Promise<NetworkPolicySandboxSession> {
       return session;
     },
     async stop(): Promise<void> {

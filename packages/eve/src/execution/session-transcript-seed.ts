@@ -11,8 +11,8 @@ const file = z.strictObject({
   url: z
     .url()
     .refine(
-      (value) => ["https:", "http:", "data:"].includes(new URL(value).protocol),
-      "Seed files require a copied HTTP or data URL.",
+      (value) => ["https:", "http:"].includes(new URL(value).protocol),
+      "Seed files require a copied HTTP URL.",
     ),
   mediaType: z.string().min(1),
   filename: z.string().optional(),
@@ -33,7 +33,7 @@ const tool = z.discriminatedUnion("state", [
 /** Trusted server input, never a browser request body or a runtime checkpoint. */
 const sessionTranscriptSeed = z.strictObject({
   /** Resolve compact file URLs through the authenticated channel before the first model turn. */
-  attachments: z.literal("channel").optional(),
+  attachments: z.literal("channel"),
   messages: z
     .array(
       z.discriminatedUnion("role", [
@@ -66,7 +66,8 @@ export type SessionTranscriptSeed = z.infer<typeof sessionTranscriptSeed>;
 
 /** Validates and detaches trusted callback data before crossing a durable boundary. */
 export function parseSessionTranscriptSeed(value: unknown): SessionTranscriptSeed {
-  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 8 * 1024 * 1024)
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > 8 * 1024 * 1024)
     throw new Error("Session transcript seed byte limit exceeded.");
   const seed = sessionTranscriptSeed.parse(value);
   for (const message of seed.messages) {
@@ -99,8 +100,6 @@ export function prepareSessionTranscriptSeed(value: unknown): {
       for (const part of message.parts) {
         parts.push(part.type === "text" ? { ...part, state: "done" } : part);
         if (part.type === "text") content.push(part);
-        else if (seed.attachments !== "channel" && part.mediaType.startsWith("image/"))
-          content.push({ type: "image", image: new URL(part.url), mediaType: part.mediaType });
         else
           content.push({
             type: "file",

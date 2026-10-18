@@ -1,7 +1,7 @@
 /** Pure borderless setup menus. Interaction and terminal lifecycle belong to the renderer. */
 
 import type { ChannelSetupAction, PromptOption } from "#setup/cli/index.js";
-import { renderOptionRow, renderCursorRow, resolveOptionRowState } from "#setup/cli/option-row.js";
+import { renderOptionRow, resolveOptionRowState } from "#setup/cli/option-row.js";
 import {
   filterOptions,
   submitRowIndex,
@@ -9,14 +9,7 @@ import {
   type SelectState,
 } from "#setup/cli/select-state.js";
 import type { PlannerNavigation, SelectMetadata, SelectNotice } from "#setup/prompter.js";
-import type { ModelSettingsRequest } from "#setup/flows/model.js";
 
-import {
-  modelEditorMenuRows,
-  reasoningPositions,
-  type ModelEditorRowId,
-  type ModelEditorState,
-} from "./model-editor.js";
 import type { ProviderPickerPhase } from "./provider-picker.js";
 import { maskLine, visibleLine, type LineState } from "./line-editor.js";
 import type { Theme } from "./theme.js";
@@ -49,6 +42,7 @@ interface SetupQuestionPanelBase {
 }
 
 interface SetupSelectPanelBase extends SetupQuestionPanelBase {
+  helpText?: string;
   options: readonly SetupPanelOption[];
   searchAction?: SearchActionOption;
   select: SelectState;
@@ -56,6 +50,9 @@ interface SetupSelectPanelBase extends SetupQuestionPanelBase {
   loadingFrame?: string;
   /** A dim-inverse affordance appended to the cursor row, e.g. ` ↵ change `. */
   cursorBadge?: string;
+  /** Blink state for the active searchable field. */
+  caretVisible?: boolean;
+  footerHints?: readonly string[];
 }
 
 /**
@@ -120,7 +117,7 @@ interface SetupActionsPanelState {
 
 export type SetupSelectPanelState = SetupOptionSelectPanelState | SetupActionsPanelState;
 
-export interface SetupTextPanelState {
+interface SetupTextPanelState {
   message: string;
   editor: LineState;
   placeholder?: string;
@@ -130,7 +127,7 @@ export interface SetupTextPanelState {
   notices?: readonly SelectNotice[];
 }
 
-export interface SetupAcknowledgePanelState {
+interface SetupAcknowledgePanelState {
   message: string;
   lines: readonly string[];
 }
@@ -147,21 +144,16 @@ export interface FlowPanelLine {
   evidence?: boolean;
 }
 
-/** One already-resolved animation frame and its active color. */
+/** One already-resolved animation frame. */
 export interface FlowPanelIndicator {
   glyph: string;
-  color: "green" | "yellow";
 }
 
-/** One live flow status after its animation frame and visual intent are resolved. */
-export type FlowPanelStatus =
-  | { kind: "progress"; text: string; indicator: FlowPanelIndicator }
-  | {
-      kind: "external-action";
-      text: string;
-      emphasis: string;
-      indicator: FlowPanelIndicator;
-    };
+/** One live flow status after its animation frame is resolved. */
+export interface FlowPanelStatus {
+  text: string;
+  indicator: FlowPanelIndicator;
+}
 
 export type FlowPanelContent =
   | {
@@ -229,24 +221,11 @@ function toneGlyph(tone: FlowPanelLine["tone"], theme: Theme): string {
 }
 
 function renderIndicator(indicator: FlowPanelIndicator, theme: Theme): string {
-  return indicator.color === "green"
-    ? theme.colors.green(indicator.glyph)
-    : theme.colors.yellow(indicator.glyph);
-}
-
-function renderStatusText(status: FlowPanelStatus, theme: Theme): string {
-  if (status.kind === "progress") return theme.colors.dim(status.text);
-
-  const start = status.text.indexOf(status.emphasis);
-  if (start === -1) return theme.colors.dim(status.text);
-  const end = start + status.emphasis.length;
-  return `${theme.colors.dim(status.text.slice(0, start))}${theme.colors.yellow(
-    status.text.slice(start, end),
-  )}${theme.colors.dim(status.text.slice(end))}`;
+  return theme.colors.green(indicator.glyph);
 }
 
 function renderFlowPanelStatus(status: FlowPanelStatus, theme: Theme): string {
-  return `${renderIndicator(status.indicator, theme)} ${renderStatusText(status, theme)}`;
+  return `${renderIndicator(status.indicator, theme)} ${theme.colors.dim(status.text)}`;
 }
 
 export function flowMessageRows(lines: readonly FlowPanelLine[], theme: Theme): string[] {
@@ -283,7 +262,13 @@ export function renderFlowPanel(state: FlowPanelState, theme: Theme, width: numb
     state.content.kind === "question" ? (state.content.title ?? state.title) : state.title;
   if (title.length > 0) {
     for (const line of title.split("\n")) {
-      rows.push(line.length === 0 ? "" : `  ${c.bold(line)}`);
+      if (line.length === 0) {
+        rows.push("");
+        continue;
+      }
+      for (const wrapped of wrapVisibleLine(line, Math.max(1, width - 3))) {
+        rows.push(`  ${c.bold(wrapped)}`);
+      }
     }
     rows.push("");
   }
@@ -331,7 +316,6 @@ function optionRow(input: {
   option: SetupPanelOption;
   isCursor: boolean;
   isChecked: boolean;
-  placeholder: boolean;
   /** Railed lists lead resting rows with the `▏` rail and drop the hint dot. */
   railed?: boolean;
   hintPadding?: number;
@@ -355,7 +339,8 @@ function optionRow(input: {
     accent: option.accent,
     isCursor: input.isCursor,
     state: resolveOptionRowState(option, input.isChecked),
-    placeholder: input.placeholder,
+    placeholder: false,
+    presentation: "minimal",
     hintPadding: input.hintPadding,
   });
 }
@@ -438,12 +423,19 @@ function plannerStepRows(
   return [`  ${progress.join("")}`, ""];
 }
 
-function selectMessageRows(message: string, layout: SelectLayout, theme: Theme): string[] {
+function selectMessageRows(
+  message: string,
+  layout: SelectLayout,
+  theme: Theme,
+  width: number,
+): string[] {
   if (message === "") return [];
 
-  const rows = message.split("\n").map((line, index) => {
+  const rows = message.split("\n").flatMap((line, index) => {
     const emphasized = layout === "stacked" || index > 0;
-    return `  ${emphasized ? theme.colors.bold(line) : line}`;
+    return wrapVisibleLine(line, Math.max(1, width - 4)).map(
+      (wrapped) => `  ${emphasized ? theme.colors.bold(wrapped) : wrapped}`,
+    );
   });
   rows.push("");
   return rows;
@@ -453,15 +445,28 @@ function searchFilter(
   filter: string,
   placeholder: string | undefined,
   loadingFrame: string | undefined,
+  caretVisible: boolean,
   theme: Theme,
   railed: boolean,
 ): string {
-  const caret = theme.colors.dim(theme.glyph.caret);
+  const caret = caretVisible ? theme.colors.dim(theme.glyph.caret) : " ";
   let input = caret;
   if (railed) {
-    // The railed list's filter line: `▏ query▏`, or the dim placeholder.
-    input = filter.length > 0 ? filter + caret : theme.colors.dim(placeholder ?? "type to filter");
-  } else if (filter.length > 0) {
+    input =
+      filter.length === 0
+        ? renderInputWithBlockCursor({
+            before: "",
+            under: "s",
+            after: "earch…",
+            visible: caretVisible,
+            inverse: theme.colors.inverse,
+            render: theme.colors.dim,
+          })
+        : `${filter}${caret}`;
+    if (loadingFrame !== undefined) input += ` ${theme.colors.yellow(loadingFrame)}`;
+    return input;
+  }
+  if (filter.length > 0) {
     input = filter + caret;
   } else if (placeholder !== undefined) {
     input = theme.colors.dim(`> ${placeholder}`);
@@ -471,9 +476,9 @@ function searchFilter(
 }
 
 /**
- * Whether a select renders as the railed searchable list — the one component
- * behind the model catalog, team, and project pickers: `▏`-railed rows, an
- * inverse cursor row trailed by the `↵` badge, and a rail-led filter line.
+ * Whether a select renders as the compact searchable list behind the model
+ * catalog, team, and project pickers. Its filter line leads the options and
+ * the focused row uses bold weight rather than a cursor marker.
  */
 function isRailedSearch(presentation: SelectPresentation): boolean {
   return (
@@ -592,20 +597,6 @@ function inlineEditOption(
   }
 }
 
-function optionUsesPlaceholder(
-  presentation: SelectPresentation,
-  isTrailingTaskAction: boolean,
-): boolean {
-  // A type-ahead list draws no placeholder dots — the filter row leads instead.
-  const isFiltered = presentation.filter !== undefined && presentation.layout !== "task-list";
-  // Checklists and the explicit menu layouts (stacked, task-list) present every
-  // row as a pickable option, so each carries the placeholder dot.
-  const isMultiSelect = presentation.selection === "multiple";
-  const isMenuLayout = presentation.layout !== "plain";
-
-  return !isFiltered && !isTrailingTaskAction && (isMultiSelect || isMenuLayout);
-}
-
 function appendSelectOptionRows(input: {
   rows: string[];
   state: SetupOptionSelectPanelState;
@@ -659,10 +650,9 @@ function appendSelectOptionRows(input: {
     };
     if (editingKey) rowOption.hint = undefined;
     const railed = isRailedSearch(presentation);
-    // Railed lists carry the Enter affordance on the cursor row by default;
-    // an explicit cursorBadge (the provider picker's `↵ change`) still wins.
-    const rowBadge =
-      state.cursorBadge ?? (railed && !isTrailingTaskAction ? enterBadge(theme) : undefined);
+    // Focused rows use bold weight; only an explicit badge such as the provider
+    // picker's `↵ change` adds another affordance.
+    const rowBadge = state.cursorBadge;
     const badge = isCursor && rowBadge !== undefined ? ` ${rowBadge}` : "";
     rows.push(
       `  ${optionRow({
@@ -672,7 +662,6 @@ function appendSelectOptionRows(input: {
           presentation.selection === "multiple"
             ? state.select.selected.has(option.value)
             : option.checked === true,
-        placeholder: railed || optionUsesPlaceholder(presentation, isTrailingTaskAction),
         railed,
         hintPadding: Math.max(0, visibleLabelWidth - rowOption.label.length),
         theme,
@@ -687,10 +676,8 @@ function appendSelectOptionRows(input: {
 function appendSubmitRow(rows: string[], cursor: number, submitIndex: number, theme: Theme): void {
   if (submitIndex < 0) return;
   const onSubmit = cursor === submitIndex;
-  const content = onSubmit
-    ? `${theme.glyph.selectedPointer} ${theme.colors.bold("Submit")}`
-    : "  Submit";
-  rows.push("", `  ${renderCursorRow(content, onSubmit, theme.colors)}`);
+  const content = onSubmit ? theme.colors.bold("Submit") : theme.colors.dim("Submit");
+  rows.push("", `     ${content}`);
 }
 
 function appendSelectNotices(
@@ -769,7 +756,6 @@ function renderActionQuestion(
         option: action,
         isCursor: index === state.cursor,
         isChecked: false,
-        placeholder: true,
         hintPadding: 0,
         theme,
       })}`,
@@ -814,7 +800,7 @@ export function renderSelectQuestion(
           theme,
         )
       : []),
-    ...selectMessageRows(state.message, presentation.layout, theme),
+    ...selectMessageRows(state.message, presentation.layout, theme, width),
   ];
   if (state.description !== undefined || state.metadata !== undefined) {
     if (rows.at(-1) === "") rows.pop();
@@ -835,17 +821,15 @@ export function renderSelectQuestion(
   }
 
   if (presentation.filter !== undefined) {
-    // The railed filter line indents one extra cell so its rail sits in the
-    // option rows' glyph column.
-    rows.push(
-      `  ${railed ? " " : ""}${searchFilter(
-        state.select.filter,
-        presentation.filter.placeholder,
-        state.loadingFrame,
-        theme,
-        railed,
-      )}`,
+    const filter = searchFilter(
+      state.select.filter,
+      presentation.filter.placeholder,
+      state.loadingFrame,
+      state.caretVisible ?? true,
+      theme,
+      railed,
     );
+    rows.push(`  ${railed ? " " : ""}${filter}`);
   }
 
   const viewSize = selectViewSize({
@@ -902,29 +886,31 @@ export function renderSelectQuestion(
     appendSelectNotices(rows, state.notices, presentation.layout, theme, width);
   }
 
+  if (state.helpText) {
+    rows.push("");
+    for (const paragraph of state.helpText.split("\n")) {
+      for (const line of wrapVisibleLine(paragraph, Math.max(1, width - 4))) {
+        rows.push(`  ${c.dim(line)}`);
+      }
+    }
+  }
+
   if (state.error !== undefined) {
     rows.push("", `  ${c.red(state.error)}`);
   }
 
   rows.push(
     ...questionFooter(
-      railed
-        ? ["Enter select", "Esc back"]
-        : selectFooterHints(presentation, visible, cursor, plannerNavigation),
+      state.footerHints ??
+        (railed
+          ? ["Enter select", "Esc back"]
+          : selectFooterHints(presentation, visible, cursor, plannerNavigation)),
       theme,
       width,
     ),
   );
   return rows.map((row) => clip(row, width));
 }
-
-/** The composite Change-model screen's inputs: the resolved request plus live state. */
-export interface ModelEditorPanelInput {
-  request: ModelSettingsRequest;
-  state: ModelEditorState;
-}
-
-const MODEL_EDITOR_MESSAGE = "Select the model";
 
 /**
  * A dim, background-free selection badge carrying the Enter affordance, e.g.
@@ -933,141 +919,6 @@ const MODEL_EDITOR_MESSAGE = "Select the model";
 export function enterBadge(theme: Theme, label?: string): string {
   const c = theme.colors;
   return c.dim(label === undefined ? theme.glyph.enter : `${theme.glyph.enter} ${label}`);
-}
-
-/**
- * A discrete reasoning track: `●` below the current notch, `◉` on it, `○`
- * above, joined by `─` connectors. `accent` paints the covered stretch —
- * notches and connectors up to the current position — blue. `index` -1 means
- * unset: an all-`○` track with no fill.
- */
-export function reasoningTrack(input: {
-  count: number;
-  index: number;
-  connectorWidth: number;
-  accent: boolean;
-  theme: Theme;
-}): string {
-  const { count, index, theme } = input;
-  const glyphs = theme.glyph;
-  const connector = glyphs.trackLine.repeat(input.connectorWidth);
-  const pieces: string[] = [];
-  for (let at = 0; at < count; at += 1) {
-    if (at > 0) pieces.push(connector);
-    pieces.push(
-      at < index ? glyphs.trackFilled : at === index ? glyphs.trackCurrent : glyphs.trackEmpty,
-    );
-  }
-  if (!input.accent || index < 0) return pieces.join("");
-  // Pieces alternate notch/connector; the covered stretch ends at the current
-  // notch, which sits at piece position 2 * index.
-  const covered = pieces.slice(0, 2 * index + 1).join("");
-  return `${theme.colors.blue(covered)}${pieces.slice(2 * index + 1).join("")}`;
-}
-
-/**
- * Paints the Change-model screen: a value menu whose reasoning and tier rows
- * adjust inline with left/right, and whose Model row opens the searchable
- * catalog.
- */
-export function renderModelEditorQuestion(
-  input: ModelEditorPanelInput,
-  theme: Theme,
-  width: number,
-  message = MODEL_EDITOR_MESSAGE,
-): string[] {
-  const { request, state } = input;
-  switch (state.screen.kind) {
-    case "menu":
-      return renderModelEditorMenu(input, state.screen.cursor, theme, width);
-    case "model":
-      return renderModelEditorModelScreen(request, state.screen.select, theme, width, message);
-  }
-}
-
-/**
- * The value menu rides the ordinary stacked-select painter: each row's hint
- * line is the drafted value (mini track, `fast ↯`, the slug), dim at rest and
- * accent-keeping under the cursor.
- */
-function renderModelEditorMenu(
-  input: ModelEditorPanelInput,
-  cursor: ModelEditorRowId,
-  theme: Theme,
-  width: number,
-): string[] {
-  const { request, state } = input;
-  const { draft } = state;
-  const rows = modelEditorMenuRows(request, draft, state.capabilities);
-
-  const options: SetupPanelOption[] = rows.map((row) => {
-    if (row.disabled === true && row.value === "model") {
-      // The fixed model still shows its id; the description carries the reason.
-      return draft.modelId === null ? { ...row } : { ...row, hint: draft.modelId };
-    }
-    if (row.disabled === true || row.value === "done") return { ...row };
-    switch (row.value) {
-      case "model":
-        return { ...row, hint: draft.modelId ?? undefined };
-      case "reasoning": {
-        const positions = reasoningPositions(state.capabilities, draft.reasoning);
-        const index = draft.reasoning === "default" ? -1 : positions.indexOf(draft.reasoning);
-        const track = reasoningTrack({
-          count: positions.length,
-          index,
-          connectorWidth: 1,
-          accent: row.value === cursor,
-          theme,
-        });
-        const level = draft.reasoning === "default" ? "provider default" : draft.reasoning;
-        // Track first: the notches hold a fixed column while the
-        // variable-width level name trails, so nothing jumps on adjust.
-        return { ...row, hint: `${track} ${level}` };
-      }
-      case "tier":
-        return { ...row, hint: draft.tier === "priority" ? `fast ${theme.glyph.fast}` : "normal" };
-      default:
-        return { ...row };
-    }
-  });
-
-  const index = Math.max(
-    0,
-    options.findIndex((option) => option.value === cursor),
-  );
-  return renderSelectQuestion(
-    {
-      kind: "stacked",
-      message: "",
-      options,
-      select: { filter: "", cursor: index, selected: new Set() },
-    },
-    theme,
-    width,
-  );
-}
-
-/** The catalog sub-screen: `▏`-railed id rows under a `▏` filter line. */
-function renderModelEditorModelScreen(
-  request: ModelSettingsRequest,
-  select: SelectState,
-  theme: Theme,
-  width: number,
-  message: string,
-): string[] {
-  // The catalog list IS the shared railed searchable select — the same
-  // component behind the team and project pickers.
-  return renderSelectQuestion(
-    {
-      kind: "search",
-      message,
-      options: request.model.kind === "pick" ? request.model.options : [],
-      placeholder: "type to search",
-      select,
-    },
-    theme,
-    width,
-  );
 }
 
 /** Paints a text question section: message, a block-cursor input line, hints. */

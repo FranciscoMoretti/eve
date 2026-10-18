@@ -5,6 +5,7 @@ import type { RouteDefinition } from "#channel/routes.js";
 import type { Session, SessionHandle } from "#channel/session.js";
 import type { DeliverPayload, SessionAuthContext, TurnPolicy } from "#channel/types.js";
 import type { StepInput } from "#harness/types.js";
+import type { UploadPolicyInput } from "#public/channels/upload-policy.js";
 import type { AudienceContext } from "#shared/conversation-context.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
 
@@ -25,9 +26,9 @@ export interface FetchFileResult {
 
 /** Runtime context supplied while resolving a channel-owned file URL. */
 export interface FetchFileContext {
-  /** Authenticated session performing staging; absent for standalone resolver calls. */
-  readonly session?: Pick<SessionHandle, "auth">;
   readonly state: Readonly<Record<string, unknown>>;
+  /** The session the attachment arrived in, for checking it against the session's caller. */
+  readonly session: SessionHandle;
 }
 
 export type FetchFileFunction = (
@@ -97,12 +98,22 @@ export interface GenericChannelDefinition<
   readonly events?: TEvents;
 
   /**
-   * Fetches bytes for a `URL` object encountered on a `FilePart.data` by the
-   * staging pipeline. Return `null` to pass the URL through to the model
-   * provider unchanged, or bytes / {@link FetchFileResult} to stage the file to
-   * the sandbox.
+   * Fetches bytes for a link encountered on a `FilePart.data` by the staging
+   * pipeline. Return bytes / {@link FetchFileResult} to stage the file to the
+   * sandbox, or `null` when the link is not this channel's: eve then downloads
+   * a public `https:` link itself, and any other link reaches the model as a
+   * note. A provider never fetches an attachment.
    */
   readonly fetchFile?: FetchFileFunction;
+
+  /**
+   * Size cap and media types for every file eve stages for this channel,
+   * checked against the final bytes and the media type they prove, including
+   * links eve downloads itself. A file that breaks the policy reaches the
+   * model as a note. Omit to check nothing beyond your own `fetchFile`; eve's
+   * own downloads then stop at the 25 MB framework default.
+   */
+  readonly uploadPolicy?: UploadPolicyInput;
 
   /**
    * Channel-owned metadata exposed to instrumentation callbacks. This is the
@@ -115,8 +126,8 @@ export interface GenericChannelDefinition<
 
   /**
    * Classifies who can observe the originating conversation. The hook runs
-   * after route auth with channel state, the authenticated principal, run mode,
-   * and deployment environment. Return `"unknown"` when classification is not
+   * after route auth with channel state, the authenticated principal, and
+   * deployment environment. Return `"unknown"` when classification is not
    * confident; consumers treat it as non-public.
    */
   readonly audience?: (input: AudienceContext<TState>) => ChannelAudience;

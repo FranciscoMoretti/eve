@@ -51,11 +51,11 @@ Ask for something that forces a large unfiltered scan:
 Total revenue across all customers, all time, broken out by day.
 ```
 
-The model proposes the query, `approval` returns `"user-approval"`, and the turn parks. The stream emits `input.requested`, then `session.waiting`. How the prompt looks depends on the channel, whether buttons in the TUI, Block Kit in Slack, or a UI control on the web. Approve it and the run resumes from exactly that step, then the query runs. Deny it and the tool is skipped, with the model told why.
+The model proposes the query, `approval` returns `"user-approval"`, and the turn parks. The stream emits `input.requested`, then `turn.waiting` with `on: "input"`, and the turn stays open until someone answers. How the prompt looks depends on the channel, whether buttons in the TUI, Block Kit in Slack, or a UI control on the web. Approve it and the run resumes from exactly that step, then the query runs. Deny it and the tool is skipped, with the model told why.
 
 Each session has exactly one active continuation. Answer an approval against a stale handle and it's rejected, so there's no way to double-resume the same parked turn.
 
-The same machinery backs the built-in `ask_question` tool, where the model asks you mid-turn, and per-connection approval via `approval: once()`. See [Tools and human-in-the-loop](../tools).
+The same machinery backs the opt-in `ask_question` tool, where the model asks you mid-turn, and per-connection approval via `approval: once()`. See [Tools and human-in-the-loop](../tools).
 
 → Next: [Ship it](./ship-it)
 

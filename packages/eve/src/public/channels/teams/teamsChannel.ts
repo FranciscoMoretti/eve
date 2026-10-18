@@ -35,6 +35,11 @@ import {
   type TeamsPostedActivity,
 } from "#public/channels/teams/api.js";
 import {
+  answerTeamsAuthorizationReveal,
+  readTeamsAuthorizationReveal,
+  type TeamsAuthorizationReveal,
+} from "#public/channels/teams/authorization.js";
+import {
   defaultEvents,
   defaultOnMessage,
   defaultTeamsAuth,
@@ -62,6 +67,7 @@ import { readNonEmptyString } from "#shared/guards.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import { defineChannel, POST, type Channel } from "#public/definitions/channel.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
+import type { InputOption } from "#shared/input.js";
 
 const log = createLogger("teams.channel");
 
@@ -81,7 +87,7 @@ export interface TeamsInboundMessageContext extends TeamsContext {
 }
 
 /** Channel-owned Teams context returned by `context()`. */
-export interface TeamsChannelContext extends TeamsContext {
+interface TeamsChannelContext extends TeamsContext {
   readonly adaptiveCardVersion: string;
   state: TeamsChannelState;
 }
@@ -89,12 +95,15 @@ export interface TeamsChannelContext extends TeamsContext {
 /** Event-handler Teams context, including continuation routing. */
 export interface TeamsEventContext extends TeamsChannelContext, ChannelContinuationOps {}
 
-/** JSON-serializable Teams channel state. */
-export interface TeamsPendingApprovalCard {
+/** A posted question or approval card, kept until eve resolves its request. */
+export interface TeamsPendingPromptCard {
   readonly activityId: string;
+  /** A question's options, so its card can show the chosen label. */
+  readonly options?: readonly Pick<InputOption, "id" | "label">[];
   readonly prompt: string;
 }
 
+/** JSON-serializable Teams channel state. */
 export interface TeamsChannelState {
   /** Bot account captured from the inbound activity recipient. */
   bot: TeamsChannelAccount | null;
@@ -111,7 +120,7 @@ export interface TeamsChannelState {
   triggeringUser: TeamsChannelAccount | null;
   /** Activity id for the default connection-auth card, when posted. */
   pendingAuthActivityId?: string | null;
-  pendingApprovalCards?: Record<string, TeamsPendingApprovalCard>;
+  pendingPromptCards?: Record<string, TeamsPendingPromptCard>;
   approvalResponderAccounts?: Record<string, TeamsChannelAccount>;
 }
 
@@ -179,6 +188,7 @@ type TeamsSessionFailedHandler = (
 export interface TeamsChannelEvents {
   readonly "approval.candidate"?: TeamsEventHandler<"approval.candidate">;
   readonly "approval.settled"?: TeamsEventHandler<"approval.settled">;
+  readonly "input.resolved"?: TeamsEventHandler<"input.resolved">;
   readonly "turn.started"?: TeamsEventHandler<"turn.started">;
   readonly "actions.requested"?: TeamsEventHandler<"actions.requested">;
   readonly "action.partial"?: TeamsEventHandler<"action.partial">;
@@ -301,6 +311,7 @@ export function teamsChannel(config: TeamsChannelConfig = {}): TeamsChannel {
   >({
     kindHint: "teams",
     turnPolicy: config.turnPolicy,
+    uploadPolicy: config.files?.uploadPolicy,
     state: initialTeamsState(),
     fetchFile: createTeamsFetchFile(filesPolicy, {
       ...config.api,
@@ -319,11 +330,11 @@ export function teamsChannel(config: TeamsChannelConfig = {}): TeamsChannel {
 
     deliver(payload, channel) {
       const state = payload.state as Partial<TeamsChannelState> | undefined;
-      const cards = state?.pendingApprovalCards;
+      const cards = state?.pendingPromptCards;
       if (cards !== undefined) {
-        channel.state.pendingApprovalCards = {
+        channel.state.pendingPromptCards = {
           ...cards,
-          ...channel.state.pendingApprovalCards,
+          ...channel.state.pendingPromptCards,
         };
       }
       const responders = state?.approvalResponderAccounts;
@@ -375,6 +386,7 @@ export function teamsChannel(config: TeamsChannelConfig = {}): TeamsChannel {
               activity,
               config,
               onInputResponse,
+              resolveSession,
               waitUntil,
               from,
             });
@@ -671,8 +683,12 @@ async function handleInvoke(input: {
   readonly from: ChannelFrom<TeamsChannelState>;
   readonly config: TeamsChannelConfig;
   readonly onInputResponse: NonNullable<TeamsChannelConfig["onInputResponse"]>;
+  readonly resolveSession: ChannelResolveSession;
   readonly waitUntil: (task: Promise<unknown>) => void;
 }): Promise<Response> {
+  const reveal = readTeamsAuthorizationReveal(input.activity);
+  if (reveal !== null) return Response.json(await revealAuthorization({ ...input, reveal }));
+
   if (isTeamsInputResponseActivity(input.activity)) {
     input.waitUntil(
       dispatchInputResponses({
@@ -691,6 +707,36 @@ async function handleInvoke(input: {
   if (result instanceof Response) return result;
   if (result && typeof result === "object") return Response.json(result);
   return teamsOk();
+}
+
+/** Identifies the presser the same way a HITL card submission does. */
+async function revealAuthorization(input: {
+  readonly activity: TeamsInvokeActivity;
+  readonly config: TeamsChannelConfig;
+  readonly onInputResponse: NonNullable<TeamsChannelConfig["onInputResponse"]>;
+  readonly resolveSession: ChannelResolveSession;
+  readonly reveal: TeamsAuthorizationReveal;
+}): Promise<JsonObject> {
+  const state = stateFromActivity(input.activity);
+  const ctx = buildTeamsBinding({ config: input.config, state });
+  let auth: SessionAuthContext | null = null;
+  try {
+    auth = (await input.onInputResponse(ctx, input.activity))?.auth ?? null;
+  } catch (error) {
+    log.error("Teams sign-in press authorization failed", { error });
+  }
+  const token = cardContinuationToken(
+    input.activity,
+    state,
+    input.reveal.replyToActivityId ?? null,
+  );
+  return await answerTeamsAuthorizationReveal({
+    adaptiveCardVersion: input.config.adaptiveCardVersion ?? "1.5",
+    auth,
+    presser: input.activity.from,
+    resolveSession: () => input.resolveSession(token),
+    reveal: input.reveal,
+  });
 }
 
 async function dispatchInputResponses(input: {
@@ -712,10 +758,18 @@ async function dispatchInputResponses(input: {
   }
   if (result === null) return;
   try {
-    await input.from(resolveInputContinuationToken(input.activity, state)).respond(inputResponses, {
-      auth: result.auth,
-      state: approvalResponseStatePatch(input.activity, result.auth),
-    });
+    await input
+      .from(
+        cardContinuationToken(
+          input.activity,
+          state,
+          readTeamsInputReplyToActivityId(input.activity),
+        ),
+      )
+      .respond(inputResponses, {
+        auth: result.auth,
+        state: approvalResponseStatePatch(input.activity, result.auth),
+      });
   } catch (error) {
     log.error("Teams input response delivery failed", { error });
   }
@@ -742,11 +796,12 @@ function stateFromActivity(
   };
 }
 
-function resolveInputContinuationToken(
+/** Continues the thread a card recorded when posted, or the activity's own thread. */
+function cardContinuationToken(
   activity: TeamsMessageActivity | TeamsInvokeActivity,
   state: TeamsChannelState,
+  replyToActivityId: string | null,
 ): string {
-  const replyToActivityId = readTeamsInputReplyToActivityId(activity);
   if (replyToActivityId === null) return stateToken(state);
   return teamsContinuationToken({
     conversationId: activity.conversation.id,
@@ -769,7 +824,7 @@ function approvalResponseStatePatch(
   }
   return {
     approvalResponderAccounts: { [auth.principalId]: activity.from },
-    pendingApprovalCards: {
+    pendingPromptCards: {
       [requestId]: {
         activityId,
         prompt: readTeamsToolApprovalPrompt(activity) ?? "Tool approval",
@@ -796,7 +851,7 @@ function initialTeamsState(): TeamsChannelState {
     conversationId: null,
     conversationType: null,
     approvalResponderAccounts: {},
-    pendingApprovalCards: {},
+    pendingPromptCards: {},
     pendingAuthActivityId: null,
     replyToActivityId: null,
     serviceUrl: null,

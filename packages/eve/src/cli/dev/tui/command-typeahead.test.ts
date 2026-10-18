@@ -22,7 +22,8 @@ function spec(name: string, options?: Partial<PromptCommandSpec>): PromptCommand
     aliases: [],
     description: `${name} command`,
     takesArgument: false,
-    build: () => ({ type: "reset" }),
+    history: "keep",
+    build: () => ({ type: "new" }),
     ...options,
   };
 }
@@ -98,7 +99,7 @@ describe("inlineCommandHint", () => {
     expect(inlineCommandHint(typeaheadFor(COMMANDS, "/model"))).toBe("[provider/model]");
   });
 
-  it("returns an empty string for a complete argument-less command (still collapses)", () => {
+  it("returns an empty string for a complete argument-less command", () => {
     expect(inlineCommandHint(typeaheadFor(COMMANDS, "/help"))).toBe("");
   });
 
@@ -182,7 +183,7 @@ describe("renderCommandSuggestions", () => {
     const state = typeaheadFor(PROMPT_COMMANDS, "/");
     const rows = renderCommandSuggestions(state, theme, 80).map(stripAnsi);
     expect(rows).toHaveLength(PROMPT_COMMANDS.length);
-    expect(rows[0]).toContain("/help");
+    expect(rows[0]).toContain("/model");
   });
 
   it("clips rows to the terminal width", () => {
@@ -192,10 +193,10 @@ describe("renderCommandSuggestions", () => {
     }
   });
 
-  it("renders the real registry on a bare slash with /help leading", () => {
+  it("renders the real registry on a bare slash with /model leading", () => {
     const state = typeaheadFor(PROMPT_COMMANDS, "/");
     const rows = renderCommandSuggestions(state, theme, 80).map(stripAnsi);
-    expect(rows[0]).toContain("/help");
+    expect(rows[0]).toContain("/model");
     expect(rows[0]).toContain(theme.glyph.selectedPointer);
   });
 });

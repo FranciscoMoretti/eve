@@ -1,33 +1,42 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { compileAgent } from "../../src/compiler/compile-agent.js";
 import { EXTENSION_CAPABILITY_VERSIONS } from "../../src/compiler/extension-compatibility.js";
+import { loadCompiledModuleMapFromAuthoredSource } from "../../src/internal/authored-module-map-loader.js";
 import {
   buildExtensionPackage,
   tryReadExtensionBuildConfig,
 } from "../../src/internal/nitro/host/build-extension.js";
-import { loadCompiledModuleMapFromAuthoredSource } from "../../src/internal/authored-module-map-loader.js";
-import { useScenarioApp } from "../../src/internal/testing/scenario-app.js";
+import {
+  useTemporaryAppRoots,
+  useTemporaryDirectories,
+} from "../../src/internal/testing/use-temporary-app-roots.js";
 import { createDiskRuntimeCompiledArtifactsSource } from "../../src/runtime/compiled-artifacts-source.js";
 import { loadCompiledManifest } from "../../src/runtime/loaders/manifest.js";
 import { resolveRuntimeAgentGraph } from "../../src/runtime/resolve-agent-graph.js";
 import { loadResolvedModuleExport } from "../../src/runtime/resolve-helpers.js";
 
-const scenarioApp = useScenarioApp();
-const tempRoots: string[] = [];
+// Scenario tier: building the extension package spawns tsc for declarations.
+const createAppRoot = useTemporaryAppRoots();
+const createScratchDirectory = useTemporaryDirectories();
 
-afterEach(async () => {
-  await Promise.all(
-    tempRoots
-      .splice(0)
-      .map((root) => rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 200 })),
-  );
-});
+/**
+ * Compiles the app and hydrates the module map from authored source, the
+ * `eve eval` / `eve dev` path.
+ */
+async function compileRuntimeGraph(appRoot: string) {
+  await compileAgent({ startPath: appRoot });
+  const compiledArtifactsSource = createDiskRuntimeCompiledArtifactsSource(appRoot);
+  const [manifest, moduleMap] = await Promise.all([
+    loadCompiledManifest({ compiledArtifactsSource }),
+    loadCompiledModuleMapFromAuthoredSource({ compiledArtifactsSource }),
+  ]);
+  return { graph: await resolveRuntimeAgentGraph({ manifest, moduleMap }), manifest, moduleMap };
+}
 
 const PACKAGE_NAME = "@acme/installed-crm";
 const EXT_TREE: Readonly<Record<string, string>> = {
@@ -188,9 +197,10 @@ const EXT_TREE: Readonly<Record<string, string>> = {
  * is placed under the consumer's node_modules, so the consumer must discover
  * and normalize the emitted agent-shaped distribution.
  */
-async function buildInstalledExtensionFiles(): Promise<Record<string, string>> {
-  const extRoot = await mkdtemp(join(tmpdir(), "eve-ext-src-"));
-  tempRoots.push(extRoot);
+async function buildInstalledExtensionFiles(
+  tree: Readonly<Record<string, string>> = EXT_TREE,
+): Promise<Record<string, string>> {
+  const extRoot = await createScratchDirectory("eve-ext-src-");
   await writeFile(
     join(extRoot, "package.json"),
     `${JSON.stringify(
@@ -213,7 +223,7 @@ async function buildInstalledExtensionFiles(): Promise<Record<string, string>> {
     join(extRoot, "node_modules", "eve"),
     "dir",
   );
-  for (const [path, contents] of Object.entries(EXT_TREE)) {
+  for (const [path, contents] of Object.entries(tree)) {
     await mkdir(dirname(join(extRoot, path)), { recursive: true });
     await writeFile(join(extRoot, path), contents, "utf8");
   }
@@ -257,9 +267,7 @@ describe("mounted extension installed under node_modules", () => {
         subagent: EXTENSION_CAPABILITY_VERSIONS.subagent,
       },
     });
-    const app = await scenarioApp({
-      name: "mounted-extension-installed",
-      installDependencies: true,
+    const app = await createAppRoot("eve-mounted-extension-installed-", {
       files: {
         "agent/agent.mjs": 'export default { model: "openai/gpt-5.4" };\n',
         "agent/instructions.md": "You are a precise assistant.\n",
@@ -284,14 +292,7 @@ describe("mounted extension installed under node_modules", () => {
       },
     });
 
-    await compileAgent({ startPath: app.appRoot });
-
-    const compiledArtifactsSource = createDiskRuntimeCompiledArtifactsSource(app.appRoot);
-    const [manifest, moduleMap] = await Promise.all([
-      loadCompiledManifest({ compiledArtifactsSource }),
-      loadCompiledModuleMapFromAuthoredSource({ compiledArtifactsSource }),
-    ]);
-    const graph = await resolveRuntimeAgentGraph({ manifest, moduleMap });
+    const { graph, manifest, moduleMap } = await compileRuntimeGraph(app.appRoot);
 
     const echo = graph.root.agent.tools.find((entry) => entry.name === "crm__echo");
     expect(echo).toBeDefined();
@@ -417,5 +418,72 @@ describe("mounted extension installed under node_modules", () => {
     expect(manifest.instructions.map((entry) => entry.content).join("\n")).toContain(
       "Prefer the CRM tools for account questions.",
     );
+  });
+
+  it("binds each mount's config in a shared chunk when mounted in the root and a subagent", async () => {
+    const tool = (description: string) =>
+      [
+        'import { defineTool } from "eve/tools";',
+        'import { apiKey } from "../../lib/api-key.js";',
+        "export default defineTool({",
+        `  description: "${description}",`,
+        '  inputSchema: { type: "object", properties: {}, additionalProperties: false },',
+        "  async execute() { return { apiKey: apiKey() }; },",
+        "});",
+        "",
+      ].join("\n");
+    // A helper outside the extension source shared by two tools is emitted to `dist/_chunks`.
+    const extensionFiles = await buildInstalledExtensionFiles({
+      "extension/extension.ts": EXT_TREE["extension/extension.ts"]!,
+      "lib/api-key.ts": [
+        'import extension from "../extension/extension.js";',
+        "export const apiKey = () => extension.config.apiKey;",
+        "",
+      ].join("\n"),
+      "extension/tools/echo.ts": tool("Echo the configured API key."),
+      "extension/tools/shout.ts": tool("Shout the configured API key."),
+    });
+    expect(
+      Object.keys(extensionFiles).some((path) =>
+        path.startsWith(`node_modules/${PACKAGE_NAME}/dist/_chunks/`),
+      ),
+    ).toBe(true);
+    const app = await createAppRoot("eve-mounted-extension-chunks-", {
+      files: {
+        "agent/agent.mjs": 'export default { model: "openai/gpt-5.4" };\n',
+        "agent/instructions.md": "You are a precise assistant.\n",
+        "agent/extensions/crm.mjs": [
+          `import crm from "${PACKAGE_NAME}";`,
+          'export default crm({ apiKey: "sk-root" });',
+          "",
+        ].join("\n"),
+        "agent/subagents/manager/agent.mjs": [
+          "export default {",
+          '  model: "openai/gpt-5.4",',
+          '  description: "Manage CRM reviews.",',
+          "};",
+          "",
+        ].join("\n"),
+        "agent/subagents/manager/extensions/crm.mjs": [
+          `import crm from "${PACKAGE_NAME}";`,
+          'export default crm({ apiKey: "sk-manager" });',
+          "",
+        ].join("\n"),
+        ...extensionFiles,
+      },
+    });
+
+    const { graph } = await compileRuntimeGraph(app.appRoot);
+
+    const rootEcho = graph.root.agent.tools.find((entry) => entry.name === "crm__echo");
+    await expect(rootEcho?.execute?.({}, { messages: [], toolCallId: "call_1" })).resolves.toEqual({
+      apiKey: "sk-root",
+    });
+    const manager = graph.root.subagentRegistry.subagentsByName.get("manager");
+    const managerNode = graph.nodesByNodeId.get(manager!.definition.nodeId);
+    const managerShout = managerNode?.agent.tools.find((entry) => entry.name === "crm__shout");
+    await expect(
+      managerShout?.execute?.({}, { messages: [], toolCallId: "call_2" }),
+    ).resolves.toEqual({ apiKey: "sk-manager" });
   });
 });

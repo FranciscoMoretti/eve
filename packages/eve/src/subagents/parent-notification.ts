@@ -1,21 +1,17 @@
-/**
- * Sends delegated task results to their parent and conversation results to
- * the caller of each turn.
- */
+/** Sends settled turn results to the caller of each turn. */
 
 import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext } from "#context/serialize.js";
 import { parseSessionCallback } from "#channel/session-callback.js";
 import type { TurnCaller } from "#channel/types.js";
 import type { RuntimeSubagentChildResult } from "#shared/action-types.js";
-import { ActivityObserverKey, SessionCallbackKey } from "#context/keys.js";
+import { SessionCallbackKey } from "#context/keys.js";
 import {
   isSubagentAdapterState,
   SUBAGENT_ADAPTER_KIND,
   type SubagentAdapterState,
 } from "#subagents/adapter-state.js";
 import { HookNotFoundError } from "#compiled/@workflow/errors/index.js";
-import { SUBAGENT_EXECUTION_FAILED } from "#subagents/agent-handle-errors.js";
 import { createLogger } from "#internal/logging.js";
 import type { AgentTurnOutcome } from "#shared/agent-turn-outcome.js";
 import { toErrorMessage } from "#shared/errors.js";
@@ -23,64 +19,17 @@ import { parseJsonValue } from "#shared/json.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import { postSessionCallbackRequest } from "#execution/session-callback-request.js";
-import { readTaskIdFromInboxToken } from "#tasks/task-inbox-token.js";
 
 const log = createLogger("execution.delegated-parent-notification");
 
-/**
- * Resumes the parent owner's hook with a delegated subagent result.
- * No-op for root sessions.
- *
- * `usage` — the completed child's session-total token spend — is
- * attached to success results so the caller can attribute the
- * subagent's tokens. Error results never carry usage.
- */
-export async function notifyDelegatedParentStep(input: {
-  readonly result: RuntimeSubagentChildResult | undefined;
-  readonly serializedContext: Record<string, unknown>;
-  readonly usage?: TokenUsage;
-}): Promise<void> {
-  "use step";
-
-  if (input.result === undefined) {
-    return;
-  }
-
-  const ctx = await deserializeContext(input.serializedContext);
-  const adapter = ctx.get(ChannelKey);
-
-  if (adapter?.kind !== SUBAGENT_ADAPTER_KIND) {
-    return;
-  }
-
-  const parentContinuationToken = String(adapter.state?.parentContinuationToken ?? "");
-  if (parentContinuationToken === "") {
-    return;
-  }
-
-  // A task child reports its session totals exactly once, so those totals
-  // are the turn's usage delta; the terminal envelope carries them so the
-  // parent folds spend from the outcome alone.
-  const result =
-    input.usage === undefined
-      ? input.result
-      : {
-          ...input.result,
-          outcome: { ...input.result.outcome, usageDelta: input.usage },
-          usage: input.usage,
-        };
-
-  await resumeHook(parentContinuationToken, {
-    kind: "runtime-action-result",
-    results: [result],
-  });
-}
+/** Error code for a delegated agent whose execution threw. */
+const SUBAGENT_EXECUTION_FAILED = "SUBAGENT_EXECUTION_FAILED";
 
 /** Settled turn payload forwarded from the owner to the caller. */
 export interface SettledTurnNotification {
   readonly output: unknown;
   readonly isError?: boolean;
-  /** Usage this turn added; omitted (zero) on crash and expiry paths. */
+  /** Usage accumulated since the previous caller settlement, including yielded turns. */
   readonly usage?: TokenUsage;
 }
 
@@ -133,13 +82,12 @@ export async function notifyTurnCallerStep(input: {
 
 /** Settles a workflow-owned caller after the child turn is cooperatively cancelled. */
 export async function notifyCancelledTaskCallerStep(input: {
-  readonly caller: TurnCaller | undefined;
+  readonly caller: TurnCaller;
   readonly sessionId: string;
   readonly usage?: TokenUsage;
 }): Promise<void> {
   "use step";
 
-  if (input.caller === undefined) return;
   const usageDelta = input.usage ?? ZERO_TOKEN_USAGE;
   const error = {
     code: SUBAGENT_EXECUTION_FAILED,
@@ -211,8 +159,8 @@ function createSettledTurnResult(input: {
     output,
     subagentName: input.caller.subagentName,
   };
-  // Legacy per-result usage projection (usage spans); the parent folds
-  // `outcome.usageDelta`, never this field, when an outcome is present.
+  // Legacy per-result usage projection (usage spans); the run that opened the
+  // child tallies `outcome.usageDelta`, never this field, when present.
   return input.settled.usage === undefined ? result : { ...result, usage: input.settled.usage };
 }
 
@@ -238,7 +186,6 @@ export async function resolveInitialTurnCallerStep(input: {
         url: parsed.callback.url,
       },
       subagentName: parsed.callback.subagentName,
-      taskId: parsed.callback.taskId ?? readTaskIdFromInboxToken(parsed.callback.token),
     };
   }
 
@@ -252,23 +199,19 @@ export async function resolveInitialTurnCallerStep(input: {
     callId: adapter.state.callId,
     replyTo: { kind: "hook", token: adapter.state.parentContinuationToken },
     subagentName: adapter.state.subagentName,
-    taskId: adapter.state.taskId ?? readTaskIdFromInboxToken(adapter.state.parentContinuationToken),
   };
 }
 
-/** Rebinds child event forwarding to the caller that owns the next accepted turn. */
-export async function bindTurnCallerContextStep(input: {
-  readonly caller: TurnCaller | undefined;
-  readonly serializedContext: Record<string, unknown>;
-}): Promise<Record<string, unknown>> {
-  "use step";
-
-  const caller = input.caller;
-  if (caller === undefined) return input.serializedContext;
-  const withActivity =
-    caller.activityObserver === undefined
-      ? input.serializedContext
-      : { ...input.serializedContext, [ActivityObserverKey.name]: caller.activityObserver };
+/**
+ * Points child event forwarding at the caller that owns the next accepted turn,
+ * so the turn's input requests and progress reach that caller and not the
+ * previous one.
+ */
+export function bindTurnCallerContext(
+  caller: TurnCaller | undefined,
+  serializedContext: Record<string, unknown>,
+): Record<string, unknown> {
+  if (caller === undefined) return serializedContext;
   if (caller.replyTo.kind === "callback") {
     const callback = {
       callId: caller.callId,
@@ -276,14 +219,10 @@ export async function bindTurnCallerContextStep(input: {
       token: caller.replyTo.token,
       url: caller.replyTo.url,
     };
-    return {
-      ...withActivity,
-      [SessionCallbackKey.name]:
-        caller.taskId === undefined ? callback : { ...callback, taskId: caller.taskId },
-    };
+    return { ...serializedContext, [SessionCallbackKey.name]: callback };
   }
 
-  const adapter = withActivity[ChannelKey.name];
+  const adapter = serializedContext[ChannelKey.name];
   if (
     adapter === null ||
     typeof adapter !== "object" ||
@@ -293,16 +232,14 @@ export async function bindTurnCallerContextStep(input: {
     throw new Error("Delegated local turn is missing its subagent adapter binding.");
   }
   const state = Reflect.get(adapter, "state") as SubagentAdapterState;
-  const { taskId: _priorTaskId, ...stateWithoutTaskId } = state;
-  const nextState: Record<string, unknown> = {
-    ...stateWithoutTaskId,
+  const nextState: SubagentAdapterState = {
+    ...state,
     callId: caller.callId,
     parentContinuationToken: caller.replyTo.token,
     subagentName: caller.subagentName,
   };
-  if (caller.taskId !== undefined) nextState.taskId = caller.taskId;
   return {
-    ...withActivity,
+    ...serializedContext,
     [ChannelKey.name]: {
       ...adapter,
       state: nextState,

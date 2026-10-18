@@ -4,7 +4,7 @@ type PromptCommandTarget = "local" | "remote";
 
 /** The slash commands the prompt accepts. */
 export type PromptCommand =
-  | { type: "reset" }
+  | { type: "new" }
   | { type: "cancel" }
   | { type: "clear" }
   | { type: "compact" }
@@ -30,6 +30,10 @@ export interface PromptCommandSpec {
   readonly argumentHint?: string;
   /** Accepts a trailing argument (enables `/name <arg>` parsing). */
   readonly takesArgument: boolean;
+  /** Whether recalling this command would reopen a modal or take over prompt navigation. */
+  readonly history: "keep" | "omit";
+  /** Inline argument suggestions, when this command has a catalog-backed grammar. */
+  readonly typeahead?: { readonly maxArguments: number; readonly loadingLabel: string };
   /** Maps a recognized invocation to its parsed command. */
   readonly build: (argument: string) => PromptCommand;
 }
@@ -44,50 +48,38 @@ interface PromptCommandDefinition extends PromptCommandSpec {
  * transcript-echo suppression, and command discovery cannot drift apart.
  */
 const PROMPT_COMMAND_DEFINITIONS = [
-  // `help` leads so that the typeahead's default highlight — what a bare `/`
-  // plus Enter submits — is the safest command, not session-resetting `/reset`.
   {
-    name: "help",
+    name: "model",
+    history: "omit",
     aliases: [],
-    description: "Show available commands",
-    takesArgument: false,
-    build: () => ({ type: "help" }),
-    targets: ["local", "remote"],
-  },
-  {
-    name: "info",
-    aliases: [],
-    description: "Show application and messaging information",
-    takesArgument: false,
-    build: () => ({ type: "info" }),
+    description: "Choose a model, speed, and reasoning",
+    argumentHint: "[provider/model]",
+    takesArgument: true,
+    typeahead: { maxArguments: 2, loadingLabel: "models" },
+    build: (argument) => ({ type: "extension", name: "model", argument }),
     targets: ["local"],
   },
   {
-    name: "reset",
-    aliases: [],
+    name: "new",
+    history: "keep",
+    aliases: ["reset"],
     description: "Start a fresh session",
     takesArgument: false,
-    build: () => ({ type: "reset" }),
-    targets: ["local", "remote"],
-  },
-  {
-    name: "cancel",
-    aliases: [],
-    description: "Cancel the running turn",
-    takesArgument: false,
-    build: () => ({ type: "cancel" }),
+    build: () => ({ type: "new" }),
     targets: ["local", "remote"],
   },
   {
     name: "clear",
-    aliases: ["new"],
-    description: "Clear the current session context",
+    history: "keep",
+    aliases: [],
+    description: "Clear the session context and keep the session",
     takesArgument: false,
     build: () => ({ type: "clear" }),
     targets: ["local", "remote"],
   },
   {
     name: "compact",
+    history: "keep",
     aliases: [],
     description: "Compact the current session context",
     takesArgument: false,
@@ -95,33 +87,47 @@ const PROMPT_COMMAND_DEFINITIONS = [
     targets: ["local", "remote"],
   },
   {
-    name: "login",
+    name: "cancel",
+    history: "keep",
     aliases: [],
-    description: "Connect a model provider",
+    description: "Cancel the running turn",
     takesArgument: false,
-    build: () => ({ type: "extension", name: "login", argument: "" }),
-    targets: ["local"],
-  },
-  {
-    name: "model",
-    aliases: [],
-    description: "Choose a model and its settings",
-    argumentHint: "[provider/model]",
-    takesArgument: true,
-    build: (argument) => ({ type: "extension", name: "model", argument }),
-    targets: ["local"],
-  },
-  {
-    name: "loglevel",
-    aliases: [],
-    description: "Show or hide captured stdout/stderr/sandbox logs",
-    argumentHint: "[all|stderr|sandbox|none]",
-    takesArgument: true,
-    build: (argument) => ({ type: "loglevel", argument }),
+    build: () => ({ type: "cancel" }),
     targets: ["local", "remote"],
   },
   {
+    name: "login",
+    history: "omit",
+    aliases: [],
+    description: "Connect a model provider",
+    argumentHint: "[connection]",
+    takesArgument: true,
+    typeahead: { maxArguments: 1, loadingLabel: "connections" },
+    build: (argument) => ({ type: "extension", name: "login", argument }),
+    targets: ["local"],
+  },
+  {
+    name: "add",
+    history: "omit",
+    aliases: [],
+    description: "Add an integration from the registry",
+    takesArgument: true,
+    typeahead: { maxArguments: 1, loadingLabel: "registry" },
+    build: (argument) => ({ type: "extension", name: "add", argument }),
+    targets: ["local"],
+  },
+  {
+    name: "deploy",
+    history: "keep",
+    aliases: [],
+    description: "Deploy the agent to Vercel",
+    takesArgument: false,
+    build: () => ({ type: "extension", name: "deploy", argument: "" }),
+    targets: ["local"],
+  },
+  {
     name: "traces",
+    history: "omit",
     aliases: [],
     description: "Open the local trace viewer",
     argumentHint: "[trace]",
@@ -130,23 +136,37 @@ const PROMPT_COMMAND_DEFINITIONS = [
     targets: ["local"],
   },
   {
-    name: "add",
+    name: "loglevel",
+    history: "omit",
     aliases: [],
-    description: "Add an integration from the registry",
+    description: "Choose the minimum displayed log severity",
+    argumentHint: "[none|error|warn|debug|all]",
     takesArgument: true,
-    build: (argument) => ({ type: "extension", name: "add", argument }),
+    typeahead: { maxArguments: 1, loadingLabel: "log levels" },
+    build: (argument) => ({ type: "loglevel", argument }),
+    targets: ["local", "remote"],
+  },
+  {
+    name: "info",
+    history: "omit",
+    aliases: [],
+    description: "Show application and messaging information",
+    takesArgument: false,
+    build: () => ({ type: "info" }),
     targets: ["local"],
   },
   {
-    name: "deploy",
+    name: "help",
+    history: "omit",
     aliases: [],
-    description: "Deploy the agent to Vercel",
+    description: "Show available commands",
     takesArgument: false,
-    build: () => ({ type: "extension", name: "deploy", argument: "" }),
-    targets: ["local"],
+    build: () => ({ type: "help" }),
+    targets: ["local", "remote"],
   },
   {
     name: "exit",
+    history: "keep",
     aliases: ["quit"],
     description: "Quit the TUI",
     takesArgument: false,
@@ -155,12 +175,25 @@ const PROMPT_COMMAND_DEFINITIONS = [
   },
 ] satisfies readonly PromptCommandDefinition[];
 
+export type ArgumentTypeaheadCommand = Extract<
+  (typeof PROMPT_COMMAND_DEFINITIONS)[number],
+  { typeahead: object }
+>["name"];
+
 export const PROMPT_COMMANDS: readonly PromptCommandSpec[] = PROMPT_COMMAND_DEFINITIONS;
 
 export function promptCommandsFor(target: PromptCommandTarget): readonly PromptCommandSpec[] {
-  return PROMPT_COMMAND_DEFINITIONS.filter((definition) =>
+  const commands = PROMPT_COMMAND_DEFINITIONS.filter((definition) =>
     definition.targets.some((supportedTarget) => supportedTarget === target),
   );
+  // Remote sessions have no model picker, so keep bare `/` from defaulting to /new.
+  if (target === "remote") {
+    return [
+      ...commands.filter((command) => command.name === "help"),
+      ...commands.filter((command) => command.name !== "help"),
+    ];
+  }
+  return commands;
 }
 
 /** Whether a command runs against this target — the one authority dispatch shares with discovery. */
@@ -174,26 +207,34 @@ export function isPromptCommandAvailableFor(
 }
 
 /**
- * Recognizes the slash commands the prompt accepts. `/reset` clears the
- * session and transcript; `/cancel` stops the running turn; `/clear` (and
- * `/new`) clears context; `/compact` queues context compaction; `/exit` (and
+ * Recognizes the slash commands the prompt accepts. `/new` (and `/reset`)
+ * starts a fresh session and transcript; `/cancel` stops the running turn;
+ * `/clear` clears context in place; `/compact` queues context compaction; `/exit` (and
  * `/quit`) terminate the TUI like Ctrl+C; extension commands are dispatched
  * outside the runner. Anything else — including unknown `/text` — is a normal
  * message.
  */
 export function parsePromptCommand(prompt: string): PromptCommand | null {
+  const match = promptCommandSpec(prompt);
+  return match === undefined ? null : match.spec.build(match.argument);
+}
+
+/** Resolve an invocation and its history policy from the same command definition. */
+export function promptCommandSpec(
+  prompt: string,
+): { spec: PromptCommandSpec; argument: string } | undefined {
   const trimmed = prompt.trim();
-  if (!trimmed.startsWith("/")) return null;
+  if (!trimmed.startsWith("/")) return undefined;
   for (const spec of PROMPT_COMMANDS) {
     for (const alias of [spec.name, ...spec.aliases]) {
       const token = `/${alias}`;
-      if (trimmed === token) return spec.build("");
+      if (trimmed === token) return { spec, argument: "" };
       if (spec.takesArgument && trimmed.startsWith(`${token} `)) {
-        return spec.build(trimmed.slice(token.length).trim());
+        return { spec, argument: trimmed.slice(token.length).trim() };
       }
     }
   }
-  return null;
+  return undefined;
 }
 
 /** True for prompts that are commands, which never echo as user messages. */

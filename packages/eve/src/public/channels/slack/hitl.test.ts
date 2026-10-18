@@ -4,19 +4,21 @@ import type { InputRequest } from "#shared/input.js";
 import {
   buildAnsweredBlocks,
   buildFreeformModalView,
+  decodeFreeformHitlActionId,
   decodeHitlActionId,
-  deriveHitlResponse,
   formatInputRequestFallbackText,
-  freeformRequestIdFromActionId,
-  HITL_ACTION_PREFIX,
   HITL_FREEFORM_ACTION_PREFIX,
   HITL_FREEFORM_MODAL_ACTION_ID,
   HITL_FREEFORM_MODAL_BLOCK_ID,
   HITL_FREEFORM_MODAL_CALLBACK_ID,
   isFreeformAction,
   isHitlAction,
-  renderInputRequestBlocks,
 } from "#public/channels/slack/hitl.js";
+import {
+  deriveHitlResponse,
+  HITL_ACTION_PREFIX,
+  renderInputRequestBlocks,
+} from "#public/channels/slack/index.js";
 import {
   SLACK_CARD_BODY_TEXT_MAX_LENGTH,
   SLACK_SECTION_TEXT_MAX_LENGTH,
@@ -218,6 +220,7 @@ describe("renderInputRequestBlocks", () => {
     expect(card).toMatchObject({
       type: "card",
       body: { type: "mrkdwn", text: "*Approve tool call: mongodb-mutate*" },
+      subtext: { type: "mrkdwn", text: "I've paused until someone approves or cancels." },
     });
     expect(card.actions).toMatchObject([
       {
@@ -244,12 +247,42 @@ describe("renderInputRequestBlocks", () => {
       type: "container",
       title: { type: "plain_text", text: "Tool input" },
       is_collapsible: true,
-      default_collapsed: false,
+      default_collapsed: true,
     });
     expect(details.child_blocks).toHaveLength(1);
     expect(details.child_blocks[0]).toMatchObject({ type: "section", text: { type: "mrkdwn" } });
     expect(details.child_blocks[0]?.text?.text).toContain('"collection": "org_members"');
     expect(details.child_blocks[0]?.text?.text).toContain('"_id": "qudw7ekkzulpgw3j"');
+  });
+
+  it("renders a custom approval prompt in the card while keeping tool input collapsed", () => {
+    const blocks = renderInputRequestBlocks(
+      makeRequest({
+        action: {
+          kind: "tool-call",
+          callId: "call_payment",
+          toolName: "send_payment",
+          input: { amount: 125, recipient: "Ada" },
+        },
+        display: "confirmation",
+        kind: "tool-approval",
+        prompt: "Send $125 to Ada?",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+      }),
+    );
+
+    expect(blocks[0]).toMatchObject({
+      type: "card",
+      body: { type: "mrkdwn", text: "*Send $125 to Ada?*" },
+    });
+    expect(blocks[1]).toMatchObject({
+      type: "container",
+      default_collapsed: true,
+      title: { type: "plain_text", text: "Tool input" },
+    });
   });
 
   it("keeps long approval input details within the collapsible container section limit", () => {
@@ -395,14 +428,6 @@ describe("renderInputRequestBlocks", () => {
     expect(isFreeformAction(`${HITL_ACTION_PREFIX}call_abc`)).toBe(false);
   });
 
-  it("freeformRequestIdFromActionId extracts the trailing requestId slice", () => {
-    expect(freeformRequestIdFromActionId(`${HITL_FREEFORM_ACTION_PREFIX}call_xyz`)).toBe(
-      "call_xyz",
-    );
-    expect(freeformRequestIdFromActionId(`${HITL_ACTION_PREFIX}call_xyz`)).toBeUndefined();
-    expect(freeformRequestIdFromActionId(HITL_FREEFORM_ACTION_PREFIX)).toBeUndefined();
-  });
-
   it("preserves the return route on a freeform question", () => {
     const blocks = renderInputRequestBlocks(
       makeRequest({ requestId: "question_freeform", options: undefined }),
@@ -412,7 +437,7 @@ describe("renderInputRequestBlocks", () => {
       .action_id;
 
     expect(actionId).toBe("eve_input_freeform:route:C777:7.7:question_freeform");
-    expect(freeformRequestIdFromActionId(actionId)).toBe("question_freeform");
+    expect(decodeFreeformHitlActionId(actionId)?.requestId).toBe("question_freeform");
   });
 
   it("truncates section-block prompts past the Slack 3000-char cap", () => {

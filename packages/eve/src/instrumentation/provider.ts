@@ -1,8 +1,7 @@
 /**
  * The provider contract authored under `agent/instrumentation/`.
  *
- * Reachable only with `experimental.instrumentationProviders` on. With the flag
- * off nothing discovers that directory, so these types compile but never run.
+ * Each file in the directory declares one independently configured provider.
  */
 
 // Type-only, so nothing couples the provider definition to the harness at
@@ -11,17 +10,11 @@
 // from the bus that feeds it.
 import type { InstrumentationEvent } from "#instrumentation/lifecycle.js";
 import type { JsonValue } from "#shared/json.js";
-import type { InstrumentationCapture, TraceCapturePolicy } from "#shared/trace-policy.js";
+import type { TraceCapturePolicy } from "#shared/trace-policy.js";
 
 export type { JsonValue } from "#shared/json.js";
 
 export type {
-  InstrumentationActionCompletedEvent,
-  InstrumentationActionFailedEvent,
-  InstrumentationActionKind,
-  InstrumentationActionOutcome,
-  InstrumentationActionOutput,
-  InstrumentationActionStartedEvent,
   InstrumentationAttemptScope,
   InstrumentationChannelDeliveryInput,
   InstrumentationChannelDeliveryOutcome,
@@ -55,6 +48,8 @@ export type {
   InstrumentationToolCallCompletedEvent,
   InstrumentationToolCallFailedEvent,
   InstrumentationToolCallStartedEvent,
+  InstrumentationToolCallKind,
+  InstrumentationToolCallOutcome,
   InstrumentationToolOutput,
   InstrumentationTraceContext,
   InstrumentationTurnFailedEvent,
@@ -63,6 +58,7 @@ export type {
   InstrumentationTurnTerminalEvent,
   InstrumentationUsage,
 } from "#instrumentation/lifecycle.js";
+
 export type {
   InstrumentationMemoryOperation,
   InstrumentationMemoryOperationCompletedEvent,
@@ -74,7 +70,6 @@ export type {
   InstrumentationMemoryRecord,
 } from "#instrumentation/memory.js";
 export type {
-  InstrumentationCapture,
   TraceCaptureContext,
   TraceCapturePolicy,
   TracePolicyDecision,
@@ -84,12 +79,7 @@ export type {
  * Marks a value as having come from `defineInstrumentation` or a built-in
  * factory.
  *
- * It does not say which layout the value belongs to: a provider and a legacy
- * config both carry `events` and `setup`, so no value-level check separates
- * them. The layout decides — `agent/instrumentation.ts` is read as a config and
- * `agent/instrumentation/*.ts` as providers, and the two are mutually exclusive
- * builds. The brand's job is only to catch a default export that never went
- * through eve at all.
+ * The brand catches a default export that never went through eve.
  */
 export const PROVIDER = Symbol.for("eve.instrumentation.provider");
 
@@ -111,13 +101,11 @@ export interface EvaluationRef {
 export interface ProviderSetupContext {
   /** The agent name declared by `defineAgent`. */
   readonly agentName: string;
-  /** Always supplied at runtime; optional for legacy setup-context compatibility. */
-  readonly environment?: InstrumentationEnvironment;
+  readonly environment: InstrumentationEnvironment;
   /** Present only when this server was started for a local `eve eval` run. */
   readonly evaluation?: EvaluationRef;
   /** The eve version running the agent. */
-  /** Always supplied at runtime; optional for legacy setup-context compatibility. */
-  readonly frameworkVersion?: string;
+  readonly frameworkVersion: string;
 }
 
 export interface ProviderState {
@@ -164,8 +152,6 @@ export type ProviderEvents = {
  * completion order.
  */
 export interface ProviderDefinition {
-  /** @deprecated Use `tracePolicy`. Ignored when `tracePolicy` is also set. */
-  readonly capture?: InstrumentationCapture;
   /**
    * Whether this provider receives events and which content directions they
    * include. Defaults to emitting every audience, with content only for public
@@ -182,6 +168,11 @@ export interface ProviderDefinition {
   readonly flush?: () => void | PromiseLike<void>;
   /** Releases resources when the process is going away. */
   readonly shutdown?: () => void | PromiseLike<void>;
+}
+
+/** Declares one instrumentation provider. */
+export function defineInstrumentation(definition: ProviderDefinition): InstrumentationProvider {
+  return { ...definition, [PROVIDER]: true };
 }
 
 /** A {@link ProviderDefinition} that has been through `defineInstrumentation`. */

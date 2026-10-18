@@ -1,13 +1,11 @@
 import type { ContextContainer } from "#context/container.js";
 import { dispatchDynamicConnectionEvent } from "#context/dynamic-connection-lifecycle.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { TurnPosition } from "#harness/session-machine/view.js";
 import {
-  createSessionStartedEvent,
-  createTurnStartedEvent,
-  type RuntimeIdentity,
-  type UnstampedMessageStreamEvent,
-} from "#protocol/message.js";
+  sessionStartedForResolvers,
+  turnStartedForResolvers,
+} from "#harness/session-machine/resolver-events.js";
+import type { RuntimeIdentity, UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { ResolvedAgent } from "#runtime/types.js";
 
 /** Binds dynamic connection lifecycle dispatch to one execution context. */
@@ -16,22 +14,20 @@ export function bindDynamicConnections(
   agent: Pick<ResolvedAgent, "dynamicConnectionResolvers">,
 ) {
   const resolvers = agent.dynamicConnectionResolvers ?? [];
-  const dispatch = (event: UnstampedMessageStreamEvent): Promise<void> =>
-    dispatchDynamicConnectionEvent({ ctx, event, resolvers });
+  const dispatch = async (event: UnstampedMessageStreamEvent): Promise<void> => {
+    await dispatchDynamicConnectionEvent({ ctx, event, resolvers });
+  };
 
   return {
     dispatch,
     async rehydrate(
-      state: HarnessEmissionState,
+      state: TurnPosition,
       runtime: RuntimeIdentity,
-      betweenTurns: boolean,
+      turn?: { readonly sequence: number; readonly turnId: string },
     ): Promise<void> {
       if (!state.sessionStarted) return;
-      await dispatch(createSessionStartedEvent({ runtime }));
-      if (betweenTurns) return;
-      await dispatch(
-        createTurnStartedEvent({ sequence: state.sequence, turnId: activeTurnId(state) }),
-      );
+      await dispatch(sessionStartedForResolvers(runtime));
+      if (turn !== undefined) await dispatch(turnStartedForResolvers(turn));
     },
   };
 }

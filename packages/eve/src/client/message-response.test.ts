@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { MessageResponse } from "#client/message-response.js";
-import { stampTestEvents } from "#internal/testing/events.js";
+import { TEST_USAGE, stampTestEvents } from "#internal/testing/events.js";
 import {
+  createInputResolvedEvent,
   createSessionWaitingEvent,
   createTurnStartedEvent,
   type MessageStreamEvent,
@@ -23,13 +24,22 @@ function acceptedCancellation() {
   return { sessionId: "session_1", status: "accepted" as const };
 }
 
+function inputResolved(turnId: string): UnstampedMessageStreamEvent {
+  return createInputResolvedEvent({
+    resolutions: [{ kind: "tool-approval", outcome: "approved", requestId: "approval_1" }],
+    sequence: 0,
+    stepIndex: 0,
+    turnId,
+  });
+}
+
 describe("MessageResponse cancellation", () => {
   it("queues one guarded cancellation until this response identifies its turn", async () => {
     const start = createDeferred<void>();
     const settle = createDeferred<void>();
     const [turnStarted, boundary] = stampTestEvents([
       createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const cancelTurn = vi.fn(async () => acceptedCancellation());
     const response = new MessageResponse({
@@ -62,7 +72,7 @@ describe("MessageResponse cancellation", () => {
     const settle = createDeferred<void>();
     const [turnStarted, boundary] = stampTestEvents([
       createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const cancelTurn = vi
       .fn<(turnId: string) => Promise<ReturnType<typeof acceptedCancellation>>>()
@@ -91,7 +101,7 @@ describe("MessageResponse cancellation", () => {
 
   it("drops a queued cancellation when the response settles without starting a turn", async () => {
     const [boundary] = stampTestEvents([
-      createSessionWaitingEvent(),
+      createSessionWaitingEvent(TEST_USAGE),
     ] as UnstampedMessageStreamEvent[]);
     const cancelTurn = vi.fn(async () => acceptedCancellation());
     const response = new MessageResponse({
@@ -106,5 +116,34 @@ describe("MessageResponse cancellation", () => {
     await expect(response.cancel()).resolves.toEqual({ status: "no_active_turn" });
     await consumed;
     expect(cancelTurn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "an answer's resumed turn", events: [inputResolved("turn_1")], resumesTurn: true },
+    {
+      label: "a message's turn past an earlier turn's resolution",
+      events: [inputResolved("turn_0"), createTurnStartedEvent({ sequence: 0, turnId: "turn_1" })],
+      resumesTurn: false,
+    },
+  ])("targets $label", async ({ events, resumesTurn }) => {
+    const settle = createDeferred<void>();
+    const cancelTurn = vi.fn(async () => acceptedCancellation());
+    const response = new MessageResponse({
+      cancelTurn,
+      createStream: async function* () {
+        yield* stampTestEvents(events);
+        await settle.promise;
+        yield* stampTestEvents([createSessionWaitingEvent(TEST_USAGE)]);
+      },
+      resumesTurn,
+      sessionId: "session_1",
+    });
+
+    const consumed = consume(response);
+    await expect(response.cancel()).resolves.toEqual(acceptedCancellation());
+    expect(cancelTurn).toHaveBeenCalledExactlyOnceWith("turn_1");
+
+    settle.resolve();
+    await consumed;
   });
 });

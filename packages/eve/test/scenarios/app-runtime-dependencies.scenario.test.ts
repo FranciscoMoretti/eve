@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import {
   resolveInstalledPackageInfo,
   resolvePackageRoot,
 } from "../../src/internal/application/package.js";
+import { compileAgent } from "../../src/compiler/compile-agent.js";
 import { buildApplication } from "../../src/internal/nitro/host.js";
 import { useTemporaryDirectories } from "../../src/internal/testing/use-temporary-app-roots.js";
 
@@ -20,7 +22,7 @@ const EVE_PACKAGE_INFO = resolveInstalledPackageInfo();
 const EVE_PACKAGE_ROOT = resolvePackageRoot();
 const createScratchDirectory = useTemporaryDirectories();
 const DEPLOYABLE_BUILD_OPTIONS = {
-  skipVercelSandboxPrewarm: false,
+  skipSandboxPrewarm: false,
 } as const;
 
 async function readJavaScriptModulesRecursively(rootDirectory: string): Promise<string> {
@@ -64,6 +66,248 @@ async function readTracedServerPackageJson(outputDir: string): Promise<{
 
     throw error;
   }
+}
+
+/**
+ * Writes an isolated (pnpm-style, nothing hoisted) workspace: `apps/agent`
+ * depends on the `packages/backend` source package, which installs
+ * `fixture-workspace-external` in its own node_modules. The agent marks it
+ * external; with `appDeclaresExternal` the app installs it too.
+ */
+async function writeWorkspaceExternalFixture(input: {
+  readonly appDeclaresExternal: boolean;
+  readonly dynamicImport?: boolean;
+  /** The workspace package imports `fixture-workspace-external/extra`, which only v2 exports. */
+  readonly subpathImport?: boolean;
+  /** Every installation's `.` export selects by this condition first; see `writeExternalInstallation`. */
+  readonly exportCondition?: ExportCondition;
+}): Promise<{ readonly appRoot: string }> {
+  const version = input.subpathImport === true ? "2.0.0" : "1.0.0";
+  const workspaceRoot = await createScratchDirectory("eve-workspace-external-dep-build-");
+  const appRoot = join(workspaceRoot, "apps", "agent");
+  const packageRoot = join(workspaceRoot, "packages", "backend");
+
+  await mkdir(join(appRoot, "agent", "tools"), { recursive: true });
+  await mkdir(join(appRoot, "node_modules", "@fixture"), { recursive: true });
+  await mkdir(join(packageRoot, "src"), { recursive: true });
+  const appDependencies: Record<string, string> = { "@fixture/backend": "workspace:*" };
+  if (input.appDeclaresExternal) {
+    appDependencies["fixture-workspace-external"] = version;
+    await writeExternalInstallation(
+      join(appRoot, "node_modules", "fixture-workspace-external"),
+      version,
+      input.exportCondition,
+    );
+  }
+  await writeFile(
+    join(appRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        dependencies: appDependencies,
+        name: "workspace-external-dependency-app",
+        private: true,
+        type: "module",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(appRoot, "agent", "agent.ts"),
+    [
+      "export default {",
+      "  build: {",
+      '    externalDependencies: ["fixture-workspace-external"],',
+      "  },",
+      '  model: "openai/gpt-5.4-mini",',
+      "};",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(join(appRoot, "agent", "instructions.md"), "Workspace external dependency.\n");
+  await writeFile(
+    join(appRoot, "agent", "tools", "use_backend.ts"),
+    [
+      'import { value } from "@fixture/backend";',
+      "",
+      "export default {",
+      '  description: "Use a workspace package.",',
+      "  execute() {",
+      "    return value;",
+      "  },",
+      "};",
+      "",
+    ].join("\n"),
+  );
+
+  await writeFile(
+    join(packageRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        dependencies: { "fixture-workspace-external": version },
+        exports: "./src/index.ts",
+        name: "@fixture/backend",
+        private: true,
+        type: "module",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    join(packageRoot, "src", "index.ts"),
+    input.dynamicImport === true
+      ? 'export const value = async () => (await import("fixture-workspace-external")).value;\n'
+      : input.subpathImport === true
+        ? 'export { value } from "fixture-workspace-external/extra";\n'
+        : 'export { value } from "fixture-workspace-external";\n',
+  );
+  await writeExternalInstallation(
+    join(packageRoot, "node_modules", "fixture-workspace-external"),
+    version,
+    input.exportCondition,
+  );
+  await symlink(packageRoot, join(appRoot, "node_modules", "@fixture", "backend"), "dir");
+
+  return { appRoot };
+}
+
+type ExportCondition = "node" | "node-addons";
+
+/**
+ * v1 exports only `.`; v2 also exports `./extra`. With `exportCondition`, `.`
+ * selects `./<condition>.js` under that condition before `import`.
+ */
+async function writeExternalInstallation(
+  externalRoot: string,
+  version: "1.0.0" | "2.0.0" = "1.0.0",
+  exportCondition?: ExportCondition,
+): Promise<void> {
+  await mkdir(externalRoot, { recursive: true });
+  const rootExport =
+    exportCondition === undefined
+      ? "./index.js"
+      : { [exportCondition]: `./${exportCondition}.js`, import: "./index.js" };
+  await writeFile(
+    join(externalRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        exports: version === "1.0.0" ? rootExport : { ".": rootExport, "./extra": "./extra.js" },
+        name: "fixture-workspace-external",
+        type: "module",
+        version,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(externalRoot, "index.js"), 'export const value = "workspace external";\n');
+  if (version === "2.0.0") {
+    await writeFile(join(externalRoot, "extra.js"), 'export const value = "workspace extra";\n');
+  }
+  if (exportCondition !== undefined) {
+    await writeFile(
+      join(externalRoot, `${exportCondition}.js`),
+      `export const value = "workspace external (${exportCondition})";\n`,
+    );
+  }
+}
+
+/**
+ * Mounts `@fixture/ext`, an installed extension that declares
+ * `fixture-workspace-external` and installs its own v1 copy. With
+ * `exportsPackageJson`, Nitro can locate the extension's package and copies
+ * that v1 copy into the output.
+ */
+async function writeMountedExtensionDeclaringExternal(
+  appRoot: string,
+  input: { readonly exportsPackageJson: boolean },
+): Promise<void> {
+  const appPackagePath = join(appRoot, "package.json");
+  const appPackage = JSON.parse(await readFile(appPackagePath, "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  appPackage.dependencies["@fixture/ext"] = "1.0.0";
+  await writeFile(appPackagePath, `${JSON.stringify(appPackage, null, 2)}\n`);
+  const extensionRoot = join(appRoot, "node_modules", "@fixture", "ext");
+  await mkdir(join(extensionRoot, "dist", "extension"), { recursive: true });
+  await writeFile(
+    join(extensionRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        dependencies: { "fixture-workspace-external": "1.0.0" },
+        eve: { extension: { dist: "dist/extension", source: "extension" } },
+        exports: input.exportsPackageJson
+          ? { ".": "./index.js", "./package.json": "./package.json" }
+          : "./index.js",
+        name: "@fixture/ext",
+        type: "module",
+        version: "1.0.0",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(extensionRoot, "index.js"), 'export default { name: "fx" };\n');
+  await writeFile(
+    join(extensionRoot, "dist", "extension", "_manifest.json"),
+    `${JSON.stringify({
+      build: { externalDependencies: ["fixture-workspace-external"] },
+      builtWithEve: "0.0.0",
+      formatVersion: 2,
+      kind: "eve-extension",
+      requires: {},
+    })}\n`,
+  );
+  await writeExternalInstallation(
+    join(extensionRoot, "node_modules", "fixture-workspace-external"),
+  );
+  await mkdir(join(appRoot, "agent", "extensions"), { recursive: true });
+  await writeFile(
+    join(appRoot, "agent", "extensions", "fx.ts"),
+    'export { default } from "@fixture/ext";\n',
+  );
+}
+
+/**
+ * Copies the build output away from the workspace, so no source installation
+ * is reachable, then imports the external in Node by its bare specifier from
+ * beside the chunk that imports it, exactly as the bundled module does.
+ */
+async function importRelocatedWorkspaceExternal(
+  outputDir: string,
+  specifier = "fixture-workspace-external",
+): Promise<unknown> {
+  const relocatedRoot = await createScratchDirectory("eve-workspace-external-relocated-");
+  await cp(outputDir, relocatedRoot, { recursive: true });
+  const serverDirectory = await realpath(join(relocatedRoot, "server"));
+  const entries = await readdir(serverDirectory, { recursive: true, withFileTypes: true });
+  const importers = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
+        .filter((entry) => !join(entry.parentPath, entry.name).includes("/node_modules/"))
+        .map(async (entry) => {
+          const path = join(entry.parentPath, entry.name);
+          // An import statement or a literal dynamic import, not a mention in the embedded manifest.
+          const code = await readFile(path, "utf8");
+          return code.includes(`from "${specifier}"`) || code.includes(`import("${specifier}")`)
+            ? path
+            : null;
+        }),
+    )
+  ).filter((path) => path !== null);
+  expect(importers).not.toHaveLength(0);
+  const probePath = join(dirname(importers[0]!), "relocated-external-probe.mjs");
+  await writeFile(
+    probePath,
+    `import { value } from ${JSON.stringify(specifier)};\nprocess.stdout.write(JSON.stringify(value));\n`,
+  );
+  const probe = spawnSync(process.execPath, [probePath], { cwd: relocatedRoot, encoding: "utf8" });
+  if (probe.status !== 0) {
+    throw new Error(probe.stderr);
+  }
+  return JSON.parse(probe.stdout) as unknown;
 }
 
 describe("app runtime dependency tracing", () => {
@@ -411,11 +655,10 @@ describe("app runtime dependency tracing", () => {
           join(appRoot, "agent", "sandbox.ts"),
           [
             'import { defineSandbox } from "eve/sandbox";',
-            'import { justbash } from "eve/sandbox/just-bash";',
+            'import { JustBashSandbox } from "eve/sandbox/just-bash";',
             "",
-            "export default defineSandbox({",
-            "  backend: justbash(),",
-            "});",
+            "export const environment = JustBashSandbox.environment();",
+            "export default defineSandbox(() => environment.open());",
             "",
           ].join("\n"),
         );
@@ -742,6 +985,127 @@ describe("app runtime dependency tracing", () => {
     }
   }, 30_000);
 
+  it("fails the build when the app cannot resolve an external a workspace package imports", async () => {
+    // Hosted output resolves externals from the app. Building this fixture
+    // used to succeed and then fail at boot with ERR_MODULE_NOT_FOUND.
+    const { appRoot } = await writeWorkspaceExternalFixture({ appDeclaresExternal: false });
+
+    const build = buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
+
+    await expect(build).rejects.toThrow(
+      /"fixture-workspace-external" is listed in build\.externalDependencies and imported by the hosted bundle \(.+\), but the build output cannot resolve it\./,
+    );
+    await expect(build).rejects.toThrow(
+      /Add "fixture-workspace-external" to the dependencies in \S*\/apps\/agent\/package\.json\./,
+    );
+  }, 60_000);
+
+  it("fails the build when a literal dynamic import needs an external the output lacks", async () => {
+    const { appRoot } = await writeWorkspaceExternalFixture({
+      appDeclaresExternal: false,
+      dynamicImport: true,
+    });
+
+    await expect(buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS)).rejects.toThrow(
+      /"fixture-workspace-external" is listed in build\.externalDependencies and imported by the hosted bundle \(.+\), but the build output cannot resolve it\./,
+    );
+  }, 60_000);
+
+  it("ships a workspace package's external once the app declares it", async () => {
+    const { appRoot } = await writeWorkspaceExternalFixture({ appDeclaresExternal: true });
+
+    const outputDir = await buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
+
+    await expect(importRelocatedWorkspaceExternal(outputDir)).resolves.toBe("workspace external");
+  }, 60_000);
+
+  it("fails the build when only a mounted extension declares the missing external", async () => {
+    // A mounted extension declares the external and installs its own copy,
+    // but nothing makes Nitro's tracer copy it. This used to build and then
+    // fail to resolve from the relocated output.
+    const { appRoot } = await writeWorkspaceExternalFixture({ appDeclaresExternal: false });
+    await writeMountedExtensionDeclaringExternal(appRoot, { exportsPackageJson: false });
+    await mkdir(join(appRoot, "agent", "instrumentation"), { recursive: true });
+    await writeFile(
+      join(appRoot, "agent", "instrumentation", "provider.ts"),
+      [
+        'import { value } from "@fixture/backend";',
+        "",
+        "export default {",
+        "  setup() {",
+        "    (globalThis as Record<string, unknown>).__workspaceExternal = value;",
+        "  },",
+        "};",
+        "",
+      ].join("\n"),
+    );
+
+    const compiled = await compileAgent({ startPath: join(appRoot, "agent") });
+    expect(compiled.manifest.extensionMounts.map((mount) => mount.externalDependencies)).toEqual([
+      ["fixture-workspace-external"],
+    ]);
+
+    await expect(buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS)).rejects.toThrow(
+      /"fixture-workspace-external" is listed in build\.externalDependencies and imported by the hosted bundle \(.+\), but the build output cannot resolve it\./,
+    );
+  }, 60_000);
+
+  it("fails the build when the packaged version does not export the imported subpath", async () => {
+    // The workspace package imports a v2-only subpath; the mounted extension's
+    // v1 copy is what Nitro packages. This used to build and then fail at boot
+    // with ERR_PACKAGE_PATH_NOT_EXPORTED.
+    const { appRoot } = await writeWorkspaceExternalFixture({
+      appDeclaresExternal: false,
+      subpathImport: true,
+    });
+    await writeMountedExtensionDeclaringExternal(appRoot, { exportsPackageJson: true });
+
+    await expect(buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS)).rejects.toThrow(
+      /"fixture-workspace-external\/extra" is listed in build\.externalDependencies and imported by the hosted bundle \(.+\), but the build output cannot resolve it\./,
+    );
+  }, 60_000);
+
+  it("ships the imported subpath once the app declares the version that exports it", async () => {
+    const { appRoot } = await writeWorkspaceExternalFixture({
+      appDeclaresExternal: true,
+      subpathImport: true,
+    });
+    await writeMountedExtensionDeclaringExternal(appRoot, { exportsPackageJson: true });
+
+    const outputDir = await buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
+
+    await expect(
+      importRelocatedWorkspaceExternal(outputDir, "fixture-workspace-external/extra"),
+    ).resolves.toBe("workspace extra");
+  }, 60_000);
+
+  it("fails the build when Node selects a conditional export the output lacks", async () => {
+    // Node's ESM loader selects `node-addons` by default; Nitro's tracer
+    // copies only the `import` target. This used to build and then fail at
+    // boot with ERR_MODULE_NOT_FOUND.
+    const { appRoot } = await writeWorkspaceExternalFixture({
+      appDeclaresExternal: true,
+      exportCondition: "node-addons",
+    });
+
+    await expect(buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS)).rejects.toThrow(
+      /"fixture-workspace-external" is listed in build\.externalDependencies and imported by the hosted bundle \(.+\), but the build output cannot resolve it\./,
+    );
+  }, 60_000);
+
+  it("ships the conditional export Node selects when the output contains it", async () => {
+    const { appRoot } = await writeWorkspaceExternalFixture({
+      appDeclaresExternal: true,
+      exportCondition: "node",
+    });
+
+    const outputDir = await buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
+
+    await expect(importRelocatedWorkspaceExternal(outputDir)).resolves.toBe(
+      "workspace external (node)",
+    );
+  }, 60_000);
+
   it("rewrites framework tool executors into hosted Vercel output", async () => {
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_DEPLOYMENT_ID", "");
@@ -811,56 +1175,83 @@ describe("app runtime dependency tracing", () => {
     expect(serverModuleSource).toContain(
       "Execute a shell command in the shared workspace environment.",
     );
-    expect(serverModuleSource).toContain("The dynamic skill");
+    expect(serverModuleSource).toContain("is a connection, not a skill.");
     expect(serverModuleSource).toContain("URL must start with https://");
   }, 30_000);
 
-  it("does not bundle local-only runtime infrastructure into hosted Vercel output", async () => {
-    vi.stubEnv("VERCEL", "1");
-    vi.stubEnv("VERCEL_DEPLOYMENT_ID", "");
+  it.each([
+    { name: "hosted Vercel", vercel: true },
+    { name: "self-hosted production", vercel: false },
+  ])(
+    "does not bundle local-only runtime infrastructure into $name output",
+    async ({ vercel }) => {
+      if (vercel) {
+        vi.stubEnv("VERCEL", "1");
+        vi.stubEnv("VERCEL_DEPLOYMENT_ID", "");
+      }
 
-    const appRoot = await createScratchDirectory("eve-app-hosted-no-dev-runtime-build-");
+      const appRoot = await createScratchDirectory(
+        `eve-app-${vercel ? "hosted" : "self-hosted"}-no-dev-runtime-build-`,
+      );
 
-    await mkdir(join(appRoot, "agent"), {
-      recursive: true,
-    });
-    await writeFile(
-      join(appRoot, "package.json"),
-      `${JSON.stringify(
-        {
-          name: "hosted-no-dev-runtime-build-test",
-          private: true,
-          type: "module",
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    await writeFile(
-      join(appRoot, "agent", "agent.ts"),
-      ["export default {", '  model: "openai/gpt-5.4-mini",', "};", ""].join("\n"),
-    );
-    await writeFile(
-      join(appRoot, "agent", "instructions.md"),
-      "Verify deployed runtime contents.\n",
-    );
+      await mkdir(join(appRoot, "agent"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(appRoot, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "hosted-no-dev-runtime-build-test",
+            private: true,
+            type: "module",
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      await writeFile(
+        join(appRoot, "agent", "agent.ts"),
+        ["export default {", '  model: "openai/gpt-5.4-mini",', "};", ""].join("\n"),
+      );
+      await writeFile(
+        join(appRoot, "agent", "instructions.md"),
+        "Verify deployed runtime contents.\n",
+      );
 
-    const outputDir = await buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
-    const vercelFunctionsSource = await readJavaScriptModulesRecursively(
-      join(outputDir, "functions"),
-    );
+      const outputDir = await buildApplication(appRoot, DEPLOYABLE_BUILD_OPTIONS);
+      const runtimeSource = await readJavaScriptModulesRecursively(
+        join(outputDir, vercel ? "functions" : "server"),
+      );
 
-    expect(vercelFunctionsSource).not.toContain("dev-authored-source-watcher");
-    expect(vercelFunctionsSource).not.toContain("chokidar");
-    expect(vercelFunctionsSource).not.toContain("[eve:dev]");
-    expect(vercelFunctionsSource).not.toContain("rollup:reload");
-    // The world-local canary is its log prefix, not names other packages
-    // legitimately mention without bundling world-local code: the
-    // semantic-error catalog embeds error-class names like
-    // `DataDirAccessError`, and @workflow/core's runtime world factory
-    // (stubbed out at vendor time) names `WORKFLOW_LOCAL_DATA_DIR`.
-    expect(vercelFunctionsSource).not.toContain("[world-local]");
-  }, 30_000);
+      expect(runtimeSource).not.toContain("dev-authored-source-watcher");
+      expect(runtimeSource).not.toContain("chokidar");
+      expect(runtimeSource).not.toContain("[eve:dev]");
+      expect(runtimeSource).not.toContain("rollup:reload");
+      // The world-local canary is its log prefix, not names other packages
+      // legitimately mention without bundling world-local code: the
+      // semantic-error catalog embeds error-class names like
+      // `DataDirAccessError`, and @workflow/core's runtime world factory
+      // (stubbed out at vendor time) names `WORKFLOW_LOCAL_DATA_DIR`.
+      if (vercel) {
+        expect(runtimeSource).not.toContain("[world-local]");
+
+        vi.stubEnv("VERCEL_DEPLOYMENT_ID", "dpl_hosted_no_dev_runtime_test");
+        const serverModule = (await import(
+          `${pathToFileURL(join(outputDir, "functions", "__server.func", "index.mjs")).href}?test=${Date.now()}`
+        )) as {
+          default: {
+            fetch(request: Request, context: { waitUntil(): void }): Promise<Response>;
+          };
+        };
+        const healthResponse = await serverModule.default.fetch(
+          new Request("https://example.com/eve/v1/health"),
+          { waitUntil() {} },
+        );
+        expect(healthResponse.status).toBe(200);
+      }
+    },
+    30_000,
+  );
 
   it("loads instrumentation runtime dependencies from hosted Vercel output", async () => {
     vi.stubEnv("VERCEL", "1");
@@ -891,15 +1282,19 @@ describe("app runtime dependency tracing", () => {
       ["export default {", '  model: "openai/gpt-5.4-mini",', "};", ""].join("\n"),
     );
     await writeFile(join(appRoot, "agent", "instructions.md"), "Verify hosted instrumentation.\n");
+    await mkdir(join(appRoot, "agent", "instrumentation"), { recursive: true });
     await writeFile(
-      join(appRoot, "agent", "instrumentation.ts"),
+      join(appRoot, "agent", "instrumentation", "dependency.ts"),
       [
         'import fixtureInstrumentationDep from "fixture-instrumentation-dep";',
+        'import { defineInstrumentation } from "eve/instrumentation";',
         "",
-        "(globalThis as Record<string, unknown>).__fixtureInstrumentationDep =",
-        "  fixtureInstrumentationDep;",
-        "",
-        "export default fixtureInstrumentationDep;",
+        "export default defineInstrumentation({",
+        "  setup() {",
+        "    (globalThis as Record<string, unknown>).__fixtureInstrumentationDep =",
+        "      fixtureInstrumentationDep;",
+        "  },",
+        "});",
         "",
       ].join("\n"),
     );

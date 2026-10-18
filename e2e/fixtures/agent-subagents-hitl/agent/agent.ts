@@ -3,28 +3,61 @@ import { defineAgent } from "eve";
 import { mockModel, type MockModelRequest, type MockModelResponse } from "eve/evals";
 
 const COLLISION_MARKER = "MIXED-PARK-COMPLETE-7K2M";
-const STOCK_PRICE = "178.92";
 
 function respond(request: MockModelRequest): MockModelResponse | string {
   const message = request.lastUserMessage ?? "";
-  const prompt = request.messages.map((entry) => entry.text).join("\n");
-  if (message.includes("Call the stock-price subagent exactly once")) {
-    return request.toolResults.some((result) => result.name === "stock-price")
-      ? "The stock price is being fetched."
-      : {
-          toolCalls: [
-            {
-              input: {
-                message:
-                  'Call the get_stock_price tool exactly once with ticker "GOOG". After it returns, do not call any tool again; return the result.',
-              },
-              name: "stock-price",
-            },
-          ],
-        };
+  if (message.includes("Read the parent input-hook audit")) {
+    const audit = request.toolResults.find((result) => result.name === "read_input_hooks");
+    return audit === undefined
+      ? { toolCalls: [{ name: "read_input_hooks", input: {} }] }
+      : JSON.stringify(audit.output);
   }
-  if (prompt.includes("Background task reporting") && prompt.includes(STOCK_PRICE)) {
-    return `The stock price is ${STOCK_PRICE}.`;
+  if (message.includes("Call the approval-child subagent exactly once")) {
+    const approval = taskResultOf(request, "approval-child");
+    if (approval !== undefined) return approval;
+    if (hasReceipt(request, "approval-child")) return waitForTasks();
+    return {
+      toolCalls: [
+        {
+          input: { message: "Ask whether to deploy, then wait for the answer." },
+          name: "approval-child",
+        },
+      ],
+    };
+  }
+  if (message.includes("Call the release-pair subagent exactly once")) {
+    const result = taskResultOf(request, "release-pair");
+    if (result !== undefined) return `The release-pair subagent returned: ${result}`;
+    if (hasReceipt(request, "release-pair")) return waitForTasks();
+    return {
+      toolCalls: [
+        { input: { message: "Deploy the release and publish its notes." }, name: "release-pair" },
+      ],
+    };
+  }
+  // RELAY-<child>: delegate to that mock child once, wait for it, and report its result.
+  const relay = /RELAY-(question-child|budget-child)/u.exec(message)?.[1];
+  if (relay !== undefined) {
+    const result = taskResultOf(request, relay);
+    if (result !== undefined) return `RELAY-RESULT ${result}`;
+    if (hasReceipt(request, relay)) return waitForTasks();
+    return { toolCalls: [{ input: { message: "Handle Alice's release request." }, name: relay }] };
+  }
+  if (message.includes("Call the stock-price subagent exactly once")) {
+    const quote = taskResultOf(request, "stock-price");
+    if (quote !== undefined) return `The stock-price subagent returned: ${quote}`;
+    if (hasReceipt(request, "stock-price")) return waitForTasks();
+    return {
+      toolCalls: [
+        {
+          input: {
+            message:
+              'Call the get_stock_price tool exactly once with ticker "GOOG". After it returns, do not call any tool again; return the result.',
+          },
+          name: "stock-price",
+        },
+      ],
+    };
   }
   if (request.lastUserMessage?.includes(COLLISION_MARKER) !== true) {
     return `Mock reply: ${message}`;
@@ -55,6 +88,25 @@ function respond(request: MockModelRequest): MockModelResponse | string {
   }
 
   throw new Error("Mixed runtime-action step resumed before both tool results were available.");
+}
+
+/** An agent call returns a receipt; its result arrives later in a `<task_result>` message. */
+function taskResultOf(request: MockModelRequest, tool: string): string | undefined {
+  const pattern = new RegExp(`<task_result [^>]*tool="${tool}"[^>]*>([\\s\\S]*?)</task_result>`);
+  for (const message of [...request.messages].reverse()) {
+    if (message.role !== "user") continue;
+    const body = message.text.match(pattern)?.[1];
+    if (body !== undefined) return body;
+  }
+  return undefined;
+}
+
+function hasReceipt(request: MockModelRequest, tool: string): boolean {
+  return request.toolResults.some((result) => result.name === tool);
+}
+
+function waitForTasks(): MockModelResponse {
+  return { toolCalls: [{ input: {}, name: "eve__task_wait" }] };
 }
 
 export default defineAgent({

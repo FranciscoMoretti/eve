@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
+import { useTemporaryDirectories } from "../../src/internal/testing/use-temporary-app-roots.js";
 
 const EVE_PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const EVE_CATALOG_ROOT = join(EVE_PACKAGE_ROOT, "..", "eve-catalog");
@@ -18,34 +19,14 @@ const EVE_CATALOG_FINGERPRINT_FILES = [
   "tsconfig.json",
 ] as const;
 const COMPILED_VENDOR_ROOT = join(EVE_PACKAGE_ROOT, ".generated", "compiled");
-const VENDOR_WARNING_LOG_PATH = join(EVE_PACKAGE_ROOT, "scripts", "vendor-warning-log.mjs");
 const execFileAsync = promisify(execFile);
+const createTemporaryDirectory = useTemporaryDirectories();
 const require = createRequire(import.meta.url);
 const VERCEL_BLOB_DIST_ROOT = dirname(require.resolve("@vercel/blob"));
 const VERCEL_SANDBOX_DIST_ROOT = join(
   dirname(require.resolve("@vercel/sandbox/package.json")),
   "dist",
 );
-
-type VendorWarningLog = {
-  readonly createVendoredDependencyWarningFilter: () => {
-    readonly onLog: (
-      level: string,
-      log: {
-        readonly id?: string;
-        readonly ids?: readonly string[];
-        readonly loc?: { readonly file?: string };
-        readonly message: string;
-        readonly pluginCode?: string;
-      },
-      defaultHandler: (level: string, log: { readonly message: string }) => void,
-    ) => void;
-  };
-};
-
-async function loadVendorWarningLog(): Promise<VendorWarningLog> {
-  return (await import(pathToFileURL(VENDOR_WARNING_LOG_PATH).href)) as VendorWarningLog;
-}
 
 function containsSourceMapComment(source: string): boolean {
   return /(?:^|\n)\s*\/\/# sourceMappingURL=/u.test(source);
@@ -67,20 +48,66 @@ function rewriteDeclarationImports(
 }
 
 describe("compiled vendor assets", () => {
-  it("lazily compiles schemas created by the vendored Zod runtime", async () => {
-    const zodUrl = pathToFileURL(join(COMPILED_VENDOR_ROOT, "zod", "index.js")).href;
-    const { z } = await import(zodUrl);
-    const schema = z.object({
-      id: z.string(),
-      nested: z.array(z.object({ active: z.boolean(), count: z.number() })),
+  it("vendors a symlinked workspace package before its compiled export exists", async () => {
+    const root = await createTemporaryDirectory("eve-vendor-workspace-");
+    const packageRoot = join(root, "packages", "consumer");
+    const libraryRoot = join(root, "packages", "library");
+    const compiledRoot = join(packageRoot, "compiled");
+    await mkdir(join(packageRoot, "node_modules", "@example"), { recursive: true });
+    await mkdir(join(libraryRoot, "src"), { recursive: true });
+    await writeFile(join(root, "package.json"), JSON.stringify({ type: "module" }));
+    await writeFile(join(root, "tsconfig.json"), "{}");
+    await writeFile(
+      join(libraryRoot, "package.json"),
+      JSON.stringify({
+        name: "@example/library",
+        version: "0.0.0",
+        type: "module",
+        exports: { ".": "./dist/index.js" },
+      }),
+    );
+    await writeFile(join(libraryRoot, "src", "index.ts"), "export const answer = 42;");
+    await symlink(
+      libraryRoot,
+      join(packageRoot, "node_modules", "@example", "library"),
+      "junction",
+    );
+
+    const { runVendor } = await import(
+      pathToFileURL(join(EVE_PACKAGE_ROOT, "scripts", "vendor-compiled", "_shared.mjs")).href
+    );
+    await runVendor({
+      packageRoot,
+      compiledRoot,
+      scriptFiles: [],
+      modules: [
+        {
+          packageName: "@example/library",
+          compiledPath: "library",
+          entry: "src/index.ts",
+          bundling: "standalone",
+          fingerprintFiles: ["../../tsconfig.json", "src/index.ts"],
+        },
+      ],
     });
 
+    const { answer } = await import(pathToFileURL(join(compiledRoot, "library", "index.js")).href);
+    expect(answer).toBe(42);
+  });
+
+  it("leaves Zod's process-global configuration to the app", async () => {
+    // Every Zod copy in a process shares `globalThis.__zod_globalConfig`, so a
+    // vendored side effect there would rewrite the app's own schemas too.
+    const zodUrl = pathToFileURL(join(COMPILED_VENDOR_ROOT, "zod", "index.js")).href;
+    const { z } = await import(zodUrl);
+    const schema = z.object({ id: z.string() });
+
+    expect(schema.parse({ id: "agent" })).toEqual({ id: "agent" });
+    expect(
+      (globalThis as { __zod_globalConfig?: { postProcessor?: unknown } }).__zod_globalConfig
+        ?.postProcessor,
+    ).toBeUndefined();
     expect(schema._zod.bag.validator).toBeUndefined();
-    expect(schema.parse({ id: "agent", nested: [{ active: true, count: 1 }] })).toEqual({
-      id: "agent",
-      nested: [{ active: true, count: 1 }],
-    });
-    expect(schema._zod.bag.validator).toBeTypeOf("function");
   });
 
   it("stamps the compiler versions that drive vendored output", async () => {
@@ -222,111 +249,6 @@ describe("compiled vendor assets", () => {
         expect(vendoredSource).toBe(upstreamSource);
       }),
     );
-  });
-
-  it("suppresses dependency warnings without hiding actionable logs", async () => {
-    const { createVendoredDependencyWarningFilter } = await loadVendorWarningLog();
-    const forwardedLogs: string[] = [];
-    const filter = createVendoredDependencyWarningFilter();
-    const dependencyFilePath = join(
-      EVE_PACKAGE_ROOT,
-      "..",
-      "..",
-      "node_modules",
-      "fixture",
-      "index.js",
-    );
-    const generatedCompiledFilePath = join(
-      EVE_PACKAGE_ROOT,
-      ".generated",
-      "compiled",
-      "gray-matter",
-      "index.js",
-    );
-    const distCompiledFilePath = join(
-      EVE_PACKAGE_ROOT,
-      "dist",
-      "src",
-      "compiled",
-      "gray-matter",
-      "index.js",
-    );
-    const scriptFilePath = join(EVE_PACKAGE_ROOT, "scripts", "vendor-compiled.mjs");
-
-    filter.onLog(
-      "warn",
-      {
-        loc: {
-          file: dependencyFilePath,
-        },
-        message: "dependency implementation detail",
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-    filter.onLog(
-      "warn",
-      {
-        id: generatedCompiledFilePath,
-        message: "generated compiled dependency implementation detail",
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-    filter.onLog(
-      "warn",
-      {
-        loc: {
-          file: distCompiledFilePath,
-        },
-        message: "dist compiled dependency implementation detail",
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-    filter.onLog(
-      "warn",
-      {
-        id: scriptFilePath,
-        message: "eve vendoring warning",
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-    filter.onLog(
-      "warn",
-      {
-        id: scriptFilePath,
-        ids: [scriptFilePath, generatedCompiledFilePath],
-        message: "mixed eve and dependency warning",
-        pluginCode: generatedCompiledFilePath,
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-    filter.onLog(
-      "error",
-      {
-        loc: {
-          file: dependencyFilePath,
-        },
-        message: "dependency build failure",
-      },
-      (level, log) => {
-        forwardedLogs.push(`${level}:${log.message}`);
-      },
-    );
-
-    expect(forwardedLogs).toEqual([
-      "warn:eve vendoring warning",
-      "warn:mixed eve and dependency warning",
-      "error:dependency build failure",
-    ]);
   });
 
   it("copies @workflow/core declaration files from the installed package", async () => {

@@ -71,9 +71,10 @@ export const docsRedirects: DocsRedirect[] = [
   ...createDocsRedirects("/deployment/self-hosting", "/guides/deployment/self-hosting"),
   ...createDocsRedirects("/self-hosting", "/guides/deployment/self-hosting"),
   ...createDocsRedirects("/guides/instrumentation", "/observability/instrumentation"),
+  ...createDocsRedirects("/guides/instrumentation-providers", "/observability/instrumentation"),
   ...createDocsRedirects(
-    "/guides/instrumentation-providers",
     "/observability/instrumentation-providers",
+    "/observability/instrumentation",
   ),
   ...createDocsRedirects("/guides/instrumentation-otel", "/observability/otel"),
   ...createDocsRedirects("/observability/instrumentation-otel", "/observability/otel"),
@@ -83,6 +84,7 @@ export const docsRedirects: DocsRedirect[] = [
   ...createDocsRedirects("/getting-started/multiple-root-agents", "/concepts/project-structure"),
   ...createDocsRedirects("/multi-agent-projects", "/concepts/project-structure"),
   ...createDocsRedirects("/getting-started/first-agent", "/tutorial/first-agent"),
+  ...createDocsRedirects("/guides/evaluate", "/guides/decide"),
 ];
 
 export const rootMarkdownRedirects: DocsRedirect[] = [

@@ -2,10 +2,10 @@ import { Readable } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SandboxTemplateNotProvisionedError } from "#public/definitions/sandbox-backend.js";
-import { vercel } from "#public/sandbox/backends/vercel.js";
+import { SandboxTemplateNotProvisionedError } from "#shared/sandbox-template-error.js";
 import { VERCEL_EVE_SANDBOX_IMAGE } from "#execution/sandbox/bindings/eve-image.js";
-import { createVercelSandbox } from "#execution/sandbox/bindings/vercel.js";
+import { createVercelSandbox as createVercelImplementation } from "#execution/sandbox/bindings/vercel.js";
+import { createSandboxProviderHarness } from "#internal/testing/sandbox-provider-harness.js";
 
 // The credential fallback consults the developer's Vercel CLI auth and the
 // repo's `.vercel` project link; on a linked, logged-in machine it would
@@ -95,7 +95,11 @@ function createMockSandbox(input: {
   };
 }
 
-function createTestVercelSandbox(input: Parameters<typeof createVercelSandbox>[0] = {}) {
+function createVercelSandbox(input: Parameters<typeof createVercelImplementation>[0] = {}) {
+  return createSandboxProviderHarness(createVercelImplementation(input), {});
+}
+
+function createTestVercelSandbox(input: Parameters<typeof createVercelImplementation>[0] = {}) {
   return createVercelSandbox({
     ...input,
     createSandbox: async ({ createOptions, sandboxModule }) =>
@@ -112,19 +116,17 @@ async function createTestVercelSession() {
       get: vi.fn().mockResolvedValue(null),
     },
   };
-  const backend = createTestVercelSandbox({
+  const provider = createTestVercelSandbox({
     loadSandboxModule: async () => sandboxModule as never,
   });
 
-  await backend.prewarm({
-    runtimeContext: { appRoot: "/tmp/test-app-root" },
+  await provider.prepare({
+    appRoot: "/tmp/test-app-root",
     seedFiles: [],
-    templateKey: "template-key",
   });
-  const handle = await backend.create({
-    runtimeContext: { appRoot: "/tmp/test-app-root" },
-    sessionKey: "session-key",
-    templateKey: "template-key",
+  const handle = await provider.openSession({
+    appRoot: "/tmp/test-app-root",
+    sandboxName: "session-key",
   });
 
   return { handle, sessionSandbox };
@@ -155,51 +157,106 @@ afterEach(() => {
 });
 
 describe("createVercelSandbox", () => {
-  it("creates fresh Vercel sandboxes with eve's shared base image", async () => {
-    const templateSandbox = createMockSandbox({ name: "template-key" });
-    const fetch = vi.fn();
+  it("creates a session from the prepared snapshot artifact without looking up the template sandbox", async () => {
+    const sessionSandbox = createMockSandbox({ name: "session-key" });
     const sandboxModule = {
       Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(templateSandbox),
-        get: vi.fn().mockResolvedValueOnce(null),
+        create: vi.fn().mockResolvedValue(sessionSandbox),
+        get: vi.fn().mockResolvedValue(null),
       },
     };
-
-    const backend = createVercelSandbox({
-      createOptions: {
-        fetch,
-        networkPolicy: "deny-all",
-        ports: [3000],
-        projectId: "prj_123",
-        teamId: "team_123",
-        timeout: 123_000,
-        token: "vercel-token",
-      } as never,
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      prepared: { snapshotId: "prepared-snapshot" },
+      sandboxName: "session-key",
     });
 
-    expect(fetch).not.toHaveBeenCalled();
-    expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
+    expect(sandboxModule.Sandbox.get).toHaveBeenCalledTimes(1);
+    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.stringMatching(/^eve-sbx-vercel-/u) }),
+    );
     expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        image: VERCEL_EVE_SANDBOX_IMAGE,
-        name: "template-key",
-        networkPolicy: "allow-all",
-        persistent: true,
-        ports: [3000],
-        projectId: "prj_123",
-        teamId: "team_123",
-        timeout: 123_000,
-        token: "vercel-token",
+        name: expect.stringMatching(/^eve-sbx-vercel-/u),
+        source: { snapshotId: "prepared-snapshot", type: "snapshot" },
       }),
     );
-    expect(templateSandbox.update).toHaveBeenCalledWith({ networkPolicy: "deny-all" });
+  });
+
+  it("creates sandboxes with Vercel API credentials from the environment", async () => {
+    vi.stubEnv("VERCEL_TEAM_ID", "team_env");
+    vi.stubEnv("VERCEL_PROJECT_ID", "prj_env");
+    vi.stubEnv("VERCEL_TOKEN", "token_env");
+    const sandboxModule = {
+      Sandbox: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce(createMockSandbox({ name: "template" }))
+          .mockResolvedValueOnce(createMockSandbox({ name: "session" })),
+        get: vi.fn().mockResolvedValue(null),
+      },
+    };
+    const provider = createVercelSandbox({
+      loadSandboxModule: async () => sandboxModule as never,
+    });
+
+    await provider.prepare({ appRoot: "/tmp/test-app-root", seedFiles: [] });
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      prepared: { snapshotId: "prepared-snapshot" },
+      sandboxName: "session-key",
+    });
+
+    const credentials = { projectId: "prj_env", teamId: "team_env", token: "token_env" };
+    expect(sandboxModule.Sandbox.create.mock.calls.map(([options]) => options)).toEqual([
+      expect.objectContaining({ ...credentials, image: VERCEL_EVE_SANDBOX_IMAGE }),
+      expect.objectContaining({
+        ...credentials,
+        source: expect.objectContaining({ type: "snapshot" }),
+      }),
+    ]);
+  });
+
+  it("reuses template identity until authored source or resources change", async () => {
+    async function prepareName(input: {
+      createOptions?: NonNullable<
+        Parameters<typeof createVercelImplementation>[0]
+      >["createOptions"];
+      resourcesKey?: string;
+      sourceRevision: string;
+    }) {
+      const create = vi.fn(async (options: { name: string }) =>
+        createMockSandbox({ name: options.name }),
+      );
+      const provider = createTestVercelSandbox({
+        createOptions: input.createOptions,
+        loadSandboxModule: async () =>
+          ({ Sandbox: { create, get: vi.fn().mockResolvedValue(null) } }) as never,
+      });
+      await provider.prepare({ appRoot: "/tmp/test-app-root", ...input });
+      return create.mock.calls[0]?.[0].name;
+    }
+
+    const first = await prepareName({ sourceRevision: "revision-a" });
+    const unchanged = await prepareName({ sourceRevision: "revision-a" });
+    const changedSource = await prepareName({ sourceRevision: "revision-b" });
+    const changedResources = await prepareName({
+      resourcesKey: "resources-b",
+      sourceRevision: "revision-a",
+    });
+    const explicitImage = await prepareName({
+      createOptions: { image: "registry.example/eve:custom" },
+      sourceRevision: "revision-a",
+    });
+
+    expect(unchanged).toBe(first);
+    expect(changedSource).not.toBe(first);
+    expect(changedResources).not.toBe(first);
+    expect(explicitImage).not.toBe(first);
   });
 
   it("uses an author-supplied image for fresh Vercel sandboxes", async () => {
@@ -211,15 +268,14 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createVercelSandbox({
+    const provider = createVercelSandbox({
       createOptions: { image: "registry.example/eve-python:1.0.0" } as never,
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
     expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
@@ -236,15 +292,14 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createVercelSandbox({
+    const provider = createVercelSandbox({
       createOptions: { __experimentalFlag: "enabled" } as never,
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
     expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
@@ -255,53 +310,7 @@ describe("createVercelSandbox", () => {
     );
   });
 
-  it("passes resolved credentials to Vercel sandbox lookups instead of inferring scope", async () => {
-    const existingTemplate = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockImplementation(async (options: { token?: string }) => {
-          if (options.token !== "vercel-token") {
-            throw new Error('[{"path":["teams",1,"updatedAt"],"message":"Required"}]');
-          }
-          return existingTemplate;
-        }),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      createOptions: {
-        projectId: "prj_123",
-        teamId: "team_123",
-        token: "vercel-token",
-      } as never,
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await expect(
-      backend.prewarm({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        seedFiles: [],
-        templateKey: "template-key",
-      }),
-    ).resolves.toEqual({ reused: true });
-
-    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "template-key",
-        projectId: "prj_123",
-        resume: false,
-        teamId: "team_123",
-        token: "vercel-token",
-      }),
-    );
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-  });
-
-  it("includes Vercel SDK error response bodies in backend errors", async () => {
+  it("includes Vercel SDK error response bodies in provider errors", async () => {
     const sandboxModule = {
       Sandbox: {
         create: vi.fn(),
@@ -318,15 +327,14 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
     await expect(
-      backend.prewarm({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
+      provider.prepare({
+        appRoot: "/tmp/test-app-root",
         seedFiles: [],
-        templateKey: "template-key",
       }),
     ).rejects.toThrow(/The sandbox request is invalid/);
   });
@@ -338,7 +346,7 @@ describe("createVercelSandbox", () => {
       stdout: vi.fn().mockResolvedValue("/workspace/repository/agent/instructions.md\n"),
     });
 
-    await handle.session.writeTextFile({
+    await handle.sandbox.writeTextFile({
       content: "updated instructions\n",
       path: "/source/instructions.md",
     });
@@ -384,12 +392,12 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [
         {
           content: "skill body",
@@ -404,19 +412,16 @@ describe("createVercelSandbox", () => {
           path: "$HOME/.agents/skills/research/SKILL.md",
         },
       ],
-      templateKey: "template-key",
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     expect(templateSandbox.writeFiles).toHaveBeenCalledTimes(1);
@@ -432,137 +437,6 @@ describe("createVercelSandbox", () => {
     expect(files?.[2]?.content).toEqual(Buffer.from("model skill body"));
   });
 
-  it("writes seed files before bootstrap and snapshots bootstrap outputs", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(templateSandbox),
-        get: vi.fn().mockResolvedValueOnce(null),
-      },
-    };
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      bootstrap: async ({ use }) => {
-        const sandbox = await use();
-        await expect(sandbox.readTextFile({ path: "/workspace/seed.txt" })).resolves.toBe(
-          "authored seed",
-        );
-        await sandbox.writeTextFile({
-          content: "bootstrap output",
-          path: "/workspace/bootstrap.txt",
-        });
-      },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [
-        { content: "authored seed", path: "/workspace/seed.txt" },
-        { content: "second seed", path: "/workspace/second.txt" },
-      ],
-      templateKey: "template-key",
-    });
-
-    const writes = vi.mocked(templateSandbox.writeFiles);
-    expect(writes).toHaveBeenCalledTimes(2);
-    expect(writes.mock.calls[0]?.[0].map((file) => file.path)).toEqual([
-      "/workspace/seed.txt",
-      "/workspace/second.txt",
-    ]);
-    expect(writes.mock.calls[1]?.[0].map((file) => file.path)).toEqual([
-      "/workspace/bootstrap.txt",
-    ]);
-    expect(writes.mock.invocationCallOrder[1]).toBeLessThan(
-      vi.mocked(templateSandbox.snapshot).mock.invocationCallOrder[0]!,
-    );
-  });
-
-  it("reports a fresh build when no framework snapshot exists yet", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(templateSandbox),
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    const result = await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    expect(result).toEqual({ reused: false });
-    expect(templateSandbox.snapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("recreates a stale stopped Vercel template that has no snapshot", async () => {
-    const staleTemplate = createMockSandbox({
-      name: "template-key",
-      status: "stopped",
-    });
-    const freshTemplate = createMockSandbox({ name: "template-key" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(freshTemplate),
-        get: vi.fn().mockResolvedValueOnce(staleTemplate),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    const result = await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    expect(result).toEqual({ reused: false });
-    expect(staleTemplate.delete).toHaveBeenCalledTimes(1);
-    expect(staleTemplate.runCommand).not.toHaveBeenCalled();
-    expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "template-key",
-        persistent: true,
-      }),
-    );
-    expect(freshTemplate.snapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("reports a reuse when an existing template already carries a framework snapshot", async () => {
-    const existingTemplate = createMockSandbox({
-      name: "template-key",
-      snapshotId: "framework-snapshot",
-    });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockResolvedValue(existingTemplate),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    const result = await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    expect(result).toEqual({ reused: true });
-    // Reuse must not re-snapshot or re-create the template sandbox.
-    expect(existingTemplate.snapshot).not.toHaveBeenCalled();
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-  });
-
   it("removes paths through the sandbox filesystem API", async () => {
     const templateSandbox = createMockSandbox({ name: "template" });
     const sessionSandbox = createMockSandbox({ name: "session" });
@@ -576,23 +450,21 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
     vi.mocked(sessionSandbox.runCommand).mockClear();
 
-    await handle.session.removePath({ force: true, path: "skills/tenant", recursive: true });
+    await handle.sandbox.removePath({ force: true, path: "skills/tenant", recursive: true });
 
     expect(sessionSandbox.fs.rm).toHaveBeenCalledWith("/workspace/skills/tenant", {
       force: true,
@@ -616,20 +488,18 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     expect(create).toHaveBeenCalledTimes(2);
@@ -638,236 +508,194 @@ describe("createVercelSandbox", () => {
     expect(sessionArgs?.[0]).toMatchObject({ timeout: 30 * 60 * 1_000 });
   });
 
-  it("applies framework defaults to Sandbox.create when no createOptions are supplied", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
+  it("applies mounts passed directly to open", async () => {
     const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(templateSandbox)
-      .mockResolvedValueOnce(sessionSandbox);
-    const sandboxModule = {
-      Sandbox: {
-        create,
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
+    const create = vi.fn().mockResolvedValue(sessionSandbox);
+    const provider = createSandboxProviderHarness(
+      createVercelImplementation({
+        loadSandboxModule: async () =>
+          ({ Sandbox: { create, get: vi.fn().mockResolvedValue(null) } }) as never,
+      }),
+      { mounts: { "/workspace/repos": { drive: "team-drive", mode: "read-write" } } },
+    );
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(create).toHaveBeenCalledTimes(2);
-    const [templateArgs, sessionArgs] = create.mock.calls;
-    expect(templateArgs?.[0]).toMatchObject({
-      name: "template-key",
-      persistent: true,
-      timeout: 30 * 60 * 1_000,
-    });
-    expect(sessionArgs?.[0]).toMatchObject({
-      name: "session-key",
-      persistent: true,
-      timeout: 30 * 60 * 1_000,
-      source: { snapshotId: "template-snapshot", type: "snapshot" },
-    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mounts: { "/workspace/repos": { drive: "team-drive", mode: "read-write" } },
+      }),
+    );
   });
 
-  it("creates a fresh session without reading or snapshotting a template when templateKey is null", async () => {
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi.fn().mockResolvedValueOnce(sessionSandbox);
-    const get = vi.fn().mockResolvedValue(null);
-    const sandboxModule = {
-      Sandbox: {
-        create,
-        get,
-      },
-    };
+  describe("tool sessions", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // What the Sandbox API answers a resume whose snapshot expired or was deleted.
+    const snapshotNotFound = () =>
+      Object.assign(new Error("Cannot resume sandbox: no snapshot available."), {
+        json: { error: { code: "snapshot_not_found" } },
+        response: { status: 410 },
+      });
+    const nameTaken = () =>
+      Object.assign(new Error("A sandbox with the name already exists"), {
+        response: { status: 400 },
+      });
 
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
+    /*
+     * A Vercel project over `sandboxes`, by name. `create` fails for a name
+     * that is taken, as the API does, so a test can let another instance win
+     * a name before this one's create lands.
+     */
+    function project(sandboxes: Map<string, ReturnType<typeof createMockSandbox>>) {
+      const sandboxModule = {
+        Sandbox: {
+          create: vi.fn(async (options: { name: string }) => {
+            if (sandboxes.has(options.name)) throw nameTaken();
+            const created = createMockSandbox({ name: options.name });
+            sandboxes.set(options.name, created);
+            return created;
+          }),
+          get: vi.fn(async (options: { name: string }) => sandboxes.get(options.name) ?? null),
+        },
+      };
+      const provider = createTestVercelSandbox({
+        loadDeleteSandboxModule: async () => sandboxModule as never,
+        loadSandboxModule: async () => sandboxModule as never,
+      });
+      const open = async (sessionId = "tool_session_abc") =>
+        await provider.openSession({
+          appRoot: "/tmp/test-app-root",
+          prepared: { snapshotId: "prepared-snapshot" },
+          sandboxName: sessionId,
+        });
+      return { open, sandboxModule };
+    }
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: null,
-    });
+    function expiredSandbox(
+      sandboxes: Map<string, ReturnType<typeof createMockSandbox>>,
+      name: string,
+    ) {
+      const sandbox = createMockSandbox({ name, status: "stopped" });
+      sandbox.runCommand.mockRejectedValue(snapshotNotFound());
+      sandbox.delete.mockImplementation(async () => {
+        sandboxes.delete(name);
+      });
+      sandboxes.set(name, sandbox);
+      return sandbox;
+    }
 
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledWith({
-      fetch: expect.any(Function),
-      name: "session-key",
-      resume: false,
-    });
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      name: "session-key",
-      persistent: true,
-      timeout: 30 * 60 * 1_000,
-    });
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("source");
-    expect(sessionSandbox.snapshot).not.toHaveBeenCalled();
-  });
+    async function baseName() {
+      const sandboxes = new Map<string, ReturnType<typeof createMockSandbox>>();
+      await project(sandboxes).open();
+      return [...sandboxes.keys()][0]!;
+    }
 
-  it("keeps author createOptions on template-less fresh sessions", async () => {
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi.fn().mockResolvedValueOnce(sessionSandbox);
-    const sandboxModule = {
-      Sandbox: {
-        create,
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      createOptions: {
-        ports: [3000],
-        source: { snapshotId: "author-snap", type: "snapshot" },
-      },
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: null,
-    });
-
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      name: "session-key",
-      persistent: true,
-      ports: [3000],
-      source: { snapshotId: "author-snap", type: "snapshot" },
-    });
-    expect(sessionSandbox.snapshot).not.toHaveBeenCalled();
-  });
-
-  it("forwards factory createOptions to both template and session Sandbox.create", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(templateSandbox)
-      .mockResolvedValueOnce(sessionSandbox);
-    const sandboxModule = {
-      Sandbox: {
-        create,
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      createOptions: {
-        networkPolicy: "deny-all",
-        ports: [3000, 4000],
-        resources: { vcpus: 2 },
-        timeout: 600_000,
-      },
-      loadSandboxModule: async () => sandboxModule as never,
+    it("expires a tool session's snapshots a day after last use and keeps only the latest", async () => {
+      const { open, sandboxModule } = project(new Map());
+      await open();
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({ keepLastSnapshots: { count: 1 }, snapshotExpiration: DAY_MS }),
+      );
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
+    it("leaves a conversation session's snapshot retention to the author", async () => {
+      const { open, sandboxModule } = project(new Map());
+      await open("session-key");
+      const params = sandboxModule.Sandbox.create.mock.calls[0]?.[0];
+      expect(params).not.toHaveProperty("keepLastSnapshots");
+      expect(params).not.toHaveProperty("snapshotExpiration");
     });
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    it("resumes a stopped sandbox whose snapshot is still there, keeping it", async () => {
+      const base = await baseName();
+      const stopped = createMockSandbox({ name: base, status: "stopped" });
+      const { open, sandboxModule } = project(new Map([[base, stopped]]));
+
+      await open();
+
+      expect(stopped.runCommand).toHaveBeenCalled();
+      expect(stopped.delete).not.toHaveBeenCalled();
+      expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
     });
 
-    expect(create).toHaveBeenCalledTimes(2);
-    const [templateArgs, sessionArgs] = create.mock.calls;
-    expect(templateArgs?.[0]).toMatchObject({
-      name: "template-key",
-      networkPolicy: "allow-all",
-      persistent: true,
-      ports: [3000, 4000],
-      resources: { vcpus: 2 },
-      timeout: 600_000,
-    });
-    expect(sessionArgs?.[0]).toMatchObject({
-      name: "session-key",
-      networkPolicy: "deny-all",
-      persistent: true,
-      ports: [3000, 4000],
-      resources: { vcpus: 2 },
-      source: { snapshotId: "template-snapshot", type: "snapshot" },
-      timeout: 600_000,
-    });
-    expect(templateSandbox.update).toHaveBeenCalledWith({ networkPolicy: "deny-all" });
-  });
+    it("starts a fresh sandbox under the same name once the snapshot expired", async () => {
+      const base = await baseName();
+      const sandboxes = new Map<string, ReturnType<typeof createMockSandbox>>();
+      const expired = expiredSandbox(sandboxes, base);
+      const { open, sandboxModule } = project(sandboxes);
 
-  it("resolves mounts only for a fresh live session sandbox", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(templateSandbox)
-      .mockResolvedValueOnce(sessionSandbox);
-    const resolveSessionCreateOptions = vi.fn(({ session }) => ({
-      mounts: {
-        "/workspace/repos": { drive: `e0-${session.id}`, mode: "read-write" as const },
-      },
-    }));
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () =>
-        ({ Sandbox: { create, get: vi.fn().mockResolvedValue(null) } }) as never,
-      resolveSessionCreateOptions,
+      await open();
+
+      expect(expired.delete).toHaveBeenCalledTimes(1);
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: base,
+          snapshotExpiration: DAY_MS,
+          source: { snapshotId: "prepared-snapshot", type: "snapshot" },
+        }),
+      );
+      expect(sandboxes.get(base)?.runCommand).toHaveBeenCalled();
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      tags: { sessionId: "parent-session" },
-      templateKey: "template-key",
+    it("adopts the fresh sandbox another instance made first after the same expiry", async () => {
+      const base = await baseName();
+      const sandboxes = new Map<string, ReturnType<typeof createMockSandbox>>();
+      const expired = expiredSandbox(sandboxes, base);
+      const { open, sandboxModule } = project(sandboxes);
+      // Another instance recreates the name after this one finds it free
+      // and before its create lands.
+      const theirs = createMockSandbox({ name: base });
+      const get = sandboxModule.Sandbox.get.getMockImplementation()!;
+      sandboxModule.Sandbox.get.mockImplementation(async (options) => {
+        const found = await get(options);
+        if (found === null && !sandboxes.has(base)) sandboxes.set(base, theirs);
+        return found;
+      });
+
+      await open();
+
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
+      await expect(sandboxModule.Sandbox.create.mock.results[0]!.value).rejects.toThrow(
+        "already exists",
+      );
+      expect(expired.delete).toHaveBeenCalledTimes(1);
+      expect(theirs.runCommand).toHaveBeenCalled();
+      expect(theirs.delete).not.toHaveBeenCalled();
     });
 
-    expect(resolveSessionCreateOptions).toHaveBeenCalledWith({
-      session: { id: "parent-session" },
-    });
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("mounts");
-    expect(create.mock.calls[1]?.[0]).toMatchObject({
-      mounts: { "/workspace/repos": { drive: "e0-parent-session", mode: "read-write" } },
-    });
-  });
+    it("starts fresh when another instance already deleted the expired sandbox", async () => {
+      const base = await baseName();
+      const sandboxes = new Map<string, ReturnType<typeof createMockSandbox>>();
+      expiredSandbox(sandboxes, base);
+      const { open, sandboxModule } = project(sandboxes);
+      const get = sandboxModule.Sandbox.get.getMockImplementation()!;
+      sandboxModule.Sandbox.get.mockImplementationOnce(get).mockImplementationOnce(async () => {
+        sandboxes.delete(base);
+        throw Object.assign(new Error("Sandbox not found"), { response: { status: 404 } });
+      });
 
-  it("does not resolve session create options when resuming a sandbox", async () => {
-    const existing = createMockSandbox({ name: "session-key" });
-    const create = vi.fn();
-    const resolveSessionCreateOptions = vi.fn();
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () =>
-        ({ Sandbox: { create, get: vi.fn().mockResolvedValue(existing) } }) as never,
-      resolveSessionCreateOptions,
-    });
+      await open();
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: null,
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: base }),
+      );
+      expect(sandboxes.get(base)?.runCommand).toHaveBeenCalled();
     });
 
-    expect(resolveSessionCreateOptions).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
+    it("surfaces any other 410 instead of replacing the sandbox", async () => {
+      const base = await baseName();
+      const gone = createMockSandbox({ name: base, status: "stopped" });
+      gone.runCommand.mockRejectedValue(
+        Object.assign(new Error("Session is gone"), { response: { status: 410 } }),
+      );
+      const { open, sandboxModule } = project(new Map([[base, gone]]));
+
+      await expect(open()).rejects.toThrow();
+      expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
+      expect(gone.delete).not.toHaveBeenCalled();
+    });
   });
 
   it("forwards author source to template create as the base layer", async () => {
@@ -877,7 +705,7 @@ describe("createVercelSandbox", () => {
      * source. The template sandbox mock mirrors that — if eve's
      * "template already has a snapshot, reuse it" guard fires on a
      * newly-created template, it returns the author's snapshotId
-     * instead of running bootstrap/seed/`sandbox.snapshot()`, so the
+     * instead of running preparation/resource hydration/`sandbox.snapshot()`, so the
      * session would derive directly from the author snapshot and the
      * framework's setup would never run. That's the regression this
      * test pins.
@@ -898,21 +726,19 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       createOptions: { source: { snapshotId: "author-snap", type: "snapshot" } },
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     expect(create).toHaveBeenCalledTimes(2);
@@ -926,350 +752,45 @@ describe("createVercelSandbox", () => {
     });
   });
 
-  it("re-runs prewarm when an existing template still carries the author snapshot as its currentSnapshotId", async () => {
-    /*
-     * A previous prewarm that crashed (or just never reached
-     * `sandbox.snapshot()`) leaves a named template sandbox in the
-     * project whose `currentSnapshotId` is still the author's source
-     * snapshot. Without explicit handling, `getNamedSandbox` would
-     * find it and eve would treat the author's snapshot as the
-     * framework's prewarmed snapshot, skipping setup/bootstrap/seeds
-     * forever. This test pins that we ignore that exact value and
-     * proceed with prewarm on the existing sandbox.
-     */
-    const existingTemplate = createMockSandbox({
-      name: "template-key",
-      snapshotId: "author-snap",
-    });
-    const sessionSandbox = createMockSandbox({ name: "session-key" });
-    const create = vi.fn().mockResolvedValueOnce(sessionSandbox);
-    const get = vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-      if (name === "template-key") return existingTemplate;
-      if (name === "session-key") return null;
-      return null;
-    });
-    const sandboxModule = { Sandbox: { create, get } };
-
-    const backend = createTestVercelSandbox({
-      createOptions: { source: { snapshotId: "author-snap", type: "snapshot" } },
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(existingTemplate.snapshot).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      source: { snapshotId: "template-key-snapshot", type: "snapshot" },
-    });
-  });
-
-  it("invalidates and rebuilds a Vercel template when its snapshot expired before session create", async () => {
-    const staleTemplate = createMockSandbox({
-      name: "template-key",
-      snapshotId: "expired-template-snapshot",
-    });
-    const freshTemplate = createMockSandbox({ name: "template-key" });
-    const sessionSandbox = createMockSandbox({ name: "session-key" });
-    let templateDeleted = false;
-    vi.mocked(staleTemplate.delete).mockImplementation(async () => {
-      templateDeleted = true;
-    });
-
+  it("reports an unavailable prepared snapshot without mutating the build template", async () => {
     const snapshotExpiredError = Object.assign(
       new Error("Vercel sandbox create API returned 410"),
-      {
-        json: {
-          error: {
-            code: "bad_request",
-            message: "Resource is gone.",
-          },
-        },
-        response: { status: 410 },
-      },
+      { response: { status: 410 } },
     );
-    const create = vi
-      .fn()
-      .mockRejectedValueOnce(snapshotExpiredError)
-      .mockResolvedValueOnce(freshTemplate)
-      .mockResolvedValueOnce(sessionSandbox);
-    const get = vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-      if (name === "template-key") {
-        return templateDeleted ? null : staleTemplate;
-      }
-      if (name === "session-key") {
-        return null;
-      }
-      return null;
-    });
-    const sandboxModule = { Sandbox: { create, get } };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await expect(
-      backend.create({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        sessionKey: "session-key",
-        templateKey: "template-key",
-      }),
-    ).rejects.toBeInstanceOf(SandboxTemplateNotProvisionedError);
-    expect(staleTemplate.delete).toHaveBeenCalledTimes(1);
-
-    const prewarmResult = await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(prewarmResult).toEqual({ reused: false });
-    expect(freshTemplate.snapshot).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledTimes(3);
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      name: "session-key",
-      source: { snapshotId: "expired-template-snapshot", type: "snapshot" },
-    });
-    expect(create.mock.calls[1]?.[0]).toMatchObject({
-      name: "template-key",
-      persistent: true,
-    });
-    expect(create.mock.calls[2]?.[0]).toMatchObject({
-      name: "session-key",
-      source: { snapshotId: "template-key-snapshot", type: "snapshot" },
-    });
-  });
-
-  it("does not invalidate the shared template when a fresh session initialization returns 410", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const freshSession = createMockSandbox({ name: "session-key" });
-    const snapshotUnavailableError = Object.assign(new Error("Cannot initialize sandbox"), {
-      response: { status: 410 },
-    });
-    vi.mocked(freshSession.runCommand).mockRejectedValueOnce(snapshotUnavailableError);
     const sandboxModule = {
       Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(freshSession),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          return null;
-        }),
-      },
-    };
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await expect(
-      backend.create({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        sessionKey: "session-key",
-        templateKey: "template-key",
-      }),
-    ).rejects.toThrow('Failed to initialize sandbox session "session-key"');
-
-    expect(templateSandbox.delete).not.toHaveBeenCalled();
-  });
-
-  it("does not invalidate the shared template for an ambiguous session-create 404", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const imageNotFoundError = Object.assign(new Error("Image not found"), {
-      response: { status: 404 },
-    });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockRejectedValueOnce(imageNotFoundError),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          return null;
-        }),
-      },
-    };
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await expect(
-      backend.create({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        sessionKey: "session-key",
-        templateKey: "template-key",
-      }),
-    ).rejects.toThrow('Failed to create sandbox session "session-key": Image not found');
-
-    expect(templateSandbox.delete).not.toHaveBeenCalled();
-  });
-
-  it("rebuilds a Vercel template when the named sandbox disappears during prewarm", async () => {
-    const staleTemplate = createMockSandbox({ name: "template-key" });
-    const freshTemplate = createMockSandbox({ name: "template-key" });
-    const missingTemplateError = Object.assign(new Error("Status code 404 is not ok"), {
-      response: { status: 404 },
-    });
-    vi.mocked(staleTemplate.snapshot).mockRejectedValueOnce(missingTemplateError);
-
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(staleTemplate)
-      .mockResolvedValueOnce(freshTemplate);
-    const sandboxModule = {
-      Sandbox: {
-        create,
+        create: vi.fn().mockRejectedValueOnce(snapshotExpiredError),
         get: vi.fn().mockResolvedValue(null),
       },
     };
-    const log = vi.fn();
-
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
     await expect(
-      backend.prewarm({
-        log,
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        seedFiles: [],
-        templateKey: "template-key",
+      provider.openSession({
+        appRoot: "/tmp/test-app-root",
+        prepared: { snapshotId: "expired-template-snapshot" },
+        sandboxName: "session-key",
       }),
-    ).resolves.toEqual({ reused: false });
+    ).rejects.toBeInstanceOf(SandboxTemplateNotProvisionedError);
 
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(staleTemplate.snapshot).toHaveBeenCalledTimes(1);
-    expect(freshTemplate.snapshot).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledWith("cached template disappeared; rebuilding sandbox template");
-  });
-
-  it("resumes a stopped session sandbox via Sandbox.get instead of creating a new one", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const sessionSandbox = createMockSandbox({ name: "persisted-sandbox-name" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          if (name === "persisted-sandbox-name") return sessionSandbox;
-          return null;
-        }),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    const handle = await backend.create({
-      existingMetadata: { sandboxName: "persisted-sandbox-name" },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith({
-      fetch: expect.any(Function),
-      name: "persisted-sandbox-name",
-      resume: false,
-    });
-    expect(sessionSandbox.runCommand).toHaveBeenCalledTimes(1);
-    expect(sessionSandbox.runCommand).toHaveBeenCalledWith({
-      args: ["-lc", expect.stringContaining("ln -s /proc/self/fd /dev/fd")],
-      cmd: "bash",
-    });
-    expect(handle.session).toBeDefined();
-
-    const state = await handle.captureState();
-    expect(state.metadata).toEqual({ sandboxName: "persisted-sandbox-name" });
-  });
-
-  it("replaces a persisted session whose snapshot is unavailable", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const staleSession = createMockSandbox({ name: "persisted-sandbox-name", status: "stopped" });
-    const replacementSession = createMockSandbox({ name: "session-key" });
-    const snapshotUnavailableError = Object.assign(new Error("Cannot resume sandbox"), {
-      response: { status: 410 },
-    });
-    vi.mocked(staleSession.runCommand).mockRejectedValueOnce(snapshotUnavailableError);
-
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(replacementSession),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          if (name === "persisted-sandbox-name") return staleSession;
-          if (name === "session-key") return null;
-          return null;
-        }),
-      },
-    };
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    const handle = await backend.create({
-      existingMetadata: { sandboxName: "persisted-sandbox-name" },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith({
-      fetch: expect.any(Function),
-      name: "persisted-sandbox-name",
-      resume: false,
-      signal: undefined,
-    });
-    expect(staleSession.delete).toHaveBeenCalledWith({
-      deleteOrphanSnapshots: true,
-      signal: undefined,
-    });
-    expect(templateSandbox.delete).not.toHaveBeenCalled();
+    expect(sandboxModule.Sandbox.get).toHaveBeenCalledTimes(1);
+    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.stringMatching(/^eve-sbx-vercel-/u) }),
+    );
     expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: "session-key",
-        persistent: true,
-        source: { snapshotId: "template-snapshot", type: "snapshot" },
+        name: expect.stringMatching(/^eve-sbx-vercel-/u),
+        source: { snapshotId: "expired-template-snapshot", type: "snapshot" },
       }),
     );
-    expect((await handle.captureState()).metadata).toEqual({ sandboxName: "session-key" });
   });
 
   it("stops the session sandbox on shutdown so no VM outlives the server", async () => {
     const { handle, sessionSandbox } = await createTestVercelSession();
 
-    await handle.shutdown();
+    await handle.onRuntimeShutdown();
 
     expect(sessionSandbox.stop).toHaveBeenCalledTimes(1);
   });
@@ -1279,8 +800,8 @@ describe("createVercelSandbox", () => {
     vi.mocked(sessionSandbox.runCommand).mockResolvedValue(createMockDetachedCommand() as never);
     vi.mocked(sessionSandbox.runCommand).mockClear();
 
-    await handle.stop();
-    await handle.session.run({ command: "printf resumed" });
+    await handle.onSandboxStop();
+    await handle.sandbox.run({ command: "printf resumed" });
 
     expect(sessionSandbox.stop).toHaveBeenCalledTimes(1);
     expect(sessionSandbox.runCommand).toHaveBeenCalledWith(
@@ -1298,12 +819,9 @@ describe("createVercelSandbox", () => {
     const stableDelete = vi.fn(async () => {
       order.push("sandbox-delete");
     });
-    const get = vi.fn(async ({ name, resume }: { name: string; resume?: boolean }) => {
-      if (name === "session" && resume === false) {
-        order.push("sandbox-get");
-        return { delete: stableDelete };
-      }
-      return null;
+    const stableGet = vi.fn(async () => {
+      order.push("sandbox-get");
+      return { delete: stableDelete };
     });
     const sandboxModule = {
       Sandbox: {
@@ -1311,28 +829,27 @@ describe("createVercelSandbox", () => {
           .fn()
           .mockResolvedValueOnce(templateSandbox)
           .mockResolvedValueOnce(sessionSandbox),
-        get,
+        get: vi.fn().mockResolvedValue(null),
       },
     };
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
+      loadDeleteSandboxModule: async () => ({ Sandbox: { get: stableGet } }) as never,
       loadSandboxModule: async () => sandboxModule as never,
     });
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
     const abortSignal = new AbortController().signal;
 
-    await expect(handle.delete({ abortSignal })).resolves.toBeUndefined();
+    await expect(handle.onSandboxDelete({ abortSignal })).resolves.toBeUndefined();
 
     expect(order).toEqual(["stop", "sandbox-get", "sandbox-delete"]);
-    expect(get).toHaveBeenCalledWith({
+    expect(stableGet).toHaveBeenCalledWith({
       fetch: expect.any(Function),
       name: "session",
       resume: false,
@@ -1356,21 +873,19 @@ describe("createVercelSandbox", () => {
         get: vi.fn().mockResolvedValue(null),
       },
     };
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
-    await handle.shutdown();
+    await handle.onRuntimeShutdown();
 
     expect(sessionSandbox.stop).not.toHaveBeenCalled();
   });
@@ -1379,209 +894,55 @@ describe("createVercelSandbox", () => {
     const { handle, sessionSandbox } = await createTestVercelSession();
     sessionSandbox.stop.mockRejectedValueOnce(new Error("provider unreachable"));
 
-    await expect(handle.stop()).rejects.toThrow("provider unreachable");
+    await expect(handle.onSandboxStop()).rejects.toThrow("provider unreachable");
   });
 
-  it("falls back to creating a new session when the persisted sandbox no longer exists", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const newSessionSandbox = createMockSandbox({ name: "session-key" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(newSessionSandbox),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          throw Object.assign(new Error("Not found"), {
-            response: { status: 404 },
-          });
-        }),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    const handle = await backend.create({
-      existingMetadata: { sandboxName: "deleted-sandbox" },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(sandboxModule.Sandbox.get).toHaveBeenCalledWith({
-      fetch: expect.any(Function),
-      name: "deleted-sandbox",
-      resume: false,
-    });
-    expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
-    expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "deleted-sandbox",
-        persistent: true,
-        source: { snapshotId: "template-snapshot", type: "snapshot" },
+  it("applies the open-time policy after template-less base setup", async () => {
+    const sessionSandbox = createMockSandbox({ name: "session" });
+    const create = vi.fn().mockResolvedValue(sessionSandbox);
+    const provider = createSandboxProviderHarness(
+      createVercelImplementation({
+        createSandbox: async ({ createOptions }) => {
+          await create(createOptions);
+          return sessionSandbox as never;
+        },
+        loadSandboxModule: async () =>
+          ({ Sandbox: { create, get: vi.fn().mockResolvedValue(null) } }) as never,
       }),
+      { networkPolicy: "deny-all" },
+      { preparedArtifact: () => ({}) },
     );
-    expect(handle.session).toBeDefined();
+
+    await provider.start({ appRoot: "/tmp/test-app-root", sandboxName: "session-key" });
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ networkPolicy: "allow-all" }));
+    expect(sessionSandbox.update).toHaveBeenCalledWith({ networkPolicy: "deny-all" });
+    expect(sessionSandbox.runCommand.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionSandbox.update.mock.invocationCallOrder[0]!,
+    );
   });
 
-  it("does not call Sandbox.create on resume and does not re-apply factory createOptions", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-    });
-    const sessionSandbox = createMockSandbox({ name: "session-key" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") return templateSandbox;
-          if (name === "session-key") return sessionSandbox;
-          return null;
-        }),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      createOptions: { networkPolicy: "deny-all" },
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-    // The factory's networkPolicy must NOT leak into a sandbox.update on resume.
-    const updateCalls = vi.mocked(sessionSandbox.update).mock.calls;
-    for (const call of updateCalls) {
-      expect(call[0]).not.toHaveProperty("networkPolicy");
-    }
-  });
-
-  it("adds eve sandbox tags to Vercel template and session creation", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
+  it("discards a fresh template-less session when applying its policy fails", async () => {
     const sessionSandbox = createMockSandbox({ name: "session" });
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(templateSandbox)
-      .mockResolvedValueOnce(sessionSandbox);
-    const sandboxModule = {
-      Sandbox: {
-        create,
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
+    sessionSandbox.update.mockRejectedValueOnce(new Error("policy rejected"));
+    const stableDelete = vi.fn().mockResolvedValue(undefined);
+    const provider = createSandboxProviderHarness(
+      createVercelImplementation({
+        createSandbox: async () => sessionSandbox as never,
+        loadDeleteSandboxModule: async () =>
+          ({ Sandbox: { get: vi.fn().mockResolvedValue({ delete: stableDelete }) } }) as never,
+        loadSandboxModule: async () =>
+          ({ Sandbox: { get: vi.fn().mockResolvedValue(null) } }) as never,
+      }),
+      { networkPolicy: "deny-all" },
+      { preparedArtifact: () => ({}) },
+    );
 
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      tags: {
-        agent: "weather-agent",
-        channel: "slack",
-        sessionId: "session_123",
-      },
-      templateKey: "template-key",
-    });
-
-    expect(create).toHaveBeenCalledTimes(2);
-    const [templateArgs, sessionArgs] = create.mock.calls;
-    expect(templateArgs?.[0]).toMatchObject({
-      name: "template-key",
-      persistent: true,
-    });
-    expect(sessionArgs?.[0]).toMatchObject({
-      name: "session-key",
-      persistent: true,
-      tags: {
-        agent: "weather-agent",
-        channel: "slack",
-        sessionId: "session_123",
-      },
-    });
-  });
-
-  it("forwards networkPolicy shapes through useSessionFn to sandbox.update", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce(templateSandbox)
-          .mockResolvedValueOnce(sessionSandbox),
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
-    });
-
-    await handle.useSessionFn({ networkPolicy: "allow-all" });
-    await handle.useSessionFn({ networkPolicy: "deny-all" });
-    await handle.useSessionFn({
-      networkPolicy: { allow: ["example.com", "*.vercel.app"] },
-    });
-    await handle.useSessionFn({
-      networkPolicy: {
-        allow: {
-          "api.example.com": [{ transform: [{ headers: { authorization: "Bearer sk-..." } }] }],
-        },
-      },
-    });
-
-    expect(sessionSandbox.update).toHaveBeenCalledTimes(4);
-    expect(sessionSandbox.update).toHaveBeenNthCalledWith(1, { networkPolicy: "allow-all" });
-    expect(sessionSandbox.update).toHaveBeenNthCalledWith(2, { networkPolicy: "deny-all" });
-    expect(sessionSandbox.update).toHaveBeenNthCalledWith(3, {
-      networkPolicy: { allow: ["example.com", "*.vercel.app"] },
-    });
-    expect(sessionSandbox.update).toHaveBeenNthCalledWith(4, {
-      networkPolicy: {
-        allow: {
-          "api.example.com": [{ transform: [{ headers: { authorization: "Bearer sk-..." } }] }],
-        },
-      },
-    });
+    await expect(
+      provider.start({ appRoot: "/tmp/test-app-root", sandboxName: "session-key" }),
+    ).rejects.toThrow("policy rejected");
+    expect(sessionSandbox.stop).toHaveBeenCalledTimes(1);
+    expect(stableDelete).toHaveBeenCalledTimes(1);
   });
 
   it("brokers credentials through the session's setNetworkPolicy to sandbox.update", async () => {
@@ -1597,23 +958,23 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
-    await handle.session.setNetworkPolicy({
+    expect(handle.sandbox.name).toBe("session");
+
+    await handle.sandbox.setNetworkPolicy({
       allow: {
         "github.com": [{ transform: [{ headers: { authorization: "Basic eC1hY2Nlc3M=" } }] }],
         "*": [],
@@ -1631,158 +992,6 @@ describe("createVercelSandbox", () => {
     });
   });
 
-  it("forwards bootstrap use(opts) through sandbox.update on the template sandbox", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sessionSandbox = createMockSandbox({ name: "session" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce(templateSandbox)
-          .mockResolvedValueOnce(sessionSandbox),
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      bootstrap: async ({ use }) => {
-        await use({
-          networkPolicy: "deny-all",
-          ports: [3000, 4000],
-          resources: { vcpus: 2 },
-          timeout: 600_000,
-        });
-      },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    expect(templateSandbox.update).toHaveBeenCalledWith({
-      networkPolicy: "deny-all",
-      ports: [3000, 4000],
-      resources: { vcpus: 2 },
-      timeout: 600_000,
-    });
-    expect(templateSandbox.snapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not call sandbox.update when bootstrap use() is invoked without options", async () => {
-    const templateSandbox = createMockSandbox({ name: "template" });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn().mockResolvedValueOnce(templateSandbox),
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      bootstrap: async ({ use }) => {
-        await use();
-      },
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    expect(templateSandbox.update).not.toHaveBeenCalled();
-    expect(templateSandbox.snapshot).toHaveBeenCalledTimes(1);
-  });
-
-  it("updates tags when reattaching existing Vercel sandboxes", async () => {
-    const templateSandbox = createMockSandbox({
-      name: "template-key",
-      snapshotId: "template-snapshot",
-      tags: { agent: "old-agent" },
-    });
-    const sessionSandbox = createMockSandbox({
-      name: "session-key",
-      tags: { agent: "old-agent" },
-    });
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockImplementation(async ({ name }: { name: string }) => {
-          if (name === "template-key") {
-            return templateSandbox;
-          }
-          if (name === "session-key") {
-            return sessionSandbox;
-          }
-          return null;
-        }),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      seedFiles: [],
-      templateKey: "template-key",
-    });
-
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      tags: {
-        agent: "weather-agent",
-        channel: "slack",
-        sessionId: "session_123",
-      },
-      templateKey: "template-key",
-    });
-
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-    expect(sessionSandbox.update).toHaveBeenCalledWith({
-      tags: {
-        agent: "weather-agent",
-        channel: "slack",
-        sessionId: "session_123",
-      },
-    });
-  });
-
-  it("rejects merged Vercel sandbox tags over the platform limit", async () => {
-    const sandboxModule = {
-      Sandbox: {
-        create: vi.fn(),
-        get: vi.fn().mockResolvedValue(null),
-      },
-    };
-
-    const backend = createTestVercelSandbox({
-      loadSandboxModule: async () => sandboxModule as never,
-    });
-
-    await expect(
-      backend.create({
-        runtimeContext: { appRoot: "/tmp/test-app-root" },
-        sessionKey: "session-key",
-        tags: {
-          agent: "weather-agent",
-          channel: "slack",
-          env: "test",
-          owner: "ai",
-          sessionId: "session_123",
-          team: "infra",
-        },
-        templateKey: "template-key",
-      }),
-    ).rejects.toThrow(/supports at most 5 tags/);
-    expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
-  });
-
   it("exposes /workspace-rooted resolved paths through the public session", async () => {
     const templateSandbox = createMockSandbox({ name: "template" });
     const sessionSandbox = createMockSandbox({ name: "session" });
@@ -1796,26 +1005,24 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
-    expect(handle.session.resolvePath("/workspace/python-analysis/run.py")).toBe(
+    expect(handle.sandbox.resolvePath("/workspace/python-analysis/run.py")).toBe(
       "/workspace/python-analysis/run.py",
     );
-    expect(handle.session.resolvePath("python-analysis/run.py")).toBe(
+    expect(handle.sandbox.resolvePath("python-analysis/run.py")).toBe(
       "/workspace/python-analysis/run.py",
     );
   });
@@ -1826,7 +1033,7 @@ describe("createVercelSandbox", () => {
       Readable.from([Buffer.from("hello "), Buffer.from("sandbox")]),
     );
 
-    const stream = await handle.session.readFile({ path: "/workspace/message.txt" });
+    const stream = await handle.sandbox.readFile({ path: "/workspace/message.txt" });
 
     expect(stream).not.toBeNull();
     expect(await consumeWebStream(stream!)).toBe("hello sandbox");
@@ -1843,7 +1050,7 @@ describe("createVercelSandbox", () => {
     });
     sessionSandbox.readFile.mockResolvedValueOnce(providerStream);
 
-    const stream = await handle.session.readFile({ path: "/workspace/message.txt" });
+    const stream = await handle.sandbox.readFile({ path: "/workspace/message.txt" });
 
     expect(stream).toBe(providerStream);
     expect(await consumeWebStream(stream!)).toBe("web stream");
@@ -1852,7 +1059,7 @@ describe("createVercelSandbox", () => {
   it("preserves missing Vercel files as null", async () => {
     const { handle } = await createTestVercelSession();
 
-    await expect(handle.session.readFile({ path: "/workspace/missing.txt" })).resolves.toBeNull();
+    await expect(handle.sandbox.readFile({ path: "/workspace/missing.txt" })).resolves.toBeNull();
   });
 
   it("propagates Vercel file-read errors unchanged", async () => {
@@ -1860,7 +1067,7 @@ describe("createVercelSandbox", () => {
     const providerError = new Error("provider read failed");
     sessionSandbox.readFile.mockRejectedValueOnce(providerError);
 
-    await expect(handle.session.readFile({ path: "/workspace/message.txt" })).rejects.toBe(
+    await expect(handle.sandbox.readFile({ path: "/workspace/message.txt" })).rejects.toBe(
       providerError,
     );
   });
@@ -1869,12 +1076,12 @@ describe("createVercelSandbox", () => {
     const { handle, sessionSandbox } = await createTestVercelSession();
     sessionSandbox.readFile.mockResolvedValueOnce({ readable: true });
 
-    await expect(handle.session.readFile({ path: "/workspace/message.txt" })).rejects.toThrow(
+    await expect(handle.sandbox.readFile({ path: "/workspace/message.txt" })).rejects.toThrow(
       "Vercel Sandbox returned an unsupported file stream.",
     );
   });
 
-  it("forwards env to runCommand when spawning a process", async () => {
+  it("forwards env with the AI_AGENT default to runCommand when spawning a process", async () => {
     const templateSandbox = createMockSandbox({ name: "template" });
     const sessionSandbox = createMockSandbox({ name: "session" });
     const sandboxModule = {
@@ -1887,25 +1094,23 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     vi.mocked(sessionSandbox.runCommand).mockResolvedValue(createMockDetachedCommand() as never);
     vi.mocked(sessionSandbox.runCommand).mockClear();
 
-    await handle.session.spawn({
+    await handle.sandbox.spawn({
       command: "printenv DEPLOY_ENV",
       env: { DEPLOY_ENV: "staging" },
     });
@@ -1915,12 +1120,12 @@ describe("createVercelSandbox", () => {
       expect.objectContaining({
         args: ["-lc", "printenv DEPLOY_ENV"],
         cmd: "bash",
-        env: { DEPLOY_ENV: "staging" },
+        env: { AI_AGENT: "eve", DEPLOY_ENV: "staging" },
       }),
     );
   });
 
-  it("forwards env to runCommand when running a command", async () => {
+  it("lets environment env override the AI_AGENT default when running a command", async () => {
     const templateSandbox = createMockSandbox({ name: "template" });
     const sessionSandbox = createMockSandbox({ name: "session" });
     const sandboxModule = {
@@ -1933,25 +1138,24 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
+      createOptions: { env: { AI_AGENT: "alice-bot" } },
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
-    const handle = await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    const handle = await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     vi.mocked(sessionSandbox.runCommand).mockResolvedValue(createMockDetachedCommand() as never);
     vi.mocked(sessionSandbox.runCommand).mockClear();
 
-    await handle.session.run({
+    await handle.sandbox.run({
       command: "printenv DEPLOY_ENV",
       env: { DEPLOY_ENV: "production" },
     });
@@ -1961,14 +1165,9 @@ describe("createVercelSandbox", () => {
       expect.objectContaining({
         args: ["-lc", "printenv DEPLOY_ENV"],
         cmd: "bash",
-        env: { DEPLOY_ENV: "production" },
+        env: { AI_AGENT: "alice-bot", DEPLOY_ENV: "production" },
       }),
     );
-  });
-
-  it("exposes a stable backend name", () => {
-    const backend = createTestVercelSandbox();
-    expect(backend.name).toBe("vercel");
   });
 
   it("prepares the base runtime during sandbox init", async () => {
@@ -1984,20 +1183,18 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
-    await backend.create({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
-      sessionKey: "session-key",
-      templateKey: "template-key",
+    await provider.openSession({
+      appRoot: "/tmp/test-app-root",
+      sandboxName: "session-key",
     });
 
     for (const sandbox of [templateSandbox, sessionSandbox]) {
@@ -2044,14 +1241,13 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    await backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    await provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
     expect(templateSandbox.runCommand).toHaveBeenCalledTimes(2);
@@ -2087,26 +1283,16 @@ describe("createVercelSandbox", () => {
       },
     };
 
-    const backend = createTestVercelSandbox({
+    const provider = createTestVercelSandbox({
       loadSandboxModule: async () => sandboxModule as never,
     });
 
-    const prewarm = backend.prewarm({
-      runtimeContext: { appRoot: "/tmp/test-app-root" },
+    const prewarm = provider.prepare({
+      appRoot: "/tmp/test-app-root",
       seedFiles: [],
-      templateKey: "template-key",
     });
 
     await expect(prewarm).rejects.toThrow(/Failed to initialize Vercel sandbox base runtime/);
     await expect(prewarm).rejects.not.toThrow(/Vercel OIDC can authenticate/);
-  });
-});
-
-describe("vercel (public factory)", () => {
-  it("returns a SandboxBackend value with name 'vercel'", () => {
-    const backend = vercel();
-    expect(backend.name).toBe("vercel");
-    expect(typeof backend.create).toBe("function");
-    expect(typeof backend.prewarm).toBe("function");
   });
 });

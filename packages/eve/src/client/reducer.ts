@@ -1,4 +1,3 @@
-import type { JsonObject } from "#shared/json.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 
@@ -10,8 +9,9 @@ export interface ClientMessageSubmittedEvent {
   readonly data: {
     readonly createdAt: number;
     readonly message: string;
-    readonly metadata?: JsonObject;
     readonly submissionId: string;
+    /** Active turn receiving a steered follow-up, when known. */
+    readonly turnId?: string;
   };
   readonly type: "client.message.submitted";
 }
@@ -25,11 +25,11 @@ export interface ClientMessageFailedEvent {
     readonly createdAt: number;
     readonly error: {
       readonly message: string;
-      readonly metadata?: JsonObject;
     };
     readonly message: string;
-    readonly metadata?: JsonObject;
     readonly submissionId: string;
+    /** Active turn receiving a steered follow-up, when known. */
+    readonly turnId?: string;
   };
   readonly type: "client.message.failed";
 }
@@ -51,7 +51,7 @@ export interface ClientInputRespondedEvent {
  *
  * Server events are authoritative eve stream events. They include text,
  * reasoning, tool/action requests and results, HITL input requests, connection
- * authorization events, subagent events, and session lifecycle events. Client
+ * authorization events, task and agent-session events, and session lifecycle events. Client
  * events are projection-only events created by client state machines for local
  * UI state such as optimistic user messages and submitted HITL responses.
  */

@@ -1,17 +1,31 @@
+import { ConnectionEventActions, isEventAction } from "#runtime/connections/events/actions.js";
 import { createMCPClient, type MCPClient } from "#compiled/@ai-sdk/mcp/index.js";
 import type { ToolSet } from "ai";
 
 import { buildCallbackContext } from "#context/build-callback-context.js";
-import { ConnectionAuthorizationRequiredError } from "#connections/errors.js";
+import {
+  ConnectionAuthorizationRequiredError,
+  isConnectionAuthorizationRequiredError,
+} from "#connections/errors.js";
 import type { SessionContext } from "#context/session-context.js";
 import type { ResolvedConnectionDefinition } from "#runtime/types.js";
 import { evictScopedToken, resolveScopedToken } from "#runtime/connections/scoped-authorization.js";
 import { resolveConnectionAuthorization } from "#runtime/connections/resolve-authorization.js";
 import { isObject } from "#shared/guards.js";
+import { readTurnPrincipals } from "#context/turn-principals.js";
+import {
+  encodeForwardedPrincipalHeader,
+  FORWARDED_PRINCIPAL_HEADER,
+} from "#internal/mcp/forwarded-principal-header.js";
 import {
   omitProvidedArgumentsFromSchema,
   resolveProvidedArguments,
 } from "#runtime/connections/provided-arguments.js";
+import {
+  createMcpTraceFetch,
+  withMcpToolCallSpan,
+  withMcpToolsListSpan,
+} from "#runtime/connections/mcp-tracing.js";
 import type {
   AuthorizationDefinition,
   ConnectionClient,
@@ -32,6 +46,12 @@ interface McpToolCache {
  *
  * Created lazily per-connection per-session. Caches tool metadata after
  * the first `getToolMetadata()` call.
+ *
+ * When the connection declares `authorization` but no token is available
+ * yet (`getToken` throws {@link ConnectionAuthorizationRequiredError}), the
+ * client connects anonymously instead of failing. Sign-in is only requested
+ * once the server asks for it: an HTTP `401` on any request, or a tool
+ * result that carries an `mcp/www_authenticate` challenge.
  */
 export class McpConnectionClient implements ConnectionClient {
   #clientPromise: Promise<MCPClient> | undefined;
@@ -39,9 +59,38 @@ export class McpConnectionClient implements ConnectionClient {
   #toolsPromise: Promise<McpToolCache> | undefined;
   #tools: McpToolCache | undefined;
   #connection: ResolvedConnectionDefinition;
+  /** Whether the current transport connected without a bearer because none was available yet. */
+  #anonymous = false;
+  readonly eventActions: ConnectionClient["eventActions"];
 
   constructor(connection: ResolvedConnectionDefinition) {
     this.#connection = connection;
+    if (connection.experimental_events !== undefined) {
+      const events = new ConnectionEventActions(
+        connection,
+        connection.experimental_events,
+        () => resolveHeaders(connection),
+        this.#forwardingFetch(),
+      );
+      this.eventActions = {
+        ownsName: isEventAction,
+        recoveryMetadata: () => events.recoveryMetadata(),
+        metadata: async () => {
+          try {
+            return await events.metadata();
+          } catch (error) {
+            return await this.#rethrowClassified(error);
+          }
+        },
+        execute: async (name, args, options) => {
+          try {
+            return await events.execute(name, args, options);
+          } catch (error) {
+            return await this.#rethrowClassified(error);
+          }
+        },
+      };
+    }
   }
 
   /**
@@ -71,13 +120,21 @@ export class McpConnectionClient implements ConnectionClient {
   }
 
   async #createClient(): Promise<MCPClient> {
-    const headers = await resolveHeaders(this.#connection);
+    const { anonymous, headers } = await resolveConnectionHeaders(this.#connection, {
+      anonymousWhenAuthorizationRequired: true,
+    });
+    this.#anonymous = anonymous;
     const url = this.#connection.url;
+    const fetch = createMcpTraceFetch({
+      connectionName: this.#connection.connectionName,
+      fetcher: this.#forwardingFetch(),
+      getProtocolVersion: () => this.#client?.initializeResult?.protocolVersion,
+    });
 
     try {
       return await createMCPClient({
         protocolVersionDiscovery: this.#connection.protocolVersionDiscovery,
-        transport: { type: "http", url, headers },
+        transport: { fetch, headers, type: "http", url },
       });
     } catch (error) {
       if (!isMcpHttpFallbackRetryableError(error)) {
@@ -85,14 +142,37 @@ export class McpConnectionClient implements ConnectionClient {
       }
       return await createMCPClient({
         protocolVersionDiscovery: this.#connection.protocolVersionDiscovery,
-        transport: { type: "sse", url, headers },
+        transport: { fetch, headers, type: "sse", url },
       });
     }
   }
 
   /**
-   * Returns cached tool metadata for all tools this connection exposes,
-   * after applying any configured tool filter.
+   * With `forwardPrincipal`, adds `eve-forwarded-principal` to every request,
+   * read per request: one client can serve turns from different people in a
+   * shared session.
+   */
+  #forwardingFetch(): typeof fetch | undefined {
+    if (this.#connection.forwardPrincipal !== true) return undefined;
+    const connectionName = this.#connection.connectionName;
+    return async (request, init) => {
+      const principals = readTurnPrincipals();
+      if (principals === undefined) return await globalThis.fetch(request, init);
+      const headers = new Headers(init?.headers);
+      headers.set(
+        FORWARDED_PRINCIPAL_HEADER,
+        encodeForwardedPrincipalHeader(principals, connectionName),
+      );
+      // Fetch keeps custom headers across a cross-origin redirect, unlike
+      // `Authorization`, so following one would hand the user's identity to
+      // another host.
+      return await globalThis.fetch(request, { ...init, headers, redirect: "error" });
+    };
+  }
+
+  /**
+   * Returns cached tool metadata for all tools this connection exposes. The
+   * catalog applies the connection's tool filter to the listing.
    *
    * The first call fetches tools from the server via `listTools()` and
    * creates the AI SDK tool set in parallel. Subsequent calls return
@@ -100,18 +180,7 @@ export class McpConnectionClient implements ConnectionClient {
    * promise.
    */
   async getToolMetadata(): Promise<readonly ConnectionToolMetadata[]> {
-    const cache = await this.#ensureTools();
-    return cache.metadata;
-  }
-
-  /**
-   * Returns the AI SDK `ToolSet` produced by `@ai-sdk/mcp`'s
-   * `toolsFromDefinitions()`. Each entry is a full SDK `Tool` with
-   * `inputSchema`, `description`, and `execute` already set.
-   */
-  async getTools(): Promise<ToolSet> {
-    const cache = await this.#ensureTools();
-    return cache.tools;
+    return (await this.#ensureTools()).metadata;
   }
 
   /**
@@ -121,13 +190,15 @@ export class McpConnectionClient implements ConnectionClient {
    * A `401`/`invalid_token` from the remote server is translated into
    * {@link ConnectionAuthorizationRequiredError} via {@link #rethrowClassified}
    * so callers re-enter the authorization flow instead of surfacing an
-   * opaque transport error.
+   * opaque transport error. A tool error result carrying an
+   * `_meta["mcp/www_authenticate"]` challenge is treated the same way.
    */
   async executeTool(
     toolName: string,
     args: unknown,
     options: ConnectionToolExecuteOptions,
   ): Promise<unknown> {
+    let result: unknown;
     try {
       const { tools } = await this.#ensureTools();
 
@@ -137,6 +208,7 @@ export class McpConnectionClient implements ConnectionClient {
           `Tool "${toolName}" not found in connection "${this.#connection.connectionName}".`,
         );
       }
+      const execute = sdkTool.execute;
 
       const resolvedArgs = await resolveProvidedArguments({
         args,
@@ -145,10 +217,21 @@ export class McpConnectionClient implements ConnectionClient {
         toolName,
       });
 
-      return await sdkTool.execute(resolvedArgs, { abortSignal: options.abortSignal } as never);
+      result = await withMcpToolCallSpan({
+        arguments: args,
+        connectionName: this.#connection.connectionName,
+        execute: async () =>
+          await execute(resolvedArgs, { abortSignal: options.abortSignal } as never),
+        protocolVersion: this.#client?.initializeResult?.protocolVersion,
+        toolName,
+      });
     } catch (error) {
       return await this.#rethrowClassified(error);
     }
+    if (isMcpAuthChallengeResult(result)) {
+      return await this.#requireAuthorization(`the server asked for sign-in to call "${toolName}"`);
+    }
+    return result;
   }
 
   async #ensureTools(): Promise<McpToolCache> {
@@ -180,20 +263,18 @@ export class McpConnectionClient implements ConnectionClient {
 
   async #fetchToolsInner(): Promise<McpToolCache> {
     const client = await this.connect();
-    const listResult = await client.listTools();
-
-    const filter = this.#connection.tools;
-    const filteredTools =
-      filter !== undefined
-        ? listResult.tools.filter((t) => passesToolFilter(t.name, filter))
-        : listResult.tools;
+    const listResult = await withMcpToolsListSpan({
+      connectionName: this.#connection.connectionName,
+      execute: () => client.listTools(),
+      protocolVersion: client.initializeResult?.protocolVersion,
+    });
 
     // `toolsFromDefinitions` returns `McpToolSet<"automatic">`, whose
     // elements are `Tool<unknown, CallToolResult>`. The AI SDK's
     // `ToolSet` constraint only admits `Tool<any | never, any | never>`,
     // so a single-hop cast is required — the runtime shape is identical.
     const providedArgumentNames = Object.keys(this.#connection.toolCall?.providedArguments ?? {});
-    const projectedTools = filteredTools.map((tool) => ({
+    const projectedTools = listResult.tools.map((tool) => ({
       ...tool,
       inputSchema: omitProvidedArgumentsFromSchema(tool.inputSchema, providedArgumentNames),
     }));
@@ -222,27 +303,38 @@ export class McpConnectionClient implements ConnectionClient {
     this.#clientPromise = undefined;
     this.#toolsPromise = undefined;
     this.#tools = undefined;
+    this.#anonymous = false;
   }
 
   /**
    * Always rethrows — this only classifies the error first. A non-auth
    * error (timeout, `5xx`, `403`, "tool not found", network failure) is
-   * rethrown unchanged. Only a server rejection of the bearer
-   * (`401`/`invalid_token`) is translated: evict the stale cached token,
-   * tear down the connection so the retry reconnects with a fresh bearer,
-   * and rethrow as {@link ConnectionAuthorizationRequiredError} so the
-   * re-authorization flow takes over.
+   * rethrown unchanged. Only a `401` is translated, via
+   * {@link #requireAuthorization}.
    */
   async #rethrowClassified(error: unknown): Promise<never> {
     if (!isMcpAuthRequiredError(error)) {
       throw error;
     }
-    await this.#evictCachedToken();
+    return await this.#requireAuthorization(
+      this.#anonymous ? "the server requires sign-in" : "the server rejected the token",
+    );
+  }
+
+  /**
+   * Evicts the stale cached token (when the request carried one), tears
+   * down the connection so the retry reconnects with a fresh bearer and
+   * reloads the tool list, and throws
+   * {@link ConnectionAuthorizationRequiredError} so the authorization flow
+   * takes over.
+   */
+  async #requireAuthorization(reason: string): Promise<never> {
+    if (!this.#anonymous) {
+      await this.#evictCachedToken();
+    }
     await this.close();
     throw new ConnectionAuthorizationRequiredError(this.#connection.connectionName, {
-      message:
-        `Connection "${this.#connection.connectionName}" requires authorization ` +
-        `(the server rejected the token).`,
+      message: `Connection "${this.#connection.connectionName}" requires authorization (${reason}).`,
     });
   }
 
@@ -278,6 +370,25 @@ export function isMcpAuthRequiredError(error: unknown): boolean {
   return readHttpStatus(error) === 401;
 }
 
+/** `_meta` key a tool result uses to ask for sign-in (OpenAI Apps SDK convention). */
+export const MCP_WWW_AUTHENTICATE_META_KEY = "mcp/www_authenticate";
+
+/**
+ * Returns `true` for a `tools/call` error result that asks the client to
+ * sign in: `isError: true` plus a non-empty `_meta["mcp/www_authenticate"]`
+ * (a `WWW-Authenticate` challenge string or list of them). Servers that
+ * accept anonymous `initialize`/`tools/list` use this to protect individual
+ * tools without failing the whole HTTP request.
+ */
+export function isMcpAuthChallengeResult(result: unknown): boolean {
+  if (!isObject(result) || result.isError !== true || !isObject(result._meta)) {
+    return false;
+  }
+  const challenge = result._meta[MCP_WWW_AUTHENTICATE_META_KEY];
+  if (typeof challenge === "string") return challenge.length > 0;
+  return Array.isArray(challenge) && challenge.length > 0;
+}
+
 /**
  * Decides whether an error thrown while creating a streamable HTTP MCP
  * client should trigger a fallback attempt against the legacy SSE
@@ -296,7 +407,7 @@ function isMcpHttpFallbackRetryableError(error: unknown): boolean {
   return status === 400 || status === 404 || status === 405;
 }
 
-function readHttpStatus(error: unknown): number | undefined {
+export function readHttpStatus(error: unknown): number | undefined {
   for (const candidate of walkErrorChain(error)) {
     if (!isObject(candidate)) {
       continue;
@@ -375,13 +486,35 @@ export function passesToolFilter(
  * {@link SessionContext}, then resolves the {@link ConnectionPrincipal}
  * and invokes `authorization.getToken({ principal })` to produce the bearer.
  * `getToken` may throw {@link ConnectionAuthorizationRequiredError};
- * callers (`connection_search`, wrapped connection tools) catch it
- * and it propagates as-is from here.
+ * callers catch it and it propagates as-is from here.
  */
 export async function resolveHeaders(
   connection: ResolvedConnectionDefinition,
 ): Promise<Record<string, string>> {
+  const { headers } = await resolveConnectionHeaders(connection, {
+    anonymousWhenAuthorizationRequired: false,
+  });
+  return headers;
+}
+
+interface ResolvedConnectionHeaders {
+  /** `true` when `authorization` is declared but no token was available, so no bearer was set. */
+  readonly anonymous: boolean;
+  readonly headers: Record<string, string>;
+}
+
+/**
+ * {@link resolveHeaders}, optionally tolerating a missing token: with
+ * `anonymousWhenAuthorizationRequired`, a {@link ConnectionAuthorizationRequiredError}
+ * from `getToken` leaves the `Authorization` header unset and reports
+ * `anonymous: true` instead of throwing. Every other error still propagates.
+ */
+async function resolveConnectionHeaders(
+  connection: ResolvedConnectionDefinition,
+  options: { readonly anonymousWhenAuthorizationRequired: boolean },
+): Promise<ResolvedConnectionHeaders> {
   const merged: Record<string, string> = {};
+  let anonymous = false;
   let callbackContext: SessionContext | undefined;
   const getCallbackContext = (): SessionContext => (callbackContext ??= buildCallbackContext());
 
@@ -391,8 +524,18 @@ export async function resolveHeaders(
   );
 
   if (authorization !== undefined) {
-    const result = await resolveToken(connection, authorization);
-    merged.Authorization = `Bearer ${result.token}`;
+    try {
+      const result = await resolveToken(connection, authorization);
+      merged.Authorization = `Bearer ${result.token}`;
+    } catch (error) {
+      if (
+        !options.anonymousWhenAuthorizationRequired ||
+        !isConnectionAuthorizationRequiredError(error)
+      ) {
+        throw error;
+      }
+      anonymous = true;
+    }
   }
 
   if (connection.headers !== undefined) {
@@ -407,7 +550,7 @@ export async function resolveHeaders(
     }
   }
 
-  return merged;
+  return { anonymous, headers: merged };
 }
 
 /**

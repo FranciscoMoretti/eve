@@ -12,7 +12,7 @@ import {
 import type { TerminalKey } from "./stream-format.js";
 
 /** Shared navigation grammar for setup selects, actions, and editable selects. */
-export type SetupSelectionIntent =
+type SetupSelectionIntent =
   | { kind: "cancel" }
   | { kind: "move"; direction: "up" | "down" }
   | { kind: "repaint" }
@@ -47,7 +47,7 @@ export function setupSelectionIntent(
   }
 }
 
-export type SetupSelectInputResult =
+type SetupSelectInputResult =
   | { kind: "cancel" }
   | { kind: "repaint" }
   | { kind: "update"; select: SelectState }
@@ -125,6 +125,10 @@ function editSetupSelect(input: SetupSelectInputState): SetupSelectInputResult {
     case "backspace":
       return isSearchableSelect(input)
         ? updatedSelect(input, { type: "backspace" })
+        : { kind: "ignore" };
+    case "alt-backspace":
+      return isSearchableSelect(input)
+        ? updatedSelect(input, { type: "delete-word-backward" })
         : { kind: "ignore" };
     case "text": {
       if (input.key.framing === "unframed" && isMultiSelect(input) && input.key.value === " ") {

@@ -28,7 +28,8 @@ function bareToken(name: string): string {
 
 const NODE_ENGINE_TOKEN = bareToken("NODE_ENGINE");
 
-export const DEFAULT_CONNECT_PACKAGE_VERSION = "2.2.0";
+export const DEFAULT_CONNECT_PACKAGE_VERSION = "2.5.2";
+export const DEFAULT_MICROSANDBOX_PACKAGE_VERSION = "0.5.5";
 
 const TOKEN_SOURCES: Readonly<Record<string, TokenSource>> = {
   [versionToken("EVE_PACKAGE")]: { kind: "eve-version" },
@@ -63,8 +64,7 @@ function findEvePackageRoot(): string | undefined {
     const packageJsonPath = join(directory, "package.json");
     if (existsSync(packageJsonPath)) {
       const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-      if (packageJson.name === EVE_PACKAGE_NAME || packageJson.name === "@chat-js/eve")
-        return directory;
+      if (packageJson.name === EVE_PACKAGE_NAME) return directory;
     }
     const parent = dirname(directory);
     if (parent === directory) return undefined;

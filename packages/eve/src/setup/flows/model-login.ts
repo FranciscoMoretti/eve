@@ -1,6 +1,8 @@
 import { resolveModelEndpointStatus } from "#internal/resolve-model-endpoint-status.js";
 import { classifyModelRouting } from "#internal/classify-model-routing.js";
 import type { ConnectedModel } from "#shared/model-connection.js";
+import { DEFAULT_AGENT_MODEL_ID } from "#shared/default-agent-model.js";
+import { parseChatGptFastModelId } from "#shared/chatgpt-model.js";
 import { measureLoginStage, withLoginProgress } from "./model-login-progress.js";
 import { availableHelperModels } from "#internal/model-auth/available-models.js";
 import { fetchGatewayCatalog } from "../boxes/select-model.js";
@@ -25,9 +27,9 @@ import {
 import type { Prompter } from "#setup/prompter.js";
 import { WizardCancelledError } from "#setup/step.js";
 import { changeValidatedAgentModel, readAuthoredModelSelection } from "./model-source-change.js";
+import { CONNECTION_OPTIONS } from "./model-login-options.js";
 import {
   authenticateModelConnection,
-  CONNECTION_OPTIONS,
   reuseModelConnection,
   type ValidatedModelConnection,
 } from "./model-login-connection.js";
@@ -71,7 +73,7 @@ function modelSelection(selected: ModelConnectionSelection, model: LoginModel) {
   const compatible = helper
     ? authored?.helper === helper
     : model.selection !== undefined && !model.external;
-  const defaultId = helper ? MODEL_HELPERS[helper].defaultModel : "openai/gpt-5.6-luna-fast";
+  const defaultId = helper ? MODEL_HELPERS[helper].defaultModel : DEFAULT_AGENT_MODEL_ID;
   const currentId = authored?.id ?? model.selection;
   return { helper, compatible, defaultId, needsModels: !compatible || currentId === defaultId };
 }
@@ -81,12 +83,16 @@ type LoginInput = {
   agentRoot?: string;
   prompter: Prompter;
   automatic?: boolean;
+  /** Connection selected by the TUI's `/login <connection>` completion. */
+  selected?: ModelConnectionSelection;
+  /** TUI callers can omit the redundant picker heading beneath `/login`. */
+  connectionMessage?: string;
   signal?: AbortSignal;
   /** Applies writes under one watcher lease and waits for runtime activation. */
   withConnectionUpdate?(task: () => Promise<void>): Promise<void>;
 };
 
-export type ModelLoginResult =
+type ModelLoginResult =
   | { kind: "ready"; reload: boolean; model?: ConnectedModel }
   | { kind: "cancelled" };
 
@@ -110,7 +116,8 @@ async function applyConnection(
           )
         : []);
     let id = defaultId;
-    if (!available.includes(id)) {
+    const catalogId = helper === "chatgpt" ? parseChatGptFastModelId(id).slug : id;
+    if (!available.includes(catalogId)) {
       if (available.length === 0)
         throw new Error(
           "No models are available for this connection. Choose another connection with /login.",
@@ -288,12 +295,16 @@ export async function runModelLogin(input: LoginInput): Promise<ModelLoginResult
         );
       }
     }
+    let selectedFromCommand = input.selected;
     while (true) {
-      const selected = await prompter.select({
-        message: "Choose a connection",
-        search: true,
-        options: [...CONNECTION_OPTIONS],
-      });
+      const selected =
+        selectedFromCommand ??
+        (await prompter.select({
+          message: input.connectionMessage ?? "Choose a connection",
+          search: true,
+          options: [...CONNECTION_OPTIONS],
+        }));
+      selectedFromCommand = undefined;
       if (!isModelConnection(selected)) throw new Error("Choose a model connection.");
       try {
         const result = await connect(selected, false);

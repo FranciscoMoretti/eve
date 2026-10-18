@@ -1,3 +1,4 @@
+import { readConnectionEventsBackend } from "#shared/connection-events.js";
 /**
  * Structural validation for authored connection auth definitions. Returns
  * `undefined` on success or a context-free error fragment for the caller to
@@ -9,6 +10,7 @@ import type {
   InteractiveAuthorizationDefinition,
   NonInteractiveAuthorizationDefinition,
 } from "#shared/connection-types.js";
+import { extractVercelConnectMetadata } from "#shared/vercel-connect-metadata.js";
 
 /**
  * Validates that authored `auth` conforms to the connection auth contract.
@@ -93,7 +95,14 @@ export function normalizeAuthorizationSpec(
   }
 
   const auth = authorization as Record<string, unknown>;
-  const vercelConnect = extractVercelConnectMarker(auth.vercelConnect);
+  const vercelConnect = extractVercelConnectMetadata(auth.vercelConnect);
+  const backend = readConnectionEventsBackend(
+    (auth.vercelConnect as { experimental_events?: unknown } | undefined)?.experimental_events,
+  );
+  let runtimeConnect: AuthorizationDefinition["vercelConnect"] = vercelConnect;
+  if (backend !== undefined && vercelConnect !== undefined) {
+    runtimeConnect = { ...vercelConnect, experimental_events: backend };
+  }
   const displayName = auth.displayName as string | undefined;
   const evict =
     typeof auth.evict === "function" ? (auth.evict as AuthorizationDefinition["evict"]) : undefined;
@@ -106,7 +115,8 @@ export function normalizeAuthorizationSpec(
       startAuthorization:
         auth.startAuthorization as InteractiveAuthorizationDefinition["startAuthorization"],
     };
-    if (vercelConnect !== undefined) interactive = { ...interactive, vercelConnect };
+    if (runtimeConnect !== undefined)
+      interactive = { ...interactive, vercelConnect: runtimeConnect };
     if (displayName !== undefined) interactive = { ...interactive, displayName };
     if (evict !== undefined) interactive = { ...interactive, evict };
     return interactive;
@@ -118,30 +128,9 @@ export function normalizeAuthorizationSpec(
       auth.principalType ??
       "app") as NonInteractiveAuthorizationDefinition["principalType"],
   };
-  if (vercelConnect !== undefined) nonInteractive = { ...nonInteractive, vercelConnect };
+  if (runtimeConnect !== undefined)
+    nonInteractive = { ...nonInteractive, vercelConnect: runtimeConnect };
   if (displayName !== undefined) nonInteractive = { ...nonInteractive, displayName };
   if (evict !== undefined) nonInteractive = { ...nonInteractive, evict };
   return nonInteractive;
-}
-
-/**
- * Reads the optional `vercelConnect: { connector: string }` marker
- * attached by `@vercel/connect/eve`'s `connect()` helper. Returns the
- * parsed marker when present and well-formed, otherwise `undefined`.
- *
- * The runtime uses the marker for Connect-specific authorization behavior,
- * while downstream tooling can attribute the auth back to a Vercel Connect
- * connector without inspecting `getToken`'s closure state. Validation is
- * lenient (a malformed marker is dropped, not thrown) so a misbehaving auth
- * provider can't fail an otherwise-valid connection.
- */
-function extractVercelConnectMarker(value: unknown): { readonly connector: string } | undefined {
-  if (value === null || typeof value !== "object") {
-    return undefined;
-  }
-  const connector = (value as { connector?: unknown }).connector;
-  if (typeof connector !== "string" || connector.length === 0) {
-    return undefined;
-  }
-  return { connector };
 }

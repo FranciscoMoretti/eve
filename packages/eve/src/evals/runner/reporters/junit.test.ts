@@ -73,7 +73,9 @@ function makeSummary(): EveEvalRunSummary {
             name: "contains",
             score: 0,
             severity: "gate",
+            threshold: 1,
             passed: false,
+            errored: false,
             message: "expected hello",
           },
         ],
@@ -102,6 +104,7 @@ function makeEvalResult(overrides: Partial<EveEvalResult> = {}): EveEvalResult {
         score: 1,
         severity: "gate",
         passed: true,
+        errored: false,
       },
     ],
     result: {

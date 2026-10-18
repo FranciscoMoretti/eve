@@ -9,6 +9,7 @@ import type { ResetStatus } from "#protocol/reset-session.js";
 import type { TurnPolicy } from "#channel/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { JsonObject } from "#shared/json.js";
+import type { ToolStub } from "#tool-stubs/types.js";
 export type { HealthResult } from "#client/health-schema.js";
 
 export type {
@@ -110,6 +111,11 @@ export interface SendTurnInput<TOutput = unknown> extends SendTurnOptions<TOutpu
 
 /** Request options for creating a conversation session before its first turn. */
 export interface CreateSessionOptions {
+  /**
+   * Tool stubs stay fixed for this session and its local subagents.
+   * The server must authorize their use.
+   */
+  readonly stubs?: readonly ToolStub[];
   /** Abort signal for cancelling the creation request. */
   readonly signal?: AbortSignal;
   /** Additional headers for this request only. */
@@ -118,8 +124,6 @@ export interface CreateSessionOptions {
 
 /** Options shared by message sends and HITL responses on a client session. */
 export interface SendTurnOptions<TOutput = unknown> {
-  /** Durable application data for this user message; never included in model prompts. */
-  readonly messageMetadata?: JsonObject;
   /** Policy for a message sent while the fixed session has an active turn. */
   readonly turnPolicy?: TurnPolicy;
 
@@ -163,10 +167,7 @@ export interface SendTurnOptions<TOutput = unknown> {
 }
 
 /** Options for answering pending HITL input requests on a client session. */
-export type RespondTurnOptions<TOutput = unknown> = Omit<
-  SendTurnOptions<TOutput>,
-  "messageMetadata"
->;
+export type RespondTurnOptions<TOutput = unknown> = SendTurnOptions<TOutput>;
 
 /** @internal Transport envelope used by stores and command adapters. */
 export type SendTurnPayload<TOutput = unknown> =
@@ -177,7 +178,6 @@ export type SendTurnPayload<TOutput = unknown> =
   | (RespondTurnOptions<TOutput> & {
       readonly inputResponses: readonly InputResponse[];
       readonly message?: never;
-      readonly messageMetadata?: never;
     });
 
 /** Retry and backoff settings for one kind of stream reconnection. */
@@ -300,7 +300,8 @@ export interface MessageResult<TOutput = unknown> {
   readonly events: MessageStreamEvent[];
 
   /**
-   * HITL input requests emitted during this turn.
+   * HITL input requests emitted in this response and still open at its boundary.
+   * Earlier requests may remain open in the same session.
    */
   readonly inputRequests: readonly InputRequest[];
 

@@ -9,6 +9,7 @@ function assertion(overrides: Partial<AssertionResult>): AssertionResult {
     score: 1,
     severity: "gate",
     passed: true,
+    errored: false,
     ...overrides,
   };
 }
@@ -29,7 +30,7 @@ describe("computeEvalVerdict", () => {
   it("fails when a gate assertion failed", () => {
     expect(
       computeEvalVerdict({
-        assertions: [assertion({ severity: "gate", score: 0, passed: false })],
+        assertions: [assertion({ severity: "gate", score: 0, passed: false, errored: false })],
       }),
     ).toBe("failed");
   });
@@ -38,8 +39,14 @@ describe("computeEvalVerdict", () => {
     expect(
       computeEvalVerdict({
         assertions: [
-          assertion({ severity: "gate", passed: true }),
-          assertion({ severity: "soft", threshold: 0.6, score: 0.3, passed: false }),
+          assertion({ severity: "gate", passed: true, errored: false }),
+          assertion({
+            severity: "soft",
+            threshold: 0.6,
+            score: 0.3,
+            passed: false,
+            errored: false,
+          }),
         ],
       }),
     ).toBe("scored");
@@ -49,19 +56,35 @@ describe("computeEvalVerdict", () => {
     expect(
       computeEvalVerdict({
         assertions: [
-          assertion({ severity: "soft", threshold: 0.6, score: 0.3, passed: false }),
-          assertion({ severity: "gate", score: 0, passed: false }),
+          assertion({
+            severity: "soft",
+            threshold: 0.6,
+            score: 0.3,
+            passed: false,
+            errored: false,
+          }),
+          assertion({ severity: "gate", score: 0, passed: false, errored: false }),
         ],
       }),
     ).toBe("failed");
   });
 
-  it("passes when a tracked soft assertion has no threshold", () => {
+  it("passes when a tracked soft assertion has no verdict", () => {
     expect(
       computeEvalVerdict({
-        assertions: [assertion({ severity: "soft", score: 0.1, passed: true })],
+        assertions: [assertion({ severity: "soft", score: 0.1, passed: undefined })],
       }),
     ).toBe("passed");
+  });
+
+  it("fails when a scorer errored without producing a score", () => {
+    expect(
+      computeEvalVerdict({
+        assertions: [
+          assertion({ severity: "gate", score: undefined, passed: false, errored: true }),
+        ],
+      }),
+    ).toBe("failed");
   });
 
   it("returns skipped when an eval intentionally skips without another failure", () => {
@@ -76,7 +99,7 @@ describe("computeEvalVerdict", () => {
   it("never lets an explicit skip mask errors or failed gates", () => {
     expect(
       computeEvalVerdict({
-        assertions: [assertion({ severity: "gate", score: 0, passed: false })],
+        assertions: [assertion({ severity: "gate", score: 0, passed: false, errored: false })],
         error: "ignored",
         skipReason: "unsupported target",
       }),

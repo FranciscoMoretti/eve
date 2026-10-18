@@ -7,11 +7,6 @@ import type { AgentSourceOwner } from "#compiler/source-graph.js";
 import type { CompiledModuleMap } from "#compiler/module-map.js";
 import { resolveChannelDefinition } from "#runtime/resolve-channel.js";
 
-// Re-exported so external consumers (tests, integrations) can keep
-// importing the error class from this path even though it now lives
-// in resolve-helpers.ts.
-export { ResolveAgentError } from "#runtime/resolve-helpers.js";
-
 import { resolveConnectionDefinition } from "#runtime/resolve-connection.js";
 import { resolveDynamicConnectionDefinition } from "#runtime/resolve-dynamic-connection.js";
 import { resolveHookDefinition } from "#runtime/resolve-hook.js";
@@ -28,11 +23,12 @@ import type {
   ResolvedSkillDefinition,
   ResolvedInstructionsDefinition,
 } from "#runtime/types.js";
+import type { AgentToolExposure } from "#shared/agent-definition.js";
 
 /**
  * Input for resolving one compiled authored agent into a runtime-owned model.
  */
-export interface ResolveAgentInput {
+interface ResolveAgentInput {
   manifest: CompiledAgentNodeManifest | CompiledAgentResources;
   moduleMap: CompiledModuleMap;
   nodeId?: string;
@@ -188,10 +184,9 @@ function createResolvedAgentConfig(
     description?: string;
     experimental?: NonNullable<ResolvedAgent["config"]>["experimental"];
     name: string;
-    outputSchema?: NonNullable<ResolvedAgent["config"]>["outputSchema"];
     reasoning?: NonNullable<ResolvedAgent["config"]>["reasoning"];
     source?: NonNullable<ResolvedAgent["config"]>["source"];
-    tool?: boolean;
+    tool?: AgentToolExposure;
     limits?: NonNullable<ResolvedAgent["config"]>["limits"];
   } = {
     name: manifest.config.name,
@@ -242,7 +237,6 @@ function createResolvedAgentConfig(
 
   if (manifest.config.experimental !== undefined) {
     config.experimental = {
-      instrumentationProviders: manifest.config.experimental.instrumentationProviders,
       workflow:
         manifest.config.experimental.workflow === undefined
           ? undefined
@@ -252,10 +246,6 @@ function createResolvedAgentConfig(
               world: manifest.config.experimental.workflow.world,
             },
     };
-  }
-
-  if (manifest.config.outputSchema !== undefined) {
-    config.outputSchema = manifest.config.outputSchema;
   }
 
   if (manifest.config.reasoning !== undefined) {
@@ -304,6 +294,7 @@ function createResolvedAgentConfig(
             contextWindowTokens: model.contextWindowTokens,
             id: model.id,
             maxOutputTokens: model.maxOutputTokens,
+            promptCache: model.promptCache,
             providerOptions: model.providerOptions,
             source: {
               exportName: model.source.exportName,

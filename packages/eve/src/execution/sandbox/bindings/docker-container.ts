@@ -3,7 +3,7 @@ import type { DockerCli } from "#execution/sandbox/bindings/docker-cli.js";
 import type { ResolvedDockerSandboxOptions } from "#execution/sandbox/bindings/docker-options.js";
 import { expectDockerSuccess } from "#execution/sandbox/bindings/docker-utils.js";
 import { withDevelopmentSandboxTags } from "#execution/sandbox/development-run.js";
-import type { SandboxBackendTags } from "#public/definitions/sandbox-backend.js";
+import { SANDBOX_AGENT_ENV } from "#execution/sandbox/session.js";
 import type { DockerSandboxNetworkPolicy } from "#public/sandbox/docker-sandbox.js";
 import { WORKSPACE_ROOT } from "#runtime/workspace/types.js";
 
@@ -20,8 +20,9 @@ export async function startDockerContainer(input: {
   readonly image: string;
   readonly initialNetworkPolicy: DockerSandboxNetworkPolicy;
   readonly options: ResolvedDockerSandboxOptions;
+  readonly resourcesPath?: string;
   readonly role: "session" | "template-build";
-  readonly tags?: SandboxBackendTags;
+  readonly tags?: Readonly<Record<string, string>>;
 }): Promise<void> {
   const args = [
     "run",
@@ -37,11 +38,14 @@ export async function startDockerContainer(input: {
   for (const [key, value] of Object.entries(withDevelopmentSandboxTags(input.tags) ?? {})) {
     args.push("--label", `${DOCKER_SANDBOX_LABEL}.tag.${key}=${value}`);
   }
-  for (const [key, value] of Object.entries(input.options.env)) {
+  for (const [key, value] of Object.entries({ ...SANDBOX_AGENT_ENV, ...input.options.env })) {
     args.push("-e", `${key}=${value}`);
   }
   if (input.initialNetworkPolicy === "deny-all") {
     args.push("--network", "none");
+  }
+  if (input.resourcesPath !== undefined) {
+    args.push("--mount", `type=bind,src=${input.resourcesPath},dst=/eve/resources,readonly`);
   }
 
   args.push(

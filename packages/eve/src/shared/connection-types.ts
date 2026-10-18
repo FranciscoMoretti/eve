@@ -1,12 +1,10 @@
+import type { ConnectionEventsBackend } from "#shared/connection-events.js";
 /**
  * Protocol-agnostic interfaces for the connection system.
  *
- * Framework tools (`connection_search`) and the context provider
- * depend only on these interfaces, not on any
- * protocol-specific implementation such as MCP.
+ * Framework tools and the context provider depend only on these
+ * interfaces, not on any protocol-specific implementation such as MCP.
  */
-
-import type { ToolSet } from "ai";
 
 import type { ConnectionAuthorizationChallenge } from "#connections/errors.js";
 import type { SessionContext } from "#context/session-context.js";
@@ -258,6 +256,7 @@ interface AuthorizationDefinitionBase {
    * Connect side.
    */
   readonly vercelConnect?: {
+    readonly experimental_events?: ConnectionEventsBackend;
     readonly connector: string;
   };
 
@@ -461,6 +460,8 @@ export interface ConnectionToolExecuteOptions {
 
 /** A live client for a single connection. */
 export interface ConnectionClient {
+  /** eve-owned event actions, separate from remote protocol tools and their filters. */
+  readonly eventActions?: ConnectionEventActionHandler;
   close(): Promise<void>;
   connect(): Promise<unknown>;
   executeTool(
@@ -469,5 +470,11 @@ export interface ConnectionClient {
     options: ConnectionToolExecuteOptions,
   ): Promise<unknown>;
   getToolMetadata(): Promise<readonly ConnectionToolMetadata[]>;
-  getTools(): Promise<ToolSet>;
+}
+
+export interface ConnectionEventActionHandler {
+  ownsName(name: string): boolean;
+  metadata(): Promise<readonly ConnectionToolMetadata[]>;
+  recoveryMetadata(): readonly ConnectionToolMetadata[];
+  execute(name: string, args: unknown, options: ConnectionToolExecuteOptions): Promise<unknown>;
 }

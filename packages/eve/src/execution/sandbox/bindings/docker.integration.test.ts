@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -10,8 +10,7 @@ import {
   type DockerProcess,
 } from "#execution/sandbox/bindings/docker-cli.js";
 import {
-  createDockerSandboxBackend,
-  DOCKER_TEMPLATE_IMAGE_REPOSITORY,
+  createDockerSandboxProvider,
   pruneDockerSandboxTemplates,
 } from "#execution/sandbox/bindings/docker.js";
 import { EVE_DEVELOPMENT_SANDBOX_RUN_ID_ENV } from "#execution/sandbox/development-run.js";
@@ -21,10 +20,19 @@ import {
   resolveDockerSandboxOptions,
 } from "#execution/sandbox/bindings/docker-options.js";
 import { dockerTemplateImageReference } from "#execution/sandbox/bindings/docker-templates.js";
-import type { DockerSandboxCreateOptions } from "#public/sandbox/docker-sandbox.js";
-import { SandboxTemplateNotProvisionedError } from "#public/definitions/sandbox-backend.js";
+import type {
+  DockerSandboxEnvironmentOptions,
+  DockerSandboxRuntimeOptions,
+} from "#public/sandbox/docker-sandbox.js";
+import { SandboxTemplateNotProvisionedError } from "#shared/sandbox-template-error.js";
+import { createSandboxProviderHarness } from "#internal/testing/sandbox-provider-harness.js";
 import { useTemporaryDirectories } from "#internal/testing/use-temporary-app-roots.js";
 import { bufferToStream } from "#execution/sandbox/stream-utils.js";
+import { createSandboxProviderIdentity } from "#execution/sandbox/provider-identity.js";
+import { createSandboxProviderFiles } from "#execution/sandbox/provider-files.js";
+import { createSandboxProviderHost } from "#execution/sandbox/provider-host.js";
+import { resolveSandboxCacheDirectory } from "#internal/application/paths.js";
+import { createSandboxProviderResources } from "#shared/sandbox-provider.js";
 
 const createScratchDirectory = useTemporaryDirectories();
 
@@ -98,12 +106,14 @@ function createFakeDockerCli(
 
 function createEngine(input: {
   readonly cli: DockerCli;
-  readonly options?: DockerSandboxCreateOptions;
+  readonly options?: DockerSandboxEnvironmentOptions;
+  readonly runtimeOptions?: DockerSandboxRuntimeOptions;
 }) {
-  return createDockerSandboxBackend({
-    createOptions: input.options,
-    dockerCli: input.cli,
-  });
+  return createSandboxProviderHarness(
+    createDockerSandboxProvider(input.options, input.cli),
+    input.runtimeOptions ?? {},
+    { preparedArtifact: () => ({ imageReference: TEMPLATE_IMAGE }) },
+  );
 }
 
 function findCall(
@@ -132,54 +142,77 @@ const TEMPLATE_IMAGE = dockerTemplateImageReference({
   templateKey: TEMPLATE_KEY,
 });
 const SESSION_KEY = "eve-sbx-ses-local-session-1";
+const PROVIDER_CONTAINER_NAME = `eve-sbx-${createSandboxProviderIdentity({
+  artifact: { imageReference: TEMPLATE_IMAGE },
+  environment: createDockerSandboxOptionsHash(resolveDockerSandboxOptions(undefined)),
+  open: {},
+  sessionId: SESSION_KEY,
+  version: 1,
+}).slice(0, 32)}`;
 
-function defaultDockerTemplateImageTag(templateKey: string): string {
-  return dockerTemplateImageReference({
-    optionsHash: DEFAULT_DOCKER_OPTIONS_HASH,
-    templateKey,
-  }).slice(`${DOCKER_TEMPLATE_IMAGE_REPOSITORY}:`.length);
-}
-
-describe("createDockerSandboxBackend prewarm", () => {
-  it("reuses an existing template image without building", async () => {
+describe("Docker provider prewarm", () => {
+  it("uses a colocated Dockerfile as the template base image", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
     const { calls, cli } = createFakeDockerCli((args) => {
-      if (isImageInspect(args, TEMPLATE_IMAGE)) {
-        return { exitCode: 0, stdout: "sha256:abc\n" };
+      if (
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        String(args.at(-1)).startsWith("eve-sandbox-template:")
+      ) {
+        return { exitCode: 1, stderr: "No such image" };
       }
       return undefined;
     });
+    await mkdir(join(appRoot, "sandbox"), { recursive: true });
+    await writeFile(join(appRoot, "sandbox", "Dockerfile"), "FROM node:24\n");
 
-    const result = await createEngine({ cli }).prewarm({
-      runtimeContext: { appRoot },
+    await createEngine({ cli }).prepare({
+      appRoot,
       seedFiles: [],
-      templateKey: TEMPLATE_KEY,
     });
 
-    expect(result).toEqual({ reused: true });
-    expect(findCall(calls, (args) => args[0] === "run")).toBeUndefined();
-    expect(findCall(calls, (args) => args[0] === "commit")).toBeUndefined();
-    // The reuse touches the per-app marker so pruning sees the template
-    // as active.
-    await expect(
-      readFile(
-        join(
-          appRoot,
-          ".eve",
-          "sandbox-cache",
-          "docker",
-          "templates",
-          defaultDockerTemplateImageTag(TEMPLATE_KEY),
-        ),
-        "utf8",
-      ),
-    ).resolves.toContain(TEMPLATE_IMAGE);
+    expect(findCall(calls, (args) => args[0] === "build")?.args).toEqual([
+      "build",
+      "--file",
+      expect.stringMatching(/[\\/]dockerfiles[\\/][a-f0-9]{64}[\\/]Dockerfile$/u),
+      "--tag",
+      expect.stringMatching(/^eve-sandbox-dockerfile:/),
+      expect.stringMatching(/[\\/]dockerfiles[\\/][a-f0-9]{64}$/u),
+    ]);
+    expect(findCall(calls, (args) => args[0] === "pull")).toBeUndefined();
+    expect(findCall(calls, (args) => args[0] === "run")?.args).toContainEqual(
+      expect.stringMatching(/^eve-sandbox-dockerfile:/),
+    );
+  });
+
+  it.each([
+    { env: undefined, expected: "AI_AGENT=eve" },
+    { env: { AI_AGENT: "alice-bot" }, expected: "AI_AGENT=alice-bot" },
+  ])("sets $expected on the container from environment env $env", async ({ env, expected }) => {
+    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
+    const { calls, cli } = createFakeDockerCli((args) =>
+      args[0] === "image" &&
+      args[1] === "inspect" &&
+      String(args.at(-1)).startsWith("eve-sandbox-template:")
+        ? { exitCode: 1, stderr: "No such image" }
+        : undefined,
+    );
+
+    await createEngine({ cli, options: { env } }).prepare({ appRoot, seedFiles: [] });
+
+    const runArgs = findCall(calls, (args) => args[0] === "run")?.args ?? [];
+    expect(runArgs.filter((arg) => arg.startsWith("AI_AGENT="))).toEqual([expected]);
+    expect(runArgs[runArgs.indexOf(expected) - 1]).toBe("-e");
   });
 
   it("builds, seeds, commits, and cleans up when the template image is missing", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
     const { calls, cli } = createFakeDockerCli((args) => {
-      if (isImageInspect(args, TEMPLATE_IMAGE)) {
+      if (
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        String(args.at(-1)).startsWith("eve-sandbox-template:")
+      ) {
         return { exitCode: 1, stderr: "No such image" };
       }
       if (isImageInspect(args, DEFAULT_DOCKER_SANDBOX_IMAGE)) {
@@ -188,13 +221,12 @@ describe("createDockerSandboxBackend prewarm", () => {
       return undefined;
     });
 
-    const result = await createEngine({ cli }).prewarm({
-      runtimeContext: { appRoot },
+    const result = await createEngine({ cli }).prepare({
+      appRoot,
       seedFiles: [{ content: "# Weather skill\n", path: "/workspace/skills/weather.md" }],
-      templateKey: TEMPLATE_KEY,
     });
 
-    expect(result).toEqual({ reused: false });
+    expect(result.imageReference).toMatch(/^eve-sandbox-template:/u);
 
     const pull = findCall(calls, (args) => args[0] === "pull");
     expect(pull?.args).toEqual(["pull", DEFAULT_DOCKER_SANDBOX_IMAGE]);
@@ -205,7 +237,7 @@ describe("createDockerSandboxBackend prewarm", () => {
     expect(run?.args).toContain("/bin/sh");
     expect(run?.args).toContain(`eve.sandbox.role=template-build`);
     const buildContainerName = run?.args[run.args.indexOf("--name") + 1];
-    expect(buildContainerName).toMatch(new RegExp(`^${TEMPLATE_KEY}-build-`));
+    expect(buildContainerName).toMatch(/^[a-f0-9]{24}-build-[a-f0-9]{8}$/u);
 
     const baseSetup = findCall(
       calls,
@@ -237,65 +269,96 @@ describe("createDockerSandboxBackend prewarm", () => {
 
     const commit = findCall(calls, (args) => args[0] === "commit");
     expect(commit?.args.at(-2)).toBe(fakeDockerContainerIdentity(buildContainerName!));
-    expect(commit?.args.at(-1)).toBe(TEMPLATE_IMAGE);
+    expect(commit?.args.at(-1)).toMatch(/^eve-sandbox-template:/u);
 
     const cleanup = findCall(calls, (args) => args[0] === "rm" && args[1] === "-f");
     expect(cleanup?.args.at(-1)).toBe(buildContainerName);
   });
 
-  it("writes seed files before bootstrap and commits bootstrap outputs", async () => {
+  it("reuses a concurrently committed template image", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
-    let seedWritten = false;
+    let publishedReference: string | undefined;
     const { calls, cli } = createFakeDockerCli((args) => {
-      const command = args.at(-1) ?? "";
-      if (isImageInspect(args, TEMPLATE_IMAGE)) {
-        return { exitCode: 1, stderr: "No such image" };
+      if (args[0] === "image" && args[1] === "inspect") {
+        return publishedReference === args.at(-1)
+          ? { exitCode: 0, stdout: "sha256:peer\n" }
+          : { exitCode: 1, stderr: "No such image" };
       }
-      if (args[0] === "exec" && args[1] === "-i" && command.includes("/workspace/seed.txt")) {
-        seedWritten = true;
-      }
-      if (
-        args[0] === "exec" &&
-        command.includes("if [ -e") &&
-        command.includes("/workspace/seed.txt")
-      ) {
-        return seedWritten ? { exitCode: 0, stdout: "authored seed" } : { exitCode: 43 };
+      if (args[0] === "commit") {
+        publishedReference = args.at(-1);
+        return {
+          exitCode: 1,
+          stderr: `AlreadyExists: image "${publishedReference}" already exists`,
+        };
       }
       return undefined;
     });
 
-    await createEngine({ cli }).prewarm({
-      bootstrap: async ({ use }) => {
-        const sandbox = await use();
-        await expect(sandbox.readTextFile({ path: "/workspace/seed.txt" })).resolves.toBe(
-          "authored seed",
-        );
-        await sandbox.writeTextFile({
-          content: "bootstrap output",
-          path: "/workspace/bootstrap.txt",
-        });
-      },
-      runtimeContext: { appRoot },
-      seedFiles: [{ content: "authored seed", path: "/workspace/seed.txt" }],
-      templateKey: TEMPLATE_KEY,
+    const result = await createEngine({ cli }).prepare({ appRoot, seedFiles: [] });
+    expect(result.imageReference).toBe(publishedReference);
+    expect(
+      calls.filter(({ args }) =>
+        publishedReference === undefined ? false : isImageInspect(args, publishedReference),
+      ),
+    ).toHaveLength(2);
+    expect(findCall(calls, (args) => args[0] === "rm" && args[1] === "-f")).toBeDefined();
+  });
+
+  it("preserves commit failures other than a concurrent publication", async () => {
+    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
+    let committedReference: string | undefined;
+    const { cli } = createFakeDockerCli((args) => {
+      if (args[0] === "image" && args[1] === "inspect") {
+        return { exitCode: 1, stderr: "No such image" };
+      }
+      if (args[0] === "commit") {
+        committedReference = args.at(-1);
+        return { exitCode: 1, stderr: "disk full" };
+      }
+      return undefined;
     });
 
-    const seedWriteIndex = calls.findIndex(
-      ({ args }) =>
-        args[0] === "exec" &&
-        args[1] === "-i" &&
-        (args.at(-1) ?? "").includes("/workspace/seed.txt"),
+    await expect(createEngine({ cli }).prepare({ appRoot, seedFiles: [] })).rejects.toThrow(
+      /Failed to commit sandbox template image .*: disk full/u,
     );
-    const bootstrapWriteIndex = calls.findIndex(
-      ({ args }) =>
-        args[0] === "exec" &&
-        args[1] === "-i" &&
-        (args.at(-1) ?? "").includes("/workspace/bootstrap.txt"),
+    expect(committedReference).toMatch(/^eve-sandbox-template:/u);
+  });
+
+  it("mounts compiled resources read-only while hydrating a writable template", async () => {
+    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
+    const resourcesPath = join(appRoot, "compiled-resources");
+    await mkdir(join(resourcesPath, "workspace"), { recursive: true });
+    await writeFile(join(resourcesPath, "workspace", "README.md"), "immutable seed");
+    const { calls, cli } = createFakeDockerCli((args) => {
+      if (
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        String(args.at(-1)).startsWith("eve-sandbox-template:")
+      ) {
+        return { exitCode: 1, stderr: "No such image" };
+      }
+      return undefined;
+    });
+
+    await createEngine({ cli }).prepare({
+      resourcesKey: "resources-hash",
+      resourcesPath,
+      appRoot,
+      seedFiles: [],
+    });
+
+    const run = findCall(calls, (args) => args[0] === "run");
+    expect(run?.args).toContain(
+      `type=bind,src=${join(appRoot, "docker", "resources", "resources-hash")},dst=/eve/resources,readonly`,
     );
-    const commitIndex = calls.findIndex(({ args }) => args[0] === "commit");
-    expect(seedWriteIndex).toBeGreaterThanOrEqual(0);
-    expect(seedWriteIndex).toBeLessThan(bootstrapWriteIndex);
-    expect(bootstrapWriteIndex).toBeLessThan(commitIndex);
+    expect(
+      findCall(
+        calls,
+        (args) =>
+          args[0] === "exec" &&
+          (args.at(-1) ?? "").includes("cp -a /eve/resources/workspace/. /workspace/"),
+      ),
+    ).toBeDefined();
   });
 
   it("fails with an actionable error when the daemon is unreachable", async () => {
@@ -308,44 +371,50 @@ describe("createDockerSandboxBackend prewarm", () => {
     });
 
     await expect(
-      createEngine({ cli }).prewarm({
-        runtimeContext: { appRoot },
+      createEngine({ cli }).prepare({
+        appRoot,
         seedFiles: [],
-        templateKey: TEMPLATE_KEY,
       }),
     ).rejects.toThrow(DockerDaemonUnavailableError);
   });
 });
 
-describe("createDockerSandboxBackend create", () => {
+describe("Docker provider create", () => {
   it("throws SandboxTemplateNotProvisionedError when the template image is missing", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
     const { cli } = createFakeDockerCli((args) => {
       if (isContainerInspect(args)) {
         return { exitCode: 1, stderr: "No such container" };
       }
-      if (isImageInspect(args, TEMPLATE_IMAGE)) {
+      if (
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        String(args.at(-1)).startsWith("eve-sandbox-template:")
+      ) {
         return { exitCode: 1, stderr: "No such image" };
       }
       return undefined;
     });
 
     await expect(
-      createEngine({ cli }).create({
-        runtimeContext: { appRoot },
-        sessionKey: SESSION_KEY,
-        templateKey: TEMPLATE_KEY,
+      createEngine({ cli }).openSession({
+        appRoot,
+        sandboxName: SESSION_KEY,
       }),
     ).rejects.toThrow(SandboxTemplateNotProvisionedError);
   });
 
-  it("throws SandboxTemplateNotProvisionedError when a template-backed container fails to start", async () => {
+  it("preserves the container launch error when a template-backed container fails to start", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
     const { cli } = createFakeDockerCli((args) => {
       if (isContainerInspect(args)) {
         return { exitCode: 1, stderr: "No such container" };
       }
-      if (isImageInspect(args, TEMPLATE_IMAGE)) {
+      if (
+        args[0] === "image" &&
+        args[1] === "inspect" &&
+        String(args.at(-1)).startsWith("eve-sandbox-template:")
+      ) {
         return { exitCode: 0, stdout: "sha256:abc\n" };
       }
       if (args[0] === "run") {
@@ -355,12 +424,11 @@ describe("createDockerSandboxBackend create", () => {
     });
 
     await expect(
-      createEngine({ cli }).create({
-        runtimeContext: { appRoot },
-        sessionKey: SESSION_KEY,
-        templateKey: TEMPLATE_KEY,
+      createEngine({ cli }).openSession({
+        appRoot,
+        sandboxName: SESSION_KEY,
       }),
-    ).rejects.toThrow(SandboxTemplateNotProvisionedError);
+    ).rejects.toThrow("template-backed container failed to start");
   });
 
   it("creates a session container from the template image with labels and tags", async () => {
@@ -375,18 +443,14 @@ describe("createDockerSandboxBackend create", () => {
     });
 
     try {
-      const handle = await createEngine({ cli }).create({
-        runtimeContext: { appRoot },
-        sessionKey: SESSION_KEY,
-        tags: { agent: "weather" },
-        templateKey: TEMPLATE_KEY,
+      const handle = await createEngine({ cli }).openSession({
+        appRoot,
+        sandboxName: SESSION_KEY,
       });
 
       const run = findCall(calls, (args) => args[0] === "run");
-      expect(run?.args).toContain(SESSION_KEY);
+      expect(run?.args).toContain(PROVIDER_CONTAINER_NAME);
       expect(run?.args).toContain("eve.sandbox.role=session");
-      expect(run?.args).toContain("eve.sandbox.tag.agent=weather");
-      expect(run?.args).toContain("eve.sandbox.tag.devRunId=dev-run-test");
       expect(run?.args.at(-3)).toBe(TEMPLATE_IMAGE);
 
       // No base setup against template-backed sessions — the template
@@ -395,20 +459,14 @@ describe("createDockerSandboxBackend create", () => {
         findCall(calls, (args) => args[0] === "exec" && args.includes("/bin/sh")),
       ).toBeUndefined();
 
-      await expect(handle.captureState()).resolves.toEqual({
-        backendName: "docker",
-        metadata: { containerName: SESSION_KEY },
-        sessionKey: SESSION_KEY,
-      });
-
       // An authored stop releases the container; filesystem state survives
       // for the next `create` to restart from.
-      await handle.stop();
+      await handle.onSandboxStop();
       expect(findCall(calls, (args) => args[0] === "stop")?.args).toEqual([
         "stop",
         "-t",
         "0",
-        fakeDockerContainerIdentity(SESSION_KEY),
+        fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
       ]);
     } finally {
       if (previousRunId === undefined) {
@@ -428,13 +486,15 @@ describe("createDockerSandboxBackend create", () => {
       return undefined;
     });
 
-    await createEngine({ cli }).create({
-      runtimeContext: { appRoot },
-      sessionKey: SESSION_KEY,
-      templateKey: TEMPLATE_KEY,
+    await createEngine({ cli }).openSession({
+      appRoot,
+      sandboxName: SESSION_KEY,
     });
 
-    expect(findCall(calls, (args) => args[0] === "start")?.args).toEqual(["start", SESSION_KEY]);
+    expect(findCall(calls, (args) => args[0] === "start")?.args).toEqual([
+      "start",
+      PROVIDER_CONTAINER_NAME,
+    ]);
     expect(findCall(calls, (args) => args[0] === "run")).toBeUndefined();
   });
 
@@ -447,44 +507,44 @@ describe("createDockerSandboxBackend create", () => {
       return undefined;
     });
 
-    await createEngine({ cli }).create({
-      existingMetadata: { containerName: SESSION_KEY },
-      runtimeContext: { appRoot },
-      sessionKey: SESSION_KEY,
-      templateKey: TEMPLATE_KEY,
+    const engine = createEngine({ cli });
+    const { state } = await engine.start({ appRoot, sandboxName: SESSION_KEY });
+    await engine.openSession({
+      existing: state,
+      appRoot,
+      sandboxName: SESSION_KEY,
     });
 
     expect(findCall(calls, (args) => args[0] === "start")).toBeUndefined();
     expect(findCall(calls, (args) => args[0] === "run")).toBeUndefined();
   });
 
-  it("creates from the base image and applies base setup when no template exists", async () => {
+  it("attaches to the peer container when another process wins the create race", async () => {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
+    let peerCreated = false;
     const { calls, cli } = createFakeDockerCli((args) => {
       if (isContainerInspect(args)) {
-        return { exitCode: 1, stderr: "No such container" };
+        return peerCreated ? { exitCode: 0, stdout: "true\n" } : { exitCode: 1 };
+      }
+      if (args[0] === "run") {
+        peerCreated = true;
+        return {
+          exitCode: 125,
+          stderr: `docker: Error response from daemon: Conflict. The container name "/${PROVIDER_CONTAINER_NAME}" is already in use by container "d6b4ad87".`,
+        };
       }
       return undefined;
     });
 
-    await createEngine({ cli }).create({
-      runtimeContext: { appRoot },
-      sessionKey: SESSION_KEY,
-      templateKey: null,
-    });
+    await createEngine({ cli }).openSession({ appRoot, sandboxName: SESSION_KEY });
 
-    const run = findCall(calls, (args) => args[0] === "run");
-    expect(run?.args.at(-3)).toBe(DEFAULT_DOCKER_SANDBOX_IMAGE);
-    expect(
-      findCall(calls, (args) => args[0] === "exec" && args.includes("/bin/sh"))?.args.at(-1),
-    ).toContain("mkdir -p /workspace");
+    expect(calls.filter(({ args }) => args[0] === "run")).toHaveLength(1);
+    expect(findCall(calls, (args) => args[0] === "start")).toBeUndefined();
   });
-});
 
-describe("docker session primitives", () => {
   async function createRunningSessionHandle(input: {
     readonly respond?: (args: readonly string[]) => FakeResponse | undefined;
-    readonly options?: DockerSandboxCreateOptions;
+    readonly options?: DockerSandboxEnvironmentOptions;
   }) {
     const appRoot = await createScratchDirectory("eve-docker-sandbox-");
     const { calls, cli, killedStreams } = createFakeDockerCli((args) => {
@@ -493,10 +553,9 @@ describe("docker session primitives", () => {
       }
       return input.respond?.(args);
     });
-    const handle = await createEngine({ cli, options: input.options }).create({
-      runtimeContext: { appRoot },
-      sessionKey: SESSION_KEY,
-      templateKey: TEMPLATE_KEY,
+    const handle = await createEngine({ cli, options: input.options }).openSession({
+      appRoot,
+      sandboxName: SESSION_KEY,
     });
     return { calls, handle, killedStreams };
   }
@@ -511,7 +570,7 @@ describe("docker session primitives", () => {
       },
     });
 
-    const result = await handle.session.run({
+    const result = await handle.sandbox.run({
       command: 'echo "$DEPLOY_ENV"',
       env: { DEPLOY_ENV: "staging" },
     });
@@ -526,7 +585,7 @@ describe("docker session primitives", () => {
       "/workspace",
       "-e",
       "DEPLOY_ENV=staging",
-      fakeDockerContainerIdentity(SESSION_KEY),
+      fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
       "bash",
       "-c",
     ]);
@@ -542,7 +601,7 @@ describe("docker session primitives", () => {
   it("kill() tree-kills inside the container before killing the docker exec client", async () => {
     const { calls, handle, killedStreams } = await createRunningSessionHandle({});
 
-    const spawned = await handle.session.spawn({ command: "sleep 300" });
+    const spawned = await handle.sandbox.spawn({ command: "sleep 300" });
     const spawnExec = findCall(calls, (args) => args[0] === "exec" && args.includes("bash"));
     const wrapper = String(spawnExec?.args.at(-1));
     const pidFilePath = /'(\/tmp\/\.eve-sbx-spawn-[0-9a-f-]+\.pid)'/.exec(wrapper)?.[1];
@@ -551,7 +610,10 @@ describe("docker session primitives", () => {
     await spawned.kill();
 
     const treeKill = findCall(calls, (args) => args.includes("eve-kill-tree"));
-    expect(treeKill?.args.slice(0, 2)).toEqual(["exec", fakeDockerContainerIdentity(SESSION_KEY)]);
+    expect(treeKill?.args.slice(0, 2)).toEqual([
+      "exec",
+      fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
+    ]);
     expect(treeKill?.args.at(-1)).toBe(pidFilePath);
     expect(String(treeKill?.args.at(-3))).toContain("kill_tree");
     // The local docker exec client is killed after the in-container
@@ -563,7 +625,7 @@ describe("docker session primitives", () => {
     const { calls, handle } = await createRunningSessionHandle({});
     const controller = new AbortController();
 
-    await handle.session.spawn({ abortSignal: controller.signal, command: "sleep 300" });
+    await handle.sandbox.spawn({ abortSignal: controller.signal, command: "sleep 300" });
     expect(findCall(calls, (args) => args.includes("eve-kill-tree"))).toBeUndefined();
 
     controller.abort();
@@ -582,7 +644,7 @@ describe("docker session primitives", () => {
       },
     });
 
-    await expect(handle.session.readTextFile({ path: "missing.txt" })).resolves.toBeNull();
+    await expect(handle.sandbox.readTextFile({ path: "missing.txt" })).resolves.toBeNull();
   });
 
   it("round-trips binary bytes through writeFile and readFile", async () => {
@@ -597,25 +659,25 @@ describe("docker session primitives", () => {
       },
     });
 
-    await handle.session.writeBinaryFile({ content: bytes, path: "assets/fixture.bin" });
+    await handle.sandbox.writeBinaryFile({ content: bytes, path: "assets/fixture.bin" });
     const write = findCall(calls, (args) => args[0] === "exec" && args[1] === "-i");
     written = write?.stdin;
     expect(write?.args.at(-1)).toContain("mkdir -p '/workspace/assets'");
     expect(written?.equals(bytes)).toBe(true);
 
-    const readBack = await handle.session.readBinaryFile({ path: "assets/fixture.bin" });
+    const readBack = await handle.sandbox.readBinaryFile({ path: "assets/fixture.bin" });
     expect(readBack === null ? null : Buffer.from(readBack).equals(bytes)).toBe(true);
   });
 
   it("maps removePath options onto rm flags", async () => {
     const { calls, handle } = await createRunningSessionHandle({});
 
-    await handle.session.removePath({ force: true, path: "skills/tenant", recursive: true });
+    await handle.sandbox.removePath({ force: true, path: "skills/tenant", recursive: true });
 
     const remove = findCall(calls, (args) => args[0] === "exec" && args.includes("rm"));
     expect(remove?.args).toEqual([
       "exec",
-      fakeDockerContainerIdentity(SESSION_KEY),
+      fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
       "rm",
       "-rf",
       "--",
@@ -633,7 +695,7 @@ describe("docker session primitives", () => {
       },
     });
 
-    await handle.session.setNetworkPolicy("deny-all");
+    await handle.sandbox.setNetworkPolicy("deny-all");
 
     expect(
       findCall(calls, (args) => args[0] === "network" && args[1] === "disconnect")?.args,
@@ -642,7 +704,7 @@ describe("docker session primitives", () => {
       "disconnect",
       "--force",
       "bridge",
-      fakeDockerContainerIdentity(SESSION_KEY),
+      fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
     ]);
   });
 
@@ -658,151 +720,93 @@ describe("docker session primitives", () => {
       },
     });
 
-    await handle.session.setNetworkPolicy("allow-all");
+    await handle.sandbox.setNetworkPolicy("allow-all");
 
     const networkCalls = calls
       .filter((call) => call.args[0] === "network")
       .map((call) => call.args);
     expect(networkCalls).toEqual([
-      ["network", "disconnect", "--force", "none", fakeDockerContainerIdentity(SESSION_KEY)],
-      ["network", "connect", "bridge", fakeDockerContainerIdentity(SESSION_KEY)],
+      [
+        "network",
+        "disconnect",
+        "--force",
+        "none",
+        fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME),
+      ],
+      ["network", "connect", "bridge", fakeDockerContainerIdentity(PROVIDER_CONTAINER_NAME)],
     ]);
   });
 
-  it("rejects domain-level network policies with guidance toward the Vercel backend", async () => {
+  it("rejects domain-level network policies with guidance toward the Vercel provider", async () => {
     const { handle } = await createRunningSessionHandle({});
 
-    await expect(handle.session.setNetworkPolicy({ allow: { "*": [] } })).rejects.toThrow(
-      /Vercel backend/,
+    await expect(handle.sandbox.setNetworkPolicy({ allow: { "*": [] } })).rejects.toThrow(
+      /Vercel provider/,
     );
-  });
-
-  it("applies deny-all after base setup for template-less containers", async () => {
-    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
-    const { calls, cli } = createFakeDockerCli((args) => {
-      if (isContainerInspect(args) && args[3] === "{{.State.Running}}") {
-        return { exitCode: 1, stderr: "No such container" };
-      }
-      if (isContainerInspect(args) && args[3] === "{{json .NetworkSettings.Networks}}") {
-        return { exitCode: 0, stdout: '{"bridge":{}}' };
-      }
-      return undefined;
-    });
-
-    await createEngine({
-      cli,
-      options: { networkPolicy: "deny-all" },
-    }).create({
-      runtimeContext: { appRoot },
-      sessionKey: SESSION_KEY,
-      templateKey: null,
-    });
-
-    const run = findCall(calls, (args) => args[0] === "run");
-    expect(run?.args).not.toContain("--network");
-
-    const baseSetup = findCall(calls, (args) => args[0] === "exec" && args.includes("/bin/sh"));
-    expect(baseSetup?.args.at(-1)).toContain("command -v bash");
-    expect(baseSetup?.args.at(-1)).not.toContain("apt-get");
-    expect(baseSetup?.args.at(-1)).not.toContain("deb.nodesource.com/node_24.x");
-    expect(baseSetup?.args.at(-1)).not.toContain("python3");
-    expect(baseSetup?.args.at(-1)).not.toContain("ripgrep");
-
-    expect(
-      findCall(calls, (args) => args[0] === "network" && args[1] === "disconnect")?.args,
-    ).toEqual(["network", "disconnect", "--force", "bridge", SESSION_KEY]);
   });
 });
 
-describe("pruneDockerSandboxTemplates", () => {
-  it("removes images for stale markers and keeps retained or recent ones", async () => {
-    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
-    const now = Date.now();
-
-    // Seed three markers through real prewarm reuse so paths match the
-    // engine's layout exactly.
-    const { cli } = createFakeDockerCli((args) => {
+describe("Docker template prune", () => {
+  function createImageStoreDockerCli() {
+    const images = new Set<string>();
+    const fake = createFakeDockerCli((args) => {
+      const reference = String(args.at(-1));
       if (args[0] === "image" && args[1] === "inspect") {
-        return { exitCode: 0, stdout: "sha256:abc\n" };
+        return images.has(reference) ? undefined : { exitCode: 1, stderr: "No such image" };
+      }
+      if (args[0] === "build") images.add(args[args.indexOf("--tag") + 1]!);
+      if (args[0] === "pull" || args[0] === "commit") images.add(reference);
+      if (args[0] === "rmi" && !images.delete(reference)) {
+        return { exitCode: 1, stderr: `No such image: ${reference}` };
       }
       return undefined;
     });
-    const engine = createEngine({ cli });
-    for (const templateKey of ["tpl-stale", "tpl-retained", "tpl-recent"]) {
-      await engine.prewarm({ runtimeContext: { appRoot }, seedFiles: [], templateKey });
-    }
+    return { ...fake, images };
+  }
 
-    const markersDirectory = join(appRoot, ".eve", "sandbox-cache", "docker", "templates");
-    const { utimes } = await import("node:fs/promises");
-    await utimes(
-      join(markersDirectory, defaultDockerTemplateImageTag("tpl-stale")),
-      new Date(now - 60_000),
-      new Date(now - 60_000),
-    );
-    await utimes(
-      join(markersDirectory, defaultDockerTemplateImageTag("tpl-retained")),
-      new Date(now - 30_000),
-      new Date(now - 30_000),
-    );
+  // Mirrors how prewarm and session start build the provider context.
+  async function prepareLikeDevelopment(appRoot: string, cli: DockerCli) {
+    return await createDockerSandboxProvider(undefined, cli).prepare({
+      files: createSandboxProviderFiles(join(appRoot, "sandbox")),
+      host: createSandboxProviderHost(appRoot),
+      resources: createSandboxProviderResources({}),
+      sourceRevision: "test-source-revision",
+      storagePath: resolveSandboxCacheDirectory(appRoot),
+    });
+  }
 
-    const { calls: pruneCalls, cli: pruneCli } = createFakeDockerCli();
+  async function pruneEverything(appRoot: string, cli: DockerCli) {
     await pruneDockerSandboxTemplates({
       appRoot,
-      dockerCli: pruneCli,
-      now,
-      recentWindowMs: 5_000,
-      retainCount: 2,
-    });
-
-    expect(pruneCalls.map((call) => call.args)).toEqual([
-      [
-        "rmi",
-        dockerTemplateImageReference({
-          optionsHash: DEFAULT_DOCKER_OPTIONS_HASH,
-          templateKey: "tpl-stale",
-        }),
-      ],
-    ]);
-    const { readdir } = await import("node:fs/promises");
-    await expect(readdir(markersDirectory)).resolves.toEqual(
-      expect.arrayContaining([
-        defaultDockerTemplateImageTag("tpl-recent"),
-        defaultDockerTemplateImageTag("tpl-retained"),
-      ]),
-    );
-  });
-
-  it("keeps the marker when the image is still referenced by a container", async () => {
-    const appRoot = await createScratchDirectory("eve-docker-sandbox-");
-    const { cli } = createFakeDockerCli((args) => {
-      if (args[0] === "image" && args[1] === "inspect") {
-        return { exitCode: 0, stdout: "sha256:abc\n" };
-      }
-      return undefined;
-    });
-    await createEngine({ cli }).prewarm({
-      runtimeContext: { appRoot },
-      seedFiles: [],
-      templateKey: "tpl-in-use",
-    });
-
-    const { cli: pruneCli } = createFakeDockerCli((args) => {
-      if (args[0] === "rmi") {
-        return { exitCode: 1, stderr: "image is being used by running container" };
-      }
-      return undefined;
-    });
-    await pruneDockerSandboxTemplates({
-      appRoot,
-      dockerCli: pruneCli,
+      dockerCli: cli,
       now: Date.now() + 60_000,
-      recentWindowMs: 1_000,
+      recentWindowMs: 0,
       retainCount: 0,
     });
+  }
 
-    const { readdir } = await import("node:fs/promises");
-    await expect(
-      readdir(join(appRoot, ".eve", "sandbox-cache", "docker", "templates")),
-    ).resolves.toEqual([defaultDockerTemplateImageTag("tpl-in-use")]);
+  it("removes a stale template image that prepare recorded", async () => {
+    const appRoot = await createScratchDirectory("eve-docker-prune-");
+    const { cli, images } = createImageStoreDockerCli();
+
+    const { imageReference } = await prepareLikeDevelopment(appRoot, cli);
+    expect(images).toContain(imageReference);
+
+    await pruneEverything(appRoot, cli);
+
+    expect(images).not.toContain(imageReference);
+  });
+
+  it("removes the Dockerfile image a stale template was built from", async () => {
+    const appRoot = await createScratchDirectory("eve-docker-prune-");
+    const { calls, cli, images } = createImageStoreDockerCli();
+    await mkdir(join(appRoot, "sandbox"), { recursive: true });
+    await writeFile(join(appRoot, "sandbox", "Dockerfile"), "FROM node:24\n");
+
+    await prepareLikeDevelopment(appRoot, cli);
+    await pruneEverything(appRoot, cli);
+
+    expect(findCall(calls, (args) => args[0] === "build")).toBeDefined();
+    expect([...images].filter((image) => image.startsWith("eve-sandbox-dockerfile:"))).toEqual([]);
   });
 });

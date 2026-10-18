@@ -1,0 +1,63 @@
+---
+title: "microsandbox"
+description: "Create local lightweight VMs from an OCI image or Dockerfile."
+---
+
+microsandbox environments use eve's default image, an existing OCI image, or `agent/sandbox/Dockerfile`.
+
+```ts
+import { defineSandbox } from "eve/sandbox";
+import { MicrosandboxSandbox } from "eve/sandbox/microsandbox";
+
+export const environment = MicrosandboxSandbox.dockerfile({
+  setup: { autoInstall: false },
+});
+
+export default defineSandbox(() => environment.open({ networkPolicy: "deny-all" }));
+```
+
+Supported hosts are macOS on Apple Silicon and Linux with glibc and KVM.
+
+## Environment options
+
+Image, CPU, memory, pull policy, environment variables, VM setup, and `prepare` belong to the reusable environment. `eve build` builds a Dockerfile image when present, prepares a VM, and records its snapshot and image references.
+
+## Live VM options
+
+Pass `networkPolicy` to `open()`. The policy applies to the live VM, not the prepared snapshot. microsandbox accepts domain policies and credential transforms.
+
+Session creation uses the recorded snapshot and image directly. Writable VM state persists through the provider's session snapshot lifecycle.
+
+Conversation copies allocate a fresh sandbox. Only explicitly supplied attachments
+are staged; source packages, workspace state and processes are not inherited.
+
+See the [sandbox overview](/docs/sandbox) for managed workspace, skills, parent inheritance, and custom providers.
+
+## Local resource retirement
+
+Local session resources require `MSB_BACKEND=local`. eve records their exact
+native names and allocation/removal state in the session cache. Failed allocation
+may remain unknown and cannot be retried automatically. Failed removal remains
+pending until a later removal confirms absence. Existing metadata without these
+ownership facts cannot be resumed by this fork.
+
+Applications can import `manageLocalMicrosandboxResources` from
+`eve/sandbox/microsandbox` inside an authenticated local channel route. Pass the
+route context and `{ sessionId, expectedAppRoot, action: "retire" | "purge" }`.
+Authorize the exact session and fence application admission first. Retire all
+relevant sessions before purging. A nonzero `remaining` result means resources
+are retained; an error never confirms cleanup.
+
+The worker selects its actual cache; `expectedAppRoot` only checks locality.
+This operation is supported only by the local development host with one shared
+canonical cache and matching HOME/MSB_HOME settings. Remote and production hosts
+are rejected. Locks do not expire or transfer ownership after a crash. These
+local locks do not provide distributed fencing.
+
+Stable native identity receipts accompany resource names: VM IDs and snapshot
+digests plus artifact paths come from successful SDK allocation results. Cleanup
+refuses a replacement that reused a name. Snapshot absence is checked at its
+recorded artifact path, because the SDK snapshot index is rebuildable; snapshot
+removal also keeps native child/dependency protection enabled. Mutable state
+snapshot restoration verifies the recorded identity. Earlier name-only resource
+records and historical copy snapshot records are unsupported.

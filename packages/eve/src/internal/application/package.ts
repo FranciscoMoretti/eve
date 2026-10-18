@@ -1,32 +1,17 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { EVE_PACKAGE_NAME, normalizeEveRuntimeIdentity } from "#internal/package-name.js";
+import { readStampedPackageVersion } from "#internal/application/stamped-package-version.js";
+import { EVE_PACKAGE_NAME } from "#internal/package-name.js";
 
 let cachedPackageInfo: InstalledPackageInfo | undefined;
 let cachedPackageLocation: PackageLocation | undefined;
-// The package build stamps the published version into `dist` so bundled
-// deployments can still report package metadata without resolving package.json.
-const BUNDLED_FALLBACK_PACKAGE_VERSION: string = "__EVE_PACKAGE_VERSION__";
 const WORKFLOW_MODULE_ALIASES = {
   "workflow/errors": "src/compiled/@workflow/errors/index.js",
   "workflow/internal/private": "src/compiled/@workflow/core/private.js",
 } as const;
-
-function resolveFallbackPackageVersion(): string {
-  // Detect an unstamped build by the token's `__` shape — spelling the token
-  // out in a comparison would get rewritten by the stamp itself.
-  return BUNDLED_FALLBACK_PACKAGE_VERSION.startsWith("__")
-    ? "0.0.0"
-    : BUNDLED_FALLBACK_PACKAGE_VERSION;
-}
-
-const FALLBACK_PACKAGE_INFO: InstalledPackageInfo = {
-  name: EVE_PACKAGE_NAME,
-  version: resolveFallbackPackageVersion(),
-};
 
 interface InstalledPackageInfo {
   name: string;
@@ -39,7 +24,8 @@ interface PackageLocation {
 }
 
 function resolveCurrentModulePath(): string {
-  if (typeof __filename === "string") {
+  // In ESM this can read a global, such as the "[eval]" Node sets under `node -e`.
+  if (typeof __filename === "string" && isAbsolute(__filename)) {
     return __filename;
   }
 
@@ -65,12 +51,14 @@ function resolveCurrentModulePathFromStack(): string {
   }
 }
 
-const require = createRequire(resolveCurrentModulePath());
+// Not named `require`: bundles inline this module, and a top-level `require`
+// binding makes the Node ESM compatibility banner re-parse the whole chunk.
+const packageRequire = createRequire(resolveCurrentModulePath());
 
 function tryResolveVerifiedPackageRoot(packageJsonPath: string): string | undefined {
   try {
     const canonicalPackageJsonPath = realpathSync.native(packageJsonPath);
-    const packageInfo = tryReadInstalledPackageInfo(canonicalPackageJsonPath, EVE_PACKAGE_NAME);
+    const packageInfo = tryReadInstalledPackageInfo(canonicalPackageJsonPath);
 
     return packageInfo === undefined ? undefined : dirname(canonicalPackageJsonPath);
   } catch {
@@ -129,6 +117,24 @@ function isSourceCheckout(packageRoot: string): boolean {
   // Published packages exclude `src`, so this marker distinguishes a checkout
   // without depending on how its parent directories are named.
   return existsSync(join(packageRoot, "src", "internal", "application", "package.ts"));
+}
+
+function findNearestSourceCheckoutRoot(startDirectory: string): string | undefined {
+  let currentDirectory = startDirectory;
+
+  while (true) {
+    if (isSourceCheckout(currentDirectory)) {
+      return currentDirectory;
+    }
+
+    const parentDirectory = dirname(currentDirectory);
+
+    if (parentDirectory === currentDirectory) {
+      return undefined;
+    }
+
+    currentDirectory = parentDirectory;
+  }
 }
 
 function tryCreatePackageLocation(packageRoot: string): PackageLocation | undefined {
@@ -231,6 +237,25 @@ function tryResolvePackageRoot(): string | undefined {
   }
 }
 
+function tryResolveLocalPackageRoot(currentModulePath: string): string | undefined {
+  try {
+    const canonicalModulePath = realpathSync.native(currentModulePath);
+    const directBuildLocation = tryResolveDirectBuildLocation(canonicalModulePath);
+
+    if (directBuildLocation !== undefined) {
+      return directBuildLocation.packageRoot;
+    }
+
+    const sourceCheckoutRoot = findNearestSourceCheckoutRoot(dirname(canonicalModulePath));
+
+    return sourceCheckoutRoot === undefined
+      ? undefined
+      : tryResolveVerifiedPackageRoot(join(sourceCheckoutRoot, "package.json"));
+  } catch {
+    return undefined;
+  }
+}
+
 function rewriteSourceFilePathForBuild(relativeSourcePath: string): string {
   return relativeSourcePath.replace(/\.[cm]?tsx?$/, ".js");
 }
@@ -266,15 +291,56 @@ export function resolvePackageSourceDirectoryPath(relativeSourcePath: string): s
 }
 
 export function resolvePackageDependencyPath(specifier: string): string {
-  // Authored imports retain the runtime name, but Node self-resolution must use
-  // the distribution name when the package is installed through an npm alias.
   if (specifier === EVE_PACKAGE_NAME || specifier.startsWith(`${EVE_PACKAGE_NAME}/`)) {
-    const manifest = JSON.parse(readFileSync(join(resolvePackageRoot(), "package.json"), "utf8"));
-    if (manifest.name === "@chat-js/eve") {
-      return require.resolve(`@chat-js/eve${specifier.slice(EVE_PACKAGE_NAME.length)}`);
+    const packageRoot = tryResolvePackageRoot();
+    if (packageRoot !== undefined) {
+      const manifestPath = join(packageRoot, "package.json");
+      const packageInfo = tryReadInstalledPackageInfo(manifestPath);
+      if (packageInfo?.name === "@chat-js/eve") {
+        // Node self references use the manifest name, not the consumer's npm alias.
+        return createRequire(manifestPath).resolve(
+          `${packageInfo.name}${specifier.slice(EVE_PACKAGE_NAME.length)}`,
+        );
+      }
     }
   }
-  return require.resolve(specifier);
+  try {
+    return packageRequire.resolve(specifier);
+  } catch (error) {
+    const packageRoot = tryResolvePackageRoot();
+    const sourcePath =
+      packageRoot === undefined || !isSourceCheckout(packageRoot)
+        ? undefined
+        : resolveSourceCheckoutExport(packageRoot, specifier);
+    if (sourcePath !== undefined) return sourcePath;
+    throw error;
+  }
+}
+
+function resolveSourceCheckoutExport(packageRoot: string, specifier: string): string | undefined {
+  if (specifier !== EVE_PACKAGE_NAME && !specifier.startsWith(`${EVE_PACKAGE_NAME}/`)) {
+    return undefined;
+  }
+  const exportKey =
+    specifier === EVE_PACKAGE_NAME ? "." : `.${specifier.slice(EVE_PACKAGE_NAME.length)}`;
+  try {
+    const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
+      exports?: Record<string, string | Record<string, string>>;
+    };
+    const declaration = manifest.exports?.[exportKey];
+    const target =
+      typeof declaration === "string"
+        ? declaration
+        : (declaration?.["eve-source"] ?? declaration?.import ?? declaration?.default);
+    if (target === undefined) return undefined;
+    const sourceRelativePath = target
+      .replace(/^\.\/dist\/src\//, "src/")
+      .replace(/\.[cm]?js$/u, ".ts");
+    const sourcePath = join(packageRoot, sourceRelativePath);
+    return existsSync(sourcePath) ? sourcePath : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -306,62 +372,67 @@ function normalizeInstalledPackageInfo(value: unknown): InstalledPackageInfo | u
   }
 
   return {
-    ...normalizeEveRuntimeIdentity({ name: packageJson.name, version: packageJson.version }),
+    name: packageJson.name,
+    version: packageJson.version,
   };
 }
 
-function tryReadInstalledPackageInfo(
-  packageJsonPath: string,
-  expectedPackageName: string,
-): InstalledPackageInfo | undefined {
+function tryReadInstalledPackageInfo(packageJsonPath: string): InstalledPackageInfo | undefined {
   const resolvedPackageInfo = normalizeInstalledPackageInfo(
     JSON.parse(readFileSync(packageJsonPath, "utf8")),
   );
 
-  if (resolvedPackageInfo?.name !== expectedPackageName) {
+  // ChatJS installs its scoped distribution under the public `eve` alias.
+  if (
+    resolvedPackageInfo?.name !== EVE_PACKAGE_NAME &&
+    resolvedPackageInfo?.name !== "@chat-js/eve"
+  ) {
     return undefined;
   }
 
   return resolvedPackageInfo;
 }
 
+function tryResolveSelfPackageInfo(): InstalledPackageInfo | undefined {
+  try {
+    return tryReadInstalledPackageInfo(packageRequire.resolve(`${EVE_PACKAGE_NAME}/package.json`));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Resolves the installed eve package identity from package.json.
+ * Resolves eve's package identity from local or build-stamped metadata.
  */
 export function resolveInstalledPackageInfo(): InstalledPackageInfo {
   if (cachedPackageInfo) {
     return cachedPackageInfo;
   }
 
-  const packageRoot = tryResolvePackageRoot();
+  const packageRoot = tryResolveLocalPackageRoot(resolveCurrentModulePath());
   const packageRootInfo =
     packageRoot === undefined
       ? undefined
-      : tryReadInstalledPackageInfo(join(packageRoot, "package.json"), EVE_PACKAGE_NAME);
+      : tryReadInstalledPackageInfo(join(packageRoot, "package.json"));
 
   if (packageRootInfo) {
     cachedPackageInfo = packageRootInfo;
     return cachedPackageInfo;
   }
 
-  try {
-    const resolvedPackageJsonPath = require.resolve(`${EVE_PACKAGE_NAME}/package.json`);
-    const resolvedPackageInfo = tryReadInstalledPackageInfo(
-      resolvedPackageJsonPath,
-      EVE_PACKAGE_NAME,
-    );
+  const stampedVersion = readStampedPackageVersion();
 
-    if (resolvedPackageInfo) {
-      cachedPackageInfo = resolvedPackageInfo;
-      return cachedPackageInfo;
-    }
-  } catch {
-    // Fall back to the package's development identity when the self package
-    // cannot be resolved from bundled runtime output.
+  if (stampedVersion !== undefined) {
+    cachedPackageInfo = { name: EVE_PACKAGE_NAME, version: stampedVersion };
+    return cachedPackageInfo;
   }
 
-  cachedPackageInfo = {
-    ...FALLBACK_PACKAGE_INFO,
+  // Only source builds are unstamped, such as a workspace app bundled through
+  // the `eve-source` condition. Published packages are always stamped, so
+  // serverless output never reaches this module-resolution probe.
+  cachedPackageInfo = tryResolveSelfPackageInfo() ?? {
+    name: EVE_PACKAGE_NAME,
+    version: "0.0.0",
   };
 
   return cachedPackageInfo;
@@ -417,7 +488,7 @@ export function resolveExpectedWorkflowVersion(): string | undefined {
 
   try {
     return readWorkflowVersionFromManifest(
-      JSON.parse(readFileSync(require.resolve(`${EVE_PACKAGE_NAME}/package.json`), "utf8")),
+      JSON.parse(readFileSync(packageRequire.resolve(`${EVE_PACKAGE_NAME}/package.json`), "utf8")),
     );
   } catch {
     return undefined;
@@ -450,5 +521,5 @@ export function resolveWorkflowModulePath(specifier: string): string {
     return resolvePackageCompiledFilePath(alias);
   }
 
-  return require.resolve(specifier);
+  return packageRequire.resolve(specifier);
 }

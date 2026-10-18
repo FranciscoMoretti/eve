@@ -1,5 +1,5 @@
 import { readDurableSchema } from "#tools/durable-schema.js";
-import type { Approval } from "#approval/definition.js";
+import type { ToolApproval } from "#approval/definition.js";
 import { resolveApprovalPolicy } from "#approval/definition.js";
 import type { JsonObject, JsonPrimitive } from "#shared/json.js";
 
@@ -8,6 +8,7 @@ export type DurableDynamicCallbackPhase =
   | "labelDelta"
   | "labelStart"
   | "approvalKey"
+  | "approvalPrompt"
   | "approvalRequest"
   | "approvalResponse"
   | "execute"
@@ -38,6 +39,7 @@ export interface DurableDynamicToolCallbacks {
     readonly start?: DurableDynamicCallbackReference;
   };
   readonly approvalKey?: DurableDynamicCallbackReference;
+  readonly approvalPrompt?: DurableDynamicCallbackReference;
   readonly approvalRequest?: DurableDynamicCallbackReference;
   readonly approvalResponse?: DurableDynamicCallbackReference;
   readonly toModelOutput?: DurableDynamicCallbackReference;
@@ -49,7 +51,7 @@ export interface StampedDurableDynamicCallback {
   readonly closure: JsonObject;
 }
 
-export type LiveDurableDynamicToolCallbacks = Partial<{
+type LiveDurableDynamicToolCallbacks = Partial<{
   execute: StampedDurableDynamicCallback;
   inputSchema: StampedDurableDynamicCallback;
   outputSchema: StampedDurableDynamicCallback;
@@ -59,13 +61,14 @@ export type LiveDurableDynamicToolCallbacks = Partial<{
     readonly start?: StampedDurableDynamicCallback;
   };
   approvalKey: StampedDurableDynamicCallback;
+  approvalPrompt: StampedDurableDynamicCallback;
   approvalRequest: StampedDurableDynamicCallback;
   approvalResponse: StampedDurableDynamicCallback;
   toModelOutput: StampedDurableDynamicCallback;
 }>;
 
 const STAMPED_CALLBACK = Symbol.for("eve:durable-dynamic-callback");
-export const DURABLE_DYNAMIC_TOOL_CALLBACKS = Symbol.for("eve:durable-dynamic-tool-callbacks");
+const DURABLE_DYNAMIC_TOOL_CALLBACKS = Symbol.for("eve:durable-dynamic-tool-callbacks");
 
 const REGISTRY = Symbol.for("eve:scoped-dynamic-tool-callbacks");
 const MAX_CACHED_SESSIONS = 1_024;
@@ -182,6 +185,7 @@ function durableCallbackPhases(
     ["labelDelta", callbacks.label?.delta],
     ["labelStart", callbacks.label?.start],
     ["approvalKey", callbacks.approvalKey],
+    ["approvalPrompt", callbacks.approvalPrompt],
     ["approvalRequest", callbacks.approvalRequest],
     ["approvalResponse", callbacks.approvalResponse],
     ["toModelOutput", callbacks.toModelOutput],
@@ -271,9 +275,9 @@ export function collectDurableDynamicToolCallbacks(input: {
     readonly delta?: (...args: never[]) => unknown;
     readonly start?: (...args: never[]) => unknown;
   };
-  readonly approval?: Approval<never>;
+  readonly approval?: ToolApproval<never>;
   readonly approvalKey?: (...args: never[]) => unknown;
-  readonly execute: (...args: never[]) => unknown;
+  readonly execute?: (...args: never[]) => unknown;
   readonly toModelOutput?: (...args: never[]) => unknown;
 }): LiveDurableDynamicToolCallbacks {
   const labelComplete = readDurableDynamicCallback(input.label?.complete);
@@ -289,6 +293,11 @@ export function collectDurableDynamicToolCallbacks(input: {
       : readDurableDynamicCallback(input.approval.response);
 
   const approvalKey = readDurableDynamicCallback(input.approvalKey);
+  const approvalPrompt = readDurableDynamicCallback(
+    input.approval === undefined || typeof input.approval === "function"
+      ? undefined
+      : input.approval.prompt,
+  );
   const execute = readDurableDynamicCallback(input.execute);
   const toModelOutput = readDurableDynamicCallback(input.toModelOutput);
   const callbacks: LiveDurableDynamicToolCallbacks = {};
@@ -305,6 +314,7 @@ export function collectDurableDynamicToolCallbacks(input: {
     };
   }
   if (approvalKey !== undefined) callbacks.approvalKey = approvalKey;
+  if (approvalPrompt !== undefined) callbacks.approvalPrompt = approvalPrompt;
   if (approvalRequest !== undefined) callbacks.approvalRequest = approvalRequest;
   if (approvalResponse !== undefined) callbacks.approvalResponse = approvalResponse;
   if (toModelOutput !== undefined) callbacks.toModelOutput = toModelOutput;

@@ -5,10 +5,10 @@ import { lineOf } from "./line-editor.js";
 import {
   renderAcknowledgeQuestion,
   renderFlowPanel,
-  renderModelEditorQuestion,
   renderSelectQuestion,
   renderTextQuestion,
 } from "./setup-panel.js";
+import { renderFlowDrawer, renderTransientDrawer } from "./flow-drawer.js";
 import { stripAnsi } from "#cli/ui/terminal-text.js";
 import { createTheme } from "./theme.js";
 
@@ -67,7 +67,7 @@ describe("renderFlowPanel", () => {
     expect(text).toContain("   › Create a new project");
   });
 
-  it("renders multiline titles as separate terminal rows", () => {
+  it("wraps long titles and renders multiline titles as separate terminal rows", () => {
     const title =
       "You need to link to a project to use linear through Vercel Connect.\n\nSelect your team";
     const rows = renderFlowPanel(
@@ -81,11 +81,12 @@ describe("renderFlowPanel", () => {
         },
       },
       theme,
-      80,
+      48,
     );
 
-    expect(rows.slice(0, 5)).toEqual([
-      "   You need to link to a project to use linear through Vercel Connect.",
+    expect(rows.slice(0, 7)).toEqual([
+      "   You need to link to a project to use linear",
+      "   through Vercel Connect.",
       "",
       "   Select your team",
       "",
@@ -104,7 +105,7 @@ describe("renderFlowPanel", () => {
             tone: "error",
           },
         ],
-        content: { kind: "idle", indicator: { glyph: "▪", color: "green" } },
+        content: { kind: "idle", indicator: { glyph: "▪" } },
       },
       theme,
       60,
@@ -124,7 +125,7 @@ describe("renderFlowPanel", () => {
       {
         title: "/channels",
         lines,
-        content: { kind: "idle", indicator: { glyph: "⠏", color: "yellow" } },
+        content: { kind: "idle", indicator: { glyph: "⠏" } },
       },
       theme,
       60,
@@ -143,9 +144,8 @@ describe("renderFlowPanel", () => {
         content: {
           kind: "status",
           status: {
-            kind: "progress",
             text: "Loading teams…",
-            indicator: { glyph: "⠼", color: "yellow" },
+            indicator: { glyph: "⠼" },
           },
         },
       },
@@ -164,9 +164,8 @@ describe("renderFlowPanel", () => {
         content: {
           kind: "status",
           status: {
-            kind: "progress",
             text: "Checking the project…",
-            indicator: { glyph: "▪", color: "green" },
+            indicator: { glyph: "▪" },
           },
         },
       },
@@ -186,9 +185,8 @@ describe("renderFlowPanel", () => {
         content: {
           kind: "question",
           status: {
-            kind: "progress",
             text: "Creating a Slackbot through Vercel Connect…",
-            indicator: { glyph: "▪", color: "green" },
+            indicator: { glyph: "▪" },
           },
           rows: ["    Try again", "    Cancel"],
         },
@@ -202,6 +200,99 @@ describe("renderFlowPanel", () => {
     expect(text).toContain("  Cancel");
     // The spinner leads; the actions follow.
     expect(text.indexOf("Creating a Slackbot")).toBeLessThan(text.indexOf("Try again"));
+  });
+});
+
+describe("renderFlowDrawer", () => {
+  it("frames an active flow without repeating its command title", () => {
+    const rows = renderFlowDrawer(
+      {
+        title: "add to your agent",
+        lines: [],
+        content: {
+          kind: "question",
+          title: "add to your agent",
+          rows: ["  Set up Vercel Connect", "  Use portable credentials"],
+        },
+      },
+      theme,
+      60,
+    );
+
+    expect(rows.rows[0]).toBe("─".repeat(60));
+    expect(rows.rows[1]).toBe("");
+    expect(rows.rows[2]).toBe("   add to your agent");
+    expect(rows.rows.at(-2)).toBe("");
+    expect(rows.rows.at(-1)).toBe("─".repeat(60));
+    expect(rows.rows.join("\n").split("add to your agent")).toHaveLength(2);
+  });
+
+  it("clips a corner label so the top rule keeps the terminal width", () => {
+    const { rows } = renderTransientDrawer(
+      ["  Approve random_number?"],
+      [],
+      theme,
+      30,
+      "subagent(number_picker:13) · 2 of 10",
+    );
+
+    expect(rows[0]).toBe("── subagent(number_picker:… ──");
+  });
+
+  it("places question controls below the drawer boundary", () => {
+    const drawer = renderFlowDrawer(
+      {
+        title: "",
+        lines: [],
+        content: {
+          kind: "question",
+          rows: ["  Vercel account", "", "  ↑/↓ move · Enter select · Esc close"],
+        },
+      },
+      theme,
+      60,
+    );
+
+    expect(drawer.rows).toEqual(["─".repeat(60), "", "   Vercel account", "", "─".repeat(60)]);
+    expect(drawer.controls).toEqual(["↑/↓ move · Enter select · Esc close"]);
+  });
+
+  it("frames a flow without a redundant header", () => {
+    const rows = renderFlowDrawer(
+      {
+        title: "",
+        lines: [],
+        content: { kind: "question", rows: ["  Vercel account"] },
+      },
+      theme,
+      60,
+    );
+
+    expect(rows).toEqual({
+      rows: ["─".repeat(60), "", "   Vercel account", "", "─".repeat(60)],
+      controls: [],
+    });
+  });
+
+  it("keeps a live status inside the drawer after flow progress", () => {
+    const drawer = renderFlowDrawer(
+      {
+        title: "",
+        lines: [{ text: "Checked credentials", tone: "success" }],
+        content: {
+          kind: "status",
+          status: {
+            text: "Loading teams…",
+            indicator: { glyph: "⠼" },
+          },
+        },
+      },
+      theme,
+      60,
+    );
+
+    expect(drawer.rows.join("\n")).toContain("Loading teams…");
+    expect(drawer.controls).toEqual([]);
   });
 });
 
@@ -223,7 +314,8 @@ describe("renderSelectQuestion", () => {
         theme,
         width,
       ).join("\n");
-      expect(text).toContain("› Blooio");
+      expect(text).toContain("Blooio");
+      expect(text).not.toContain("›");
       expect(text).not.toContain("Slack");
       expect(text).not.toContain("Send and receive");
     },
@@ -260,7 +352,7 @@ describe("renderSelectQuestion", () => {
       "  Source: Official eve registry",
       "  Packages: @agent-browser/eve",
       "",
-      "   › Add to project",
+      "     Add to project",
       "     Back",
     ]);
   });
@@ -282,10 +374,37 @@ describe("renderSelectQuestion", () => {
     expect(text).not.toContain("▔".repeat(10));
     // The lone hint sits one space past its own label — the longer hint-less
     // "Link an existing project" no longer pads the column open.
-    expect(text).toContain("   › Create a new project · fastest");
-    expect(text).toContain("    Link an existing project");
+    expect(text).toContain("   Create a new project · fastest");
+    expect(text).toContain("   Link an existing project");
+    expect(text).not.toContain("›");
     expect(text).not.toContain("1.");
     expect(text).toContain("esc to cancel");
+  });
+
+  it("wraps a long question instead of clipping it", () => {
+    const options = [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ];
+    const rows = renderSelectQuestion(
+      {
+        kind: "single",
+        message:
+          "A legacy self-modification scaffold was found at agent/subagents/self-modification. This scaffold format is no longer supported. Do you want to remove it?",
+        options,
+        select: initialSelectState({ options }),
+      },
+      theme,
+      48,
+    );
+
+    expect(rows.slice(0, 5)).toEqual([
+      "  A legacy self-modification scaffold was",
+      "  found at agent/subagents/self-modification.",
+      "  This scaffold format is no longer supported.",
+      "  Do you want to remove it?",
+      "",
+    ]);
   });
 
   it("drops the numbers for a lone option", () => {
@@ -301,7 +420,8 @@ describe("renderSelectQuestion", () => {
       60,
     ).join("\n");
 
-    expect(text).toContain("   › Link to another project");
+    expect(text).toContain("   Link to another project");
+    expect(text).not.toContain("›");
     expect(text).not.toContain("1.");
 
     const colored = renderSelectQuestion(
@@ -314,7 +434,7 @@ describe("renderSelectQuestion", () => {
       colorTheme,
       60,
     ).join("\n");
-    expect(colored).toContain("\x1b[1m › Link to another project\x1b[22m");
+    expect(colored).toContain("\x1b[1mLink to another project\x1b[22m");
   });
 
   it("renders completed task rows as focusable but not highlighted actions", () => {
@@ -350,18 +470,17 @@ describe("renderSelectQuestion", () => {
       80,
     );
 
-    // The focused completed row reads as inert: a dim pointer, not a check.
+    // Completed rows retain an inert cursor rather than borrowing the
+    // available-row selection weight; resting rows retain their checks.
     expect(rows).toContain("   › Terminal UI · Already installed");
-    expect(rows).not.toContain("   ✓ Terminal UI");
-    // An unfocused completed row keeps its check.
     expect(rows).toContain("   ✓ Web Chat");
     expect(rows).toContain("     Done");
     const warning = rows.indexOf("  ⚠ Overwrote /tmp/weather-agent");
     const success = rows.indexOf("  ✓ Scaffolded channel: web");
     const done = rows.indexOf("     Done");
-    expect(rows.indexOf("     Slack       · Creates slackbot and deploys to Vercel")).toBeLessThan(
-      warning,
-    );
+    const slack = rows.indexOf("     Slack       · Creates slackbot and deploys to Vercel");
+    expect(slack).toBeGreaterThanOrEqual(0);
+    expect(slack).toBeLessThan(warning);
     expect(warning).toBeLessThan(success);
     expect(success).toBeLessThan(done);
     expect([rows[warning - 1], rows[done - 1]]).toEqual(["", ""]);
@@ -378,11 +497,11 @@ describe("renderSelectQuestion", () => {
       80,
     );
     const coloredRow = coloredRows.find((row) => row.includes("Terminal UI"));
-    // Focused completed row: dim pointer matching the dim label, never green or cyan.
-    expect(coloredRow).toContain("\x1b[2m›\x1b[22m");
+    // Completed rows remain dim and never borrow the selected row's weight.
     expect(coloredRow).toContain("\x1b[2mTerminal UI\x1b[22m");
     expect(coloredRow).toContain("\x1b[2m · Already installed\x1b[22m");
-    expect(coloredRow).not.toContain("\x1b[32m");
+    expect(coloredRow).toContain("\x1b[2m›\x1b[22m");
+    expect(coloredRow).not.toContain("\x1b[32m✓\x1b[39m");
     expect(coloredRow).not.toContain("\x1b[36m");
   });
 
@@ -397,7 +516,8 @@ describe("renderSelectQuestion", () => {
       theme,
       60,
     ).join("\n");
-    expect(multi).toContain("   › Create a new project ");
+    expect(multi).toContain("   Create a new project ");
+    expect(multi).not.toContain("›");
     expect(multi).not.toContain("1.");
 
     const searchable = renderSelectQuestion(
@@ -429,6 +549,29 @@ describe("renderSelectQuestion", () => {
     );
     const clipped = rows.find((row) => row.includes("\x1b[34m"));
     expect(clipped?.endsWith("\x1b[0m")).toBe(true);
+  });
+
+  it("wraps shared help below the options without repeating it on rows", () => {
+    const options = [
+      { value: "owner", label: "Owner team" },
+      { value: "member", label: "Member team", disabled: true, disabledReason: "needs permission" },
+    ];
+    const rows = renderSelectQuestion(
+      {
+        kind: "search",
+        message: "Select your team",
+        options,
+        helpText: "For disabled teams, ask a team owner to run setup, or choose another team.",
+        select: initialSelectState({ options }),
+      },
+      theme,
+      50,
+    );
+    const text = rows.join("\n");
+    expect(text.indexOf("For disabled teams")).toBeGreaterThan(text.indexOf("Member team"));
+    expect(text.match(/ask a team owner/g)).toHaveLength(1);
+    expect(text).toContain("choose another team.");
+    expect(rows.every((line) => line.length <= 50)).toBe(true);
   });
 
   it("renders a warning-toned disabled row with a dim label and yellow alert annotation", () => {
@@ -692,7 +835,8 @@ describe("renderSelectQuestion", () => {
       60,
     ).join("\n");
 
-    expect(text).toContain("› Create a new project");
+    expect(text).toContain("Create a new project");
+    expect(text).not.toContain("›");
     expect(text).toContain("✓ Link an existing project");
     expect(text).toContain("Submit");
     expect(text).toContain("space to toggle");
@@ -743,16 +887,30 @@ describe("renderSelectQuestion", () => {
     );
     const text = rows.join("\n");
 
-    // The filter rail sits in the option rows' glyph column.
-    expect(text).toContain("   type to filter");
-    expect(text).toContain("   › Model 0");
+    // The empty filter is a block-cursor field directly above its first result.
+    expect(text).toContain("   search…\n     Model 0");
+    expect(text).toContain("     Model 0");
     expect(text).toContain("     Model 4");
+    expect(text).not.toContain("›");
     expect(text).not.toContain("Model 5");
     // The list scrolls silently: no count row, Esc is the whole footer.
     expect(text).not.toContain("options, showing");
     expect(text).toContain("Esc back");
     expect(text).not.toContain("type to filter ·");
     expect(text).not.toContain("↑/↓ move");
+
+    const colored = renderSelectQuestion(
+      {
+        kind: "search",
+        message: "Which model?",
+        options: many,
+        placeholder: "type to filter",
+        select: initialSelectState({ options: many }),
+      },
+      colorTheme,
+      60,
+    ).join("\n");
+    expect(colored).toContain(colorTheme.colors.inverse("s"));
   });
 
   it("paints a validation error inside the question", () => {
@@ -906,141 +1064,6 @@ describe("renderAcknowledgeQuestion", () => {
   });
 });
 
-describe("renderModelEditorQuestion", () => {
-  // Editor requests carry id-labeled rows (the flow's modelListRows mapping).
-  const MODEL_IDS = [
-    "anthropic/claude-sonnet-5",
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5.6-terra",
-    "openai/gpt-5.6-luna",
-    "xai/grok-4.5",
-    "google/gemini-3.5",
-    "zai/glm-4.6",
-    "meta/llama-5",
-    "mistral/large-3",
-    "cohere/command-b",
-  ];
-  const MODELS = MODEL_IDS.map((id, index) =>
-    index < 2 ? { value: id, label: id, featured: true } : { value: id, label: id },
-  );
-
-  const CAPS = {
-    reasoning: true,
-    reasoningLevels: ["low", "medium", "high"],
-    fastMode: true,
-  } as const;
-
-  function editorRequest(overrides = {}) {
-    return {
-      model: { kind: "pick", options: MODELS, current: "anthropic/claude-sonnet-5" },
-      reasoning: null,
-      serviceTier: { kind: "standard" },
-      settingsEditable: true,
-      externalRouting: false,
-      capabilitiesFor: () => CAPS,
-      ...overrides,
-    } as never;
-  }
-
-  function editorState(overrides = {}) {
-    return {
-      screen: { kind: "menu", cursor: "model" },
-      draft: { modelId: "anthropic/claude-sonnet-5", reasoning: "medium", tier: "standard" },
-      capabilities: CAPS,
-      ...overrides,
-    } as never;
-  }
-
-  it("summarizes a fast-mode draft and an unset level on the menu hints", () => {
-    const text = renderModelEditorQuestion(
-      {
-        request: editorRequest(),
-        state: editorState({
-          draft: { modelId: "anthropic/claude-sonnet-5", reasoning: "default", tier: "priority" },
-        }),
-      },
-      theme,
-      80,
-    ).join("\n");
-
-    expect(text).toContain("○─○─○ provider default");
-    expect(text).toContain("fast ↯");
-  });
-
-  it("paints the hovered row's covered track stretch blue", () => {
-    const text = renderModelEditorQuestion(
-      {
-        request: editorRequest(),
-        state: editorState({ screen: { kind: "menu", cursor: "reasoning" } }),
-      },
-      colorTheme,
-      80,
-    ).join("\n");
-
-    expect(text).toContain(`${colorTheme.colors.blue("●─◉")}─○`);
-  });
-
-  it("disables the reasoning row with its reason and omits the tier for a no-frills model", () => {
-    const noFrills = { reasoning: false, reasoningLevels: [], fastMode: false };
-    const text = renderModelEditorQuestion(
-      {
-        request: editorRequest(),
-        state: editorState({
-          capabilities: noFrills,
-          draft: { modelId: "test/no-frills", reasoning: "default", tier: "standard" },
-        }),
-      },
-      theme,
-      80,
-    ).join("\n");
-
-    expect(text).toContain("Not supported by the selected model");
-    expect(text).not.toContain("Service tier");
-  });
-
-  it("lists model ids with a bold selection and enter badge", () => {
-    const rows = renderModelEditorQuestion(
-      {
-        request: editorRequest(),
-        state: editorState({
-          screen: {
-            kind: "model",
-            select: initialSelectState({ options: MODELS, defaultValue: "openai/gpt-5.6-sol" }),
-          },
-        }),
-      },
-      theme,
-      80,
-    );
-    const text = rows.join("\n");
-
-    expect(text).toContain("Select the model");
-    expect(text).toContain("   type to search");
-    expect(text).toContain(" › openai/gpt-5.6-sol ");
-    expect(text).toContain("↵");
-    expect(text).toContain("     anthropic/claude-sonnet-5");
-    // Five rows in view, no count row, Esc-only footer.
-    expect(text).toContain("openai/gpt-5.6-luna");
-    expect(text).not.toContain("google/gemini-3.5");
-    expect(text).not.toContain("options, showing");
-    expect(text).toContain("Esc back");
-  });
-
-  it("falls back to ASCII track glyphs without unicode", () => {
-    const ascii = createTheme({ color: false, unicode: false });
-    const text = renderModelEditorQuestion(
-      {
-        request: editorRequest(),
-        state: editorState({ screen: { kind: "menu", cursor: "reasoning" } }),
-      },
-      ascii,
-      80,
-    ).join("\n");
-
-    expect(text).toContain("*-O-. medium");
-  });
-});
-
 describe("compact menus", () => {
   it.each([32, 80])("keeps options on single borderless rows at %i columns", (columns) => {
     const options = [
@@ -1058,10 +1081,12 @@ describe("compact menus", () => {
       columns,
     );
     const text = stripAnsi(rows.join("\n"));
-    expect(text).toContain("› Vercel account");
+    expect(text).toContain("Vercel account");
+    expect(text).not.toContain("›");
     expect(text).toContain("OpenAI API key");
     expect(rows.join("\n")).not.toContain("\x1b[7m");
-    expect(rows.join("\n")).toContain("\x1b[1m");
+    expect(rows.join("\n")).toContain("\x1b[1mVercel account\x1b[22m");
+    expect(rows.join("\n")).toContain("\x1b[2mOpenAI API key\x1b[22m");
     expect(text).not.toContain("▔");
     expect(
       rows
@@ -1076,7 +1101,8 @@ describe("compact menus", () => {
       colorTheme,
       80,
     );
-    expect(stripAnsi(rows.join("\n"))).toContain("› Reconnect");
+    expect(stripAnsi(rows.join("\n"))).toContain("Reconnect");
+    expect(stripAnsi(rows.join("\n"))).not.toContain("›");
     expect(rows.join("\n")).not.toContain("\x1b[7m");
   });
 });

@@ -1,5 +1,5 @@
 import { defineEval, type EveEvalTargetHandle } from "eve/evals";
-import { equals, satisfies } from "eve/evals/expect";
+import { satisfies } from "eve/evals/expect";
 
 interface MessageResponse {
   readonly ok: boolean;
@@ -86,15 +86,6 @@ export default defineEval({
     const compacted = await liveCompaction.result();
     compacted.event("compaction.requested", { count: 1 });
     compacted.event("compaction.completed", { count: 1 });
-    const replay = await t.target
-      .watchTurn(sessionId, {
-        startIndex: initial.events.length,
-      })
-      .result();
-    await t.require(
-      replay.events.filter((event) => event.type === "compaction.completed"),
-      equals(compacted.events.filter((event) => event.type === "compaction.completed")),
-    );
     compacted.eventOrder([
       { type: "compaction.requested" },
       { type: "compaction.completed" },

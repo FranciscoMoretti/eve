@@ -220,17 +220,17 @@ describe("run assertions", () => {
     const result = makeResult({
       derived: {
         subagentCalls: [
-          subagentCall("child", "pending"),
+          subagentCall("child", "working"),
           subagentCall("child", "completed"),
           subagentCall("child", "failed"),
-          subagentCall("child", "rejected"),
+          subagentCall("child", "cancelled"),
         ],
         subagentCallCount: 4,
       },
     });
 
     expect((await Run.calledSubagent("child").evaluate(result)).score).toBe(1);
-    for (const status of ["pending", "completed", "failed", "rejected"] as const) {
+    for (const status of ["working", "completed", "failed", "cancelled"] as const) {
       expect((await Run.calledSubagent("child", { status, count: 1 }).evaluate(result)).score).toBe(
         1,
       );
@@ -242,7 +242,7 @@ describe("run assertions", () => {
       (
         await Run.calledSubagent("child", {
           count: (count) => count >= 4,
-          status: "pending",
+          status: "working",
         }).evaluate(result)
       ).score,
     ).toBe(0);
@@ -315,28 +315,19 @@ describe("run assertions", () => {
 
   it("matches typed event counts and ordered event groups", async () => {
     const called = {
-      type: "subagent.called",
-      data: {
-        name: "child",
-        callId: "c",
-        childSessionId: "s",
-        sessionId: "p",
-        sequence: 1,
-        toolName: "subagent",
-        turnId: "t",
-        workflowId: "w",
-      },
+      type: "task.started",
+      data: { callId: "c", kind: "agent", name: "child", taskId: "child-1", turnId: "t" },
     } as UnstampedMessageStreamEvent;
     const completed = {
-      type: "subagent.completed",
-      data: { callId: "c", output: "ok", sequence: 2, subagentName: "child", turnId: "t" },
+      type: "task.settled",
+      data: { callId: "c", output: "ok", status: "completed", taskId: "child-1" },
     } as UnstampedMessageStreamEvent;
     const result = makeResult({ events: [called, called, completed] });
 
     expect(
       (
         await Run.typedEvent({
-          type: "subagent.called",
+          type: "task.started",
           data: { name: "child" },
           count: 2,
         }).evaluate(result)
@@ -345,7 +336,7 @@ describe("run assertions", () => {
     expect(
       (
         await Run.typedEvent({
-          type: "subagent.called",
+          type: "task.started",
           data: { name: "child" },
           count: (count) => count >= 2,
         }).evaluate(result)
@@ -355,8 +346,8 @@ describe("run assertions", () => {
     expect(
       (
         await Run.eventOrder([
-          { type: "subagent.called", data: { name: "child" }, count: 2 },
-          { type: "subagent.completed", data: { subagentName: "child" } },
+          { type: "task.started", data: { name: "child" }, count: 2 },
+          { type: "task.settled", data: { taskId: "child-1" } },
         ]).evaluate(result)
       ).score,
     ).toBe(1);
@@ -364,13 +355,13 @@ describe("run assertions", () => {
       (
         await Run.eventOrder([
           {
-            type: "subagent.called",
+            type: "task.started",
             data: { name: "child" },
             count: (count) => count >= 2,
           },
           {
-            type: "subagent.completed",
-            data: { subagentName: "child" },
+            type: "task.settled",
+            data: { taskId: "child-1" },
             count: (count) => count >= 1,
           },
         ]).evaluate(result)
@@ -380,7 +371,7 @@ describe("run assertions", () => {
       (
         await Run.eventsSatisfy(
           "completion follows delegation",
-          (events) => events.at(-1)?.type === "subagent.completed",
+          (events) => events.at(-1)?.type === "task.settled",
         ).evaluate(result)
       ).score,
     ).toBe(1);
@@ -388,51 +379,23 @@ describe("run assertions", () => {
 
   it("eventOrder rejects interleaved event groups", async () => {
     const called = {
-      type: "subagent.called",
-      data: {
-        name: "child",
-        callId: "c",
-        childSessionId: "s",
-        sessionId: "p",
-        sequence: 1,
-        toolName: "subagent",
-        turnId: "t",
-        workflowId: "w",
-      },
+      type: "task.started",
+      data: { callId: "c", kind: "agent", name: "child", taskId: "child-1", turnId: "t" },
     } as UnstampedMessageStreamEvent;
     const completed = {
-      type: "subagent.completed",
-      data: { callId: "c", output: "ok", sequence: 2, subagentName: "child", turnId: "t" },
+      type: "task.settled",
+      data: { callId: "c", output: "ok", status: "completed", taskId: "child-1" },
     } as UnstampedMessageStreamEvent;
     const result = makeResult({ events: [called, completed, called] });
 
     expect(
       (
         await Run.eventOrder([
-          { type: "subagent.called", data: { name: "child" }, count: 2 },
-          { type: "subagent.completed", data: { subagentName: "child" } },
+          { type: "task.started", data: { name: "child" }, count: 2 },
+          { type: "task.settled", data: { taskId: "child-1" } },
         ]).evaluate(result)
       ).score,
     ).toBe(0);
-  });
-
-  it("loadedSkill matches a load_skill call by skill id", async () => {
-    const result = makeResult({
-      derived: {
-        toolCalls: [
-          {
-            ...completedToolCall("load_skill"),
-            input: { skill: "custom__talk-like-a-dog" },
-          },
-        ],
-        toolCallCount: 1,
-      },
-    });
-    expect((await Run.loadedSkill("custom__talk-like-a-dog").evaluate(result)).score).toBe(1);
-    expect((await Run.loadedSkill("talk-like-a-dog").evaluate(result)).score).toBe(0);
-    expect(Run.loadedSkill("custom__talk-like-a-dog").name).toBe(
-      "loadedSkill(custom__talk-like-a-dog)",
-    );
   });
 
   it("usedNoTools passes only with zero tool calls", async () => {

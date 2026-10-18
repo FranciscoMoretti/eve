@@ -1,8 +1,6 @@
-import { tool, type ToolSet } from "ai";
-
 import { createLogger } from "#internal/logging.js";
 import type { ResolvedConnectionDefinition } from "#runtime/types.js";
-import { passesToolFilter, resolveHeaders } from "#runtime/connections/mcp-client.js";
+import { resolveHeaders } from "#runtime/connections/mcp-client.js";
 import {
   omitProvidedArgumentsFromSchema,
   resolveProvidedArguments,
@@ -30,7 +28,7 @@ import type {
   ConnectionToolMetadata,
 } from "#shared/connection-types.js";
 import { isObject } from "#shared/guards.js";
-import { toInputSchema, type ToolSchema } from "#tools/schema.js";
+import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import { isLoopbackHostname } from "#shared/network-address.js";
 
 const log = createLogger("runtime.connections.openapi-client");
@@ -38,7 +36,6 @@ const log = createLogger("runtime.connections.openapi-client");
 interface OpenApiToolCache {
   readonly metadata: readonly ConnectionToolMetadata[];
   readonly operations: ReadonlyMap<string, OpenApiOperation>;
-  readonly tools: ToolSet;
   readonly baseUrl: string;
 }
 
@@ -66,7 +63,7 @@ const SWAGGER_PARAMETER_SCHEMA_KEYS = [
  * tool result so it can react to the status and body of any response,
  * including non-2xx responses.
  */
-export interface OpenApiToolResult {
+interface OpenApiToolResult {
   readonly status: number;
   readonly statusText: string;
   readonly body: unknown;
@@ -101,11 +98,6 @@ export class OpenApiConnectionClient implements ConnectionClient {
   async getToolMetadata(): Promise<readonly ConnectionToolMetadata[]> {
     const cache = await this.#ensureTools();
     return cache.metadata;
-  }
-
-  async getTools(): Promise<ToolSet> {
-    const cache = await this.#ensureTools();
-    return cache.tools;
   }
 
   async executeTool(
@@ -153,25 +145,16 @@ export class OpenApiConnectionClient implements ConnectionClient {
     const baseUrl = this.#resolveBaseUrl(document);
     const operations = this.#extractOperations(document);
 
-    const filter = this.#connection.tools;
-    const selected =
-      filter !== undefined
-        ? operations.filter((op) => passesToolFilter(op.toolName, filter))
-        : operations;
-
     const metadata: ConnectionToolMetadata[] = [];
     const operationMap = new Map<string, OpenApiOperation>();
-    const tools: ToolSet = {};
     const providedArgumentNames = Object.keys(this.#connection.toolCall?.providedArguments ?? {});
 
-    for (const operation of selected) {
-      const projectedInputSchema = omitProvidedArgumentsFromSchema(
-        operation.inputSchema,
-        providedArgumentNames,
-      );
-      let inputSchema: ToolSchema;
+    for (const operation of operations) {
+      let inputSchema: JsonObject;
       try {
-        inputSchema = toInputSchema(projectedInputSchema);
+        inputSchema = parseJsonObject(
+          omitProvidedArgumentsFromSchema(operation.inputSchema, providedArgumentNames),
+        );
       } catch (error) {
         log.warn("omitting OpenAPI operation with an invalid input schema", {
           connectionName: this.#connection.connectionName,
@@ -184,21 +167,12 @@ export class OpenApiConnectionClient implements ConnectionClient {
       operationMap.set(operation.toolName, operation);
       metadata.push({
         description: operation.description,
-        inputSchema: projectedInputSchema,
-        name: operation.toolName,
-      });
-      tools[operation.toolName] = tool({
-        description: operation.description,
         inputSchema,
-        execute: async (input: unknown, toolOptions) =>
-          this.#request(operation, baseUrl, isObject(input) ? input : {}, {
-            abortSignal: toolOptions?.abortSignal,
-            callId: toolOptions.toolCallId,
-          }),
+        name: operation.toolName,
       });
     }
 
-    return { metadata, operations: operationMap, tools, baseUrl };
+    return { metadata, operations: operationMap, baseUrl };
   }
 
   /**
@@ -447,7 +421,14 @@ export class OpenApiConnectionClient implements ConnectionClient {
         continue;
       }
       if (param.location === "path") {
-        path = path.replace(`{${param.name}}`, encodeURIComponent(String(value)));
+        const pathValue = String(value);
+        // URL parsing normalizes dot segments even after encodeURIComponent.
+        if (pathValue === "." || pathValue === "..") {
+          throw new Error(
+            `Path parameter "${param.name}" for tool "${operation.toolName}" in connection "${this.#connection.connectionName}" must not be "." or "..".`,
+          );
+        }
+        path = path.replace(`{${param.name}}`, encodeURIComponent(pathValue));
       } else if (param.location === "query") {
         appendQuery(query, param.name, value);
       } else if (param.location === "cookie") {

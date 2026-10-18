@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Card, CardText } from "#compiled/chat/index.js";
-import { decodeSlackApiBody } from "#public/channels/slack/api-encoding.js";
+import { decodeSlackApiBody } from "#internal/testing/slack-api-body.js";
 import {
   buildSlackBinding,
+  fetchSlackThreadWindow,
   callSlackApi,
   resolveSlackBotToken,
   type SlackBotTokenContext,
 } from "#public/channels/slack/api.js";
+import { resolveSlackTransportOptions } from "#public/channels/slack/transport.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
 
 interface FetchCall {
   url: string;
@@ -399,6 +402,58 @@ describe("Slack outbound text", () => {
   });
 });
 
+describe("fetchSlackThreadWindow", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("pages to the trigger and keeps the last messages before it", async () => {
+    const pages = [
+      {
+        messages: [
+          { text: "a", ts: "1.0" },
+          { text: "b", ts: "2.0" },
+        ],
+        next_cursor: "page2",
+      },
+      {
+        messages: [
+          { text: "c", ts: "3.0" },
+          { text: "d", ts: "4.0" },
+        ],
+        next_cursor: "",
+      },
+    ];
+    const bodies: (Record<string, unknown> | undefined)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const contentType = init?.headers ? new Headers(init.headers).get("content-type") : null;
+        bodies.push(decodeSlackApiBody(init?.body, contentType) as Record<string, unknown>);
+        const page = pages[bodies.length - 1]!;
+        return Response.json({
+          ok: true,
+          messages: page.messages,
+          response_metadata: { next_cursor: page.next_cursor },
+        });
+      }),
+    );
+    const { thread } = buildSlackBinding({
+      botToken: "xoxb-test",
+      channelId: "C01",
+      threadTs: "1.0",
+      teamId: undefined,
+    });
+
+    const window = await fetchSlackThreadWindow(thread, "4.0", 3);
+
+    expect(window?.map((message) => message.ts)).toEqual(["2.0", "3.0", "4.0"]);
+    expect(bodies[0]).toMatchObject({ inclusive: "true", latest: "4.0", ts: "1.0" });
+    expect(bodies[1]).toMatchObject({ cursor: "page2" });
+    expect(thread.recentMessages).toEqual([]);
+  });
+});
+
 describe("SlackThread.refresh", () => {
   let mock: ReturnType<typeof buildFetchMock>;
 
@@ -595,6 +650,7 @@ describe("SlackThread.refresh", () => {
   });
 
   it("preserves loaded messages when a later refresh fails", async () => {
+    const logs = captureLogRecords();
     const { thread } = buildSlackBinding({
       botToken: "xoxb-test",
       channelId: "C01",
@@ -608,6 +664,9 @@ describe("SlackThread.refresh", () => {
     await thread.refresh();
 
     expect(thread.recentMessages).toEqual(loadedMessages);
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "refresh threw — swallowed" }),
+    );
   });
 
   it("marks only replies from the bound Slack app as mine", async () => {
@@ -997,5 +1056,64 @@ describe("Slack bot token context", () => {
 
     expect(token).toBe("xoxb-legacy");
     expect(botToken).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("api transport options", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const okFetch = () => vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+
+  it("calls Slack's own host when api is omitted", async () => {
+    const globalFetch = okFetch();
+    vi.stubGlobal("fetch", globalFetch);
+
+    await callSlackApi({ body: {}, botToken: "xoxb-test", operation: "auth.test" });
+
+    expect(String(globalFetch.mock.calls[0]?.[0])).toBe("https://slack.com/api/auth.test");
+  });
+
+  it("checks and resolves a base it is handed directly", async () => {
+    const globalFetch = okFetch();
+    vi.stubGlobal("fetch", globalFetch);
+    const apiFetch = okFetch();
+
+    // No trailing slash and never passed through resolveSlackTransportOptions:
+    // the call resolves its own options.
+    await callSlackApi({
+      api: { apiBaseUrl: "http://localhost:3000/api/slack", fetch: apiFetch },
+      body: {},
+      botToken: "xoxb-test",
+      operation: "auth.test",
+    });
+
+    expect(String(apiFetch.mock.calls[0]?.[0])).toBe("http://localhost:3000/api/slack/auth.test");
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("confines a fetch it is handed directly", async () => {
+    const globalFetch = okFetch();
+    vi.stubGlobal("fetch", globalFetch);
+    const apiFetch = okFetch();
+    const api = { apiBaseUrl: "http://localhost:3000/api/slack", fetch: apiFetch };
+
+    await callSlackApi({ api, body: {}, botToken: "xoxb-test", operation: "auth.test" });
+    await (resolveSlackTransportOptions(api)?.fetch ?? fetch)("https://files.slack.com/upload/abc");
+
+    expect(globalFetch.mock.calls.map((call) => String(call[0]))).toEqual([
+      "https://files.slack.com/upload/abc",
+    ]);
+  });
+
+  it("names the option a base it cannot reach belongs to", async () => {
+    await expect(
+      callSlackApi({
+        api: { apiBaseUrl: "/api/slack" },
+        body: {},
+        botToken: "xoxb-test",
+        operation: "auth.test",
+      }),
+    ).rejects.toThrow(/api\.apiBaseUrl must be an absolute http or https URL/);
   });
 });

@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EntityConflictError, HookNotFoundError } from "#compiled/@workflow/errors/index.js";
-import { cancelRun, getWorld, resumeHook } from "#internal/workflow/runtime.js";
+import { cancelRun, getRun, getWorld, resumeHook } from "#internal/workflow/runtime.js";
 import { logError } from "#internal/logging.js";
-import { cancelWorkflowToolRun } from "./cancel.js";
+import { cancelWorkflowToolRun, settleWorkflowToolRunCancellation } from "./cancel.js";
 
 vi.mock("#compiled/@workflow/core/runtime.js", () => ({
   cancelRun: vi.fn(),
+  getRun: vi.fn(),
   getWorld: vi.fn(),
   resumeHook: vi.fn(),
 }));
@@ -19,24 +20,55 @@ vi.mock("#internal/logging.js", () => ({
 const world = {} as Awaited<ReturnType<typeof getWorld>>;
 const address = { hookToken: "generated-control-token", runId: "tool-run" };
 const reason = "The calling turn was cancelled.";
+const cancel = { kind: "cancel" as const, reason };
 
 describe("cancelWorkflowToolRun", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.useFakeTimers();
+    vi.mocked(getRun).mockReturnValue({ status: Promise.resolve("completed") } as ReturnType<
+      typeof getRun
+    >);
     vi.mocked(getWorld).mockResolvedValue(world);
   });
 
+  afterEach(() => vi.useRealTimers());
+
   it("lets a registered workflow cancel cooperatively", async () => {
-    await cancelWorkflowToolRun(address, reason);
+    await cancelWorkflowToolRun(address, cancel);
 
     expect(resumeHook).toHaveBeenCalledWith(address.hookToken, { kind: "cancel", reason });
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("allows slow cooperative cleanup before escalating a stuck waiting run", async () => {
+    vi.mocked(getRun).mockReturnValue({ status: Promise.resolve("running") } as ReturnType<
+      typeof getRun
+    >);
+    const cancelled = cancelWorkflowToolRun(address, cancel);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cancelRun).not.toHaveBeenCalled();
+    await vi.runAllTimersAsync();
+    await cancelled;
+    expect(cancelRun).toHaveBeenCalledExactlyOnceWith(world, address.runId, {
+      cancelReason: reason,
+    });
+  });
+
+  it("does not mistake a status lookup failure for successful cancellation", async () => {
+    vi.mocked(getRun).mockImplementation(() => {
+      throw new Error("status unavailable");
+    });
+    await expect(settleWorkflowToolRunCancellation(address.runId, reason)).rejects.toThrow(
+      "status unavailable",
+    );
     expect(cancelRun).not.toHaveBeenCalled();
   });
 
   it("cancels by run ID before the control hook is registered", async () => {
     vi.mocked(resumeHook).mockRejectedValue(new HookNotFoundError(address.hookToken));
 
-    await cancelWorkflowToolRun(address, reason);
+    await cancelWorkflowToolRun(address, cancel);
 
     expect(cancelRun).toHaveBeenCalledWith(world, address.runId, { cancelReason: reason });
     expect(logError).not.toHaveBeenCalled();
@@ -46,7 +78,7 @@ describe("cancelWorkflowToolRun", () => {
     vi.mocked(resumeHook).mockRejectedValue(new HookNotFoundError(address.hookToken));
     vi.mocked(cancelRun).mockRejectedValue(new EntityConflictError("Run already completed"));
 
-    await expect(cancelWorkflowToolRun(address, reason)).resolves.toBeUndefined();
+    await expect(cancelWorkflowToolRun(address, cancel)).resolves.toBeUndefined();
 
     expect(cancelRun).toHaveBeenCalledOnce();
     expect(logError).not.toHaveBeenCalled();
@@ -56,7 +88,7 @@ describe("cancelWorkflowToolRun", () => {
     vi.mocked(resumeHook).mockRejectedValue(new Error("hook delivery unavailable"));
     vi.mocked(cancelRun).mockRejectedValue(new Error("run cancellation unavailable"));
 
-    await expect(cancelWorkflowToolRun(address, reason)).resolves.toBeUndefined();
+    await expect(cancelWorkflowToolRun(address, cancel)).resolves.toBeUndefined();
 
     expect(cancelRun).toHaveBeenCalledWith(world, address.runId, { cancelReason: reason });
     expect(logError).toHaveBeenCalledTimes(2);

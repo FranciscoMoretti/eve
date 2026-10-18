@@ -1,4 +1,5 @@
 import { basename, relative, resolve } from "node:path";
+import type { JsonObject } from "#shared/json.js";
 import type {
   MarkdownSourceRef,
   ModuleSourceRef,
@@ -147,6 +148,14 @@ export type ExtensionSourceRef = ModuleSourceRef;
  * consuming agent, prefixing contributions with {@link namespace}.
  */
 export interface ResolvedExtensionMount {
+  /** Programmatic declaration used when the mount does not exist on disk. */
+  readonly programmaticDeclaration?: {
+    readonly logicalPath: string;
+    readonly sourceId: string;
+    readonly importSpecifier: string;
+    readonly entryPath: string;
+    readonly config: JsonObject;
+  };
   /** Mount namespace derived from the mount filename (e.g. `crm`). */
   readonly namespace: string;
   /** Package specifier the mount imports (e.g. `@acme/crm`). */
@@ -178,7 +187,7 @@ export type SubagentSourceRef = LocalSubagentSourceRef;
 /**
  * Input used to build a manifest-ready connection source ref.
  */
-export interface CreateConnectionSourceRefInput extends CreateModuleSourceRefInput {
+interface CreateConnectionSourceRefInput extends CreateModuleSourceRefInput {
   connectionName: string;
 }
 
@@ -220,8 +229,6 @@ export interface AgentSourceManifest {
    * Empty when no instructions are authored.
    */
   instructions: InstructionsSourceRef[];
-  /** Authored single-file instrumentation module, when present. */
-  instrumentation?: ModuleSourceRef;
   /**
    * Authored sandbox module discovered for this agent, or `null` when
    * the agent does not declare one. Every agent owns at most one
@@ -265,7 +272,6 @@ export interface CreateAgentSourceManifestInput {
    */
   packageName?: string;
   instructions?: readonly InstructionsSourceRef[];
-  instrumentation?: ModuleSourceRef;
   sandbox?: SandboxSourceRef | null;
   sandboxWorkspaces?: readonly SandboxWorkspaceFolderSourceRef[];
   schedules?: readonly ScheduleSourceRef[];
@@ -277,8 +283,9 @@ export interface CreateAgentSourceManifestInput {
 /**
  * Input used to build a manifest-ready skill package source ref.
  */
-export interface CreateSkillPackageSourceRefInput {
+interface CreateSkillPackageSourceRefInput {
   assetsPath?: string;
+  deferred?: boolean;
   description: string;
   license?: string;
   logicalPath: string;
@@ -296,7 +303,7 @@ export interface CreateSkillPackageSourceRefInput {
 /**
  * Input used to build a manifest-ready module source ref.
  */
-export interface CreateModuleSourceRefInput {
+interface CreateModuleSourceRefInput {
   exportName?: string;
   logicalPath: string;
   sourceId?: string;
@@ -305,7 +312,7 @@ export interface CreateModuleSourceRefInput {
 /**
  * Input used to build a manifest-ready local subagent source ref.
  */
-export interface CreateLocalSubagentSourceRefInput {
+interface CreateLocalSubagentSourceRefInput {
   entryPath: string;
   logicalPath: string;
   manifest: AgentSourceManifest;
@@ -348,10 +355,6 @@ export function createAgentSourceManifest(
   if (input.configModule !== undefined) {
     manifest.configModule = input.configModule;
   }
-  if (input.instrumentation !== undefined) {
-    manifest.instrumentation = input.instrumentation;
-  }
-
   return manifest;
 }
 
@@ -443,6 +446,7 @@ export function createSkillPackageSourceRef(
 ): NamedSkillDefinition & SkillPackageSourceRef {
   const skillSourceRef: NamedSkillDefinition & SkillPackageSourceRef = {
     assetsPath: input.assetsPath,
+    deferred: input.deferred,
     description: input.description,
     license: input.license,
     logicalPath: normalizeLogicalPath(input.logicalPath),

@@ -3,15 +3,18 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { AgentSourceManifest } from "#discover/manifest.js";
 import { normalizeLogicalPath } from "#discover/filesystem.js";
 import { normalizeAgentDefinition } from "#internal/authored-definition/core.js";
-import { serializeOutputSchema } from "#tools/schema.js";
 import { formatLanguageModelGatewayId } from "#internal/runtime-model.js";
 import { classifyModelRouting } from "#internal/classify-model-routing.js";
+import { isMockModel } from "#internal/mock-model-identity.js";
 import { isChatGptModelRouting } from "#shared/chatgpt-model.js";
 import { toErrorMessage } from "#shared/errors.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import type { ModuleSourceRef } from "#shared/source-ref.js";
 import {
   isDynamicModelDefinition,
+  type AgentPromptCacheDefinition,
+  type AgentToolExposure,
+  type ModelRouting,
   type PublicAgentStaticModelDefinition,
 } from "#shared/agent-definition.js";
 import type { DynamicToolEventName } from "#dynamic/definition.js";
@@ -49,6 +52,7 @@ export async function compileAgentConfig(
           displayPath: configModulePath,
           kind: "agent config",
           loadNamespace: createCompiledBindingNamespaceLoader({
+            appRoot: manifest.appRoot,
             bindings: { [configModule.sourceId]: options.binding },
             registries: context.registries,
           }),
@@ -65,6 +69,7 @@ export async function compileAgentConfig(
           modelCatalog: context.modelCatalog,
           purpose: "the primary compaction trigger model",
           contextWindowTokens: definition.modelContextWindowTokens,
+          promptCache: definition.modelOptions?.promptCache,
           providerOptions: definition.modelOptions?.providerOptions,
           source: configModule,
           sourcePath: configModulePath,
@@ -86,10 +91,9 @@ export async function compileAgentConfig(
     description?: string;
     experimental?: CompiledAgentDefinition["experimental"];
     name: string;
-    outputSchema?: JsonObject;
     reasoning?: CompiledAgentDefinition["reasoning"];
     source: ModuleSourceRef;
-    tool?: boolean;
+    tool?: AgentToolExposure;
     limits?: CompiledAgentDefinition["limits"];
   } = {
     compaction,
@@ -128,10 +132,6 @@ export async function compileAgentConfig(
           ? undefined
           : [...definition.build.externalDependencies],
     };
-  }
-
-  if (definition.outputSchema !== undefined) {
-    compiledConfig.outputSchema = serializeOutputSchema(definition.outputSchema);
   }
 
   if (definition.reasoning !== undefined) {
@@ -187,10 +187,6 @@ function normalizeExperimentalDefinition(
 
   const compiledExperimental: Mutable<NonNullable<CompiledAgentDefinition["experimental"]>> = {};
 
-  if (experimental.instrumentationProviders !== undefined) {
-    compiledExperimental.instrumentationProviders = experimental.instrumentationProviders;
-  }
-
   if (experimental.workflow !== undefined) {
     compiledExperimental.workflow = {
       modelCallsPerStep: experimental.workflow.modelCallsPerStep,
@@ -206,17 +202,20 @@ async function normalizeAuthoredModelReference(input: {
   readonly modelCatalog: ManifestCompileContext["modelCatalog"];
   readonly purpose: string;
   readonly contextWindowTokens?: number;
+  readonly promptCache?: AgentPromptCacheDefinition;
   readonly providerOptions?: Record<string, JsonObject>;
   readonly source?: ModuleSourceRef;
   readonly sourcePath?: string;
   readonly value: PublicAgentStaticModelDefinition;
 }): Promise<CompiledRuntimeModelReference> {
   if (typeof input.value === "string") {
+    const routing = classifyModelRouting(input.value, input.providerOptions);
+    rejectGatewayPromptCache(input, routing);
     return await withCompiledRuntimeModelLimits(
       {
         id: formatLanguageModelGatewayId(input.value),
         providerOptions: parseProviderOptionsRecord(input.providerOptions),
-        routing: classifyModelRouting(input.value, input.providerOptions),
+        routing,
       },
       input,
     );
@@ -255,7 +254,9 @@ async function normalizeAuthoredModelReference(input: {
     );
   }
 
-  const sourceBackedModel = {
+  const routing = classifyModelRouting(languageModel, input.providerOptions);
+  rejectGatewayPromptCache(input, routing);
+  const sourceBackedModel: CompiledRuntimeModelReference = {
     id: formatLanguageModelGatewayId(languageModel),
     source: {
       exportName: source.exportName,
@@ -264,8 +265,9 @@ async function normalizeAuthoredModelReference(input: {
       sourceId: source.sourceId,
     },
     providerOptions: parseProviderOptionsRecord(input.providerOptions),
-    routing: classifyModelRouting(languageModel, input.providerOptions),
+    routing,
   };
+  if (input.promptCache !== undefined) sourceBackedModel.promptCache = input.promptCache;
 
   if (input.contextWindowTokens === undefined) {
     // Codex models have no Gateway catalog entry, so use eve's known context limit.
@@ -273,6 +275,14 @@ async function normalizeAuthoredModelReference(input: {
       return {
         ...sourceBackedModel,
         contextWindowTokens: 200_000,
+      };
+    }
+
+    // Mock models have no catalog entry or real limit; a large window keeps compaction opt-in.
+    if (isMockModel(languageModel)) {
+      return {
+        ...sourceBackedModel,
+        contextWindowTokens: 1_000_000,
       };
     }
 
@@ -296,6 +306,20 @@ async function normalizeAuthoredModelReference(input: {
   }
 
   return await withCompiledRuntimeModelLimits(sourceBackedModel, input);
+}
+
+function rejectGatewayPromptCache(
+  input: {
+    readonly promptCache?: AgentPromptCacheDefinition;
+    readonly sourcePath?: string;
+    readonly value: PublicAgentStaticModelDefinition;
+  },
+  routing: ModelRouting,
+): void {
+  if (input.promptCache === undefined || routing.kind !== "gateway") return;
+  throw new Error(
+    `${input.sourcePath ?? "agent.ts"}: modelOptions.promptCache applies only to models eve calls directly, but "${formatLanguageModelGatewayId(input.value)}" routes through AI Gateway, which manages its own prompt caching. Remove promptCache, or configure Gateway caching with providerOptions.gateway.caching.`,
+  );
 }
 
 function formatAgentConfigModulePath(

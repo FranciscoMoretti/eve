@@ -1,12 +1,12 @@
-import type { ToolExecutionOptions } from "ai";
+import type { ModelMessage, ToolExecutionOptions } from "ai";
 import type {
   StandardJSONSchemaV1,
   StandardSchemaV1,
 } from "#compiled/@standard-schema/spec/index.js";
 
-import type { Approval } from "#approval/definition.js";
+import type { ToolApproval } from "#approval/definition.js";
+import type { SessionAuthContext } from "#channel/types.js";
 import type { SessionContext } from "#context/session-context.js";
-import type { ToolApprovalReceipt } from "#context/tool-approval-receipts.js";
 import { stampDefinitionKey } from "#internal/authored-definition/source-identity.js";
 import type { JsonObject } from "#shared/json.js";
 import type { TokenResult } from "#shared/connection-types.js";
@@ -18,29 +18,31 @@ import {
 } from "#tools/durable-callbacks.js";
 import { TOOL_BRAND } from "#tools/dynamic.js";
 import type { ToolModelOutput } from "#tools/model-output.js";
-import type { TaskExec, TaskReceipt } from "#tools/task.js";
 
 type ApprovalContextInput<TInput> = unknown extends TInput ? Record<string, unknown> : TInput;
 
 export type { ToolAuthDefinition, ToolAuthOptions, ToolAuthProvider } from "#tools/auth.js";
 export type { ToolModelOutput, ToolModelOutputPart } from "#tools/model-output.js";
-export type { TaskExec, TaskExecutorBinding, TaskReceipt } from "#tools/task.js";
 
-export type ToolExecuteOptions = Omit<ToolExecutionOptions<unknown>, "context">;
+export type ToolExecuteOptions = Omit<ToolExecutionOptions<unknown>, "context"> & {
+  /** Who approved the call, when it runs after a person approved it. */
+  readonly approval?: { readonly responder: SessionAuthContext };
+};
 
 export type ToolExecuteFn<TInput = unknown, TOutput = unknown> = (
   input: TInput,
   options: ToolExecuteOptions,
-  task?: TaskExec,
 ) => Promise<TOutput> | TOutput | AsyncIterable<TOutput>;
-
-export type ToolExecution = "background";
 
 interface ToolDefinitionBase {
   /** Whether delegated agent sessions receive this tool. Defaults to `true`. */
   readonly availableInSubagents?: boolean;
+  /**
+   * Keeps this tool out of the model's tool list. The model finds it with
+   * `eve__search` and calls it with `eve__tool`. Defaults to `false`.
+   */
+  readonly deferred?: boolean;
   readonly description: string;
-  readonly execution?: ToolExecution;
 }
 
 export interface ToolLabelDefinition<TInput = unknown, TOutput = unknown> {
@@ -66,6 +68,7 @@ export interface InternalToolLabelDefinition {
 }
 
 export interface InternalToolDefinition extends ToolDefinitionBase {
+  readonly endsTurn?: ToolDefinition["endsTurn"];
   label?: InternalToolLabelDefinition;
   name: string;
   inputSchema: JsonObject | null;
@@ -107,17 +110,10 @@ export interface InternalToolDefinitionWithExecuteFn<
   execute: ToolExecuteFn<TInput, TOutput>;
 }
 
-export interface PublicToolDefinitionWithExecuteFn<
-  TInput = unknown,
-  TOutput = unknown,
-> extends PublicToolDefinition<TInput, TOutput> {
-  execute: ToolExecuteFn<TInput, TOutput>;
-}
-
 /**
  * A question a workflow tool asks the human on the session's channel, sent
- * with `ctx.ask` from a `defineWorkflowTool` executor. Channels render it the way they render
- * `ask_question` and tool approvals.
+ * with `ctx.ask` from a `defineWorkflowTool` executor. Channels render it the
+ * way they render tool approvals.
  */
 export interface ToolInputRequest {
   /**
@@ -132,12 +128,45 @@ export interface ToolInputRequest {
   readonly prompt: string;
 }
 
-/** The human's answer to a {@link ToolInputRequest}. */
-export interface ToolInputResponse {
-  /** The selected option's `id`, when the user picked one. */
-  readonly optionId?: string;
-  /** Free text, when the user typed an answer. */
-  readonly text?: string;
+/** Public identity fields for the authenticated person who answered a question. */
+export interface ToolInputResponseResponder {
+  readonly authenticator: string;
+  readonly principalId: string;
+  readonly principalType: string;
+}
+
+/**
+ * The outcome of a {@link ToolInputRequest}.
+ *
+ * - `answered`: the user picked an option or typed an answer. An answer the
+ *   session accepted before a withdrawal wins, even after a signal aborted.
+ * - `cancelled`: the request was withdrawn before anyone answered it, because
+ *   the ask's `signal` or the call's `abortSignal` aborted.
+ * - `unavailable`: the session cannot reach a human, such as a scheduled run,
+ *   so the request resolved immediately without being shown.
+ */
+export type ToolInputResponse =
+  | {
+      readonly status: "answered";
+      /** The selected option's `id`, when the user picked one. */
+      readonly optionId?: string;
+      /** Authenticated identity of the responder, without channel attributes. */
+      readonly responder?: ToolInputResponseResponder;
+      /** Free text, when the user typed an answer. */
+      readonly text?: string;
+    }
+  | { readonly status: "cancelled" }
+  | { readonly status: "unavailable" };
+
+/** Options for `ctx.ask` in a `defineWorkflowTool` executor. */
+export interface ToolInputRequestOptions {
+  /**
+   * Withdraws the request when it aborts: the channel stops offering the
+   * question and the ask resolves as `cancelled`, unless the session accepted
+   * an answer first, which the ask then resolves with. The call's
+   * `abortSignal` withdraws the request the same way without being passed.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -170,8 +199,15 @@ export type ToolContext = SessionContext & {
    * the tool's {@link ApprovalContext}.
    */
   readonly toolName: string;
-  /** Approval evidence for this exact harness invocation and tool call. */
-  readonly approval?: ToolApprovalReceipt;
+  /**
+   * Messages sent to the model for the step that requested this call, oldest
+   * first — the same model input a `step.started` dynamic resolver reads from
+   * `ctx.messages`. Excludes system instructions and the assistant response
+   * that contains this call. Includes eve-authored context messages, such as
+   * request context and recalled memory, and reflects history projection and
+   * compaction.
+   */
+  readonly messages: readonly ModelMessage[];
   /**
    * Resolves the bearer token for an inline provider. This accepts the same
    * auth shapes as a connection's `auth` field, including `connect("...")`
@@ -184,7 +220,40 @@ export type ToolContext = SessionContext & {
    * token returned by {@link getToken}.
    */
   requireAuth(provider: ToolAuthProvider, options?: ToolAuthOptions): never;
+  /**
+   * The person who approved this call. Present only when the call runs after a
+   * person approved it; absent for calls that needed no approval.
+   */
+  readonly approval?: ApprovedCall;
 };
+
+/**
+ * The approval behind an approved tool call. The call still runs as the
+ * requester, `ctx.session.auth.current`; this only lets it read who approved
+ * it and act with their credentials where the tool chooses to.
+ */
+export interface ApprovedCall {
+  /** Who approved the call: the same principal its response policy saw. */
+  readonly responder: ApprovalResponder;
+}
+
+/**
+ * The person who approved a call, with access to their own credentials. A
+ * transient object built for each approved call: its identity fields are the
+ * stored responder record, and `getToken` is not serialized with them.
+ */
+export interface ApprovalResponder extends SessionAuthContext {
+  /**
+   * Resolves the responder's token for an inline provider, as
+   * {@link ToolContext.getToken} does for the requester. It never starts a
+   * sign-in: when the responder has no token, it throws a non-retryable
+   * `ConnectionAuthorizationFailedError` with
+   * `reason: "approver_authorization_required"`. It shares the call's
+   * providers with `ctx.getToken`, so two inline providers without provider
+   * metadata need `options.authKey` across both getters too.
+   */
+  getToken(provider: ToolAuthProvider, options?: ToolAuthOptions): Promise<TokenResult>;
+}
 
 /**
  * Public tool definition authored in `agent/tools/*.ts`.
@@ -197,8 +266,26 @@ export interface ToolDefinition<TInput = unknown, TOutput = unknown> extends Pub
   TInput,
   TOutput
 > {
-  readonly execution?: never;
   execute(input: TInput, ctx: ToolContext): Promise<TOutput> | TOutput | AsyncIterable<TOutput>;
+  /**
+   * Ends the turn after this tool succeeds, without another model call and
+   * without a final reply. Use it for a tool whose action is the whole
+   * answer, such as reacting to a message. The turn ends only when every
+   * tool call in the model's step ends the turn and succeeds; a failed call
+   * lets the model recover. Ignored in delegated sessions, which must return
+   * a reply to their caller, and on turns that request structured output.
+   * With `true`, eve appends a sentence to the description the model sees
+   * telling it the call ends its turn, so write `description` for what the
+   * tool does.
+   *
+   * Pass a function to decide from the result. eve calls it with the output
+   * of `execute` after each successful call, and the call ends the turn only
+   * when it returns `true`; if it throws, the turn continues as though it
+   * returned `false`. The model sees no appended sentence, so describe
+   * when the call ends the turn in `description` if the model needs to know.
+   * Defaults to `false`.
+   */
+  endsTurn?: boolean | ((output: TOutput) => boolean | Promise<boolean>);
   /**
    * Optional per-tool approval gate. The return value determines whether
    * user approval is required before executing this tool.
@@ -208,7 +295,7 @@ export interface ToolDefinition<TInput = unknown, TOutput = unknown> extends Pub
    * - {@link never}: never require approval
    * - {@link once}: require approval only the first time per session
    */
-  approval?: Approval<ApprovalContextInput<TInput>>;
+  approval?: ToolApproval<ApprovalContextInput<TInput>>;
   /**
    * Optional projection controlling what the model sees as the tool result.
    * Receives the full `TOutput` from {@link execute} and returns the
@@ -221,21 +308,6 @@ export interface ToolDefinition<TInput = unknown, TOutput = unknown> extends Pub
   toModelOutput?: (output: TOutput) => ToolModelOutput | Promise<ToolModelOutput>;
 }
 
-/** A tool whose executor can outlive the model tool-call phase as a durable task. */
-export interface BackgroundToolDefinition<
-  TInput = unknown,
-  TOutput = unknown,
-> extends PublicToolDefinition<TInput, TaskReceipt> {
-  readonly execution: "background";
-  execute(
-    input: TInput,
-    ctx: ToolContext,
-    task: TaskExec,
-  ): Promise<TOutput> | TOutput | AsyncIterable<unknown>;
-  approval?: Approval<ApprovalContextInput<TInput>>;
-  toModelOutput?: (output: TaskReceipt) => ToolModelOutput | Promise<ToolModelOutput>;
-}
-
 type ToolOutputFromExecuteReturn<TReturn> =
   TReturn extends Promise<infer TOutput>
     ? TOutput
@@ -243,22 +315,8 @@ type ToolOutputFromExecuteReturn<TReturn> =
       ? TOutput
       : TReturn;
 
-type BackgroundToolOutputFromExecuteReturn<TReturn> =
-  TReturn extends AsyncGenerator<unknown, infer TOutput>
-    ? TOutput
-    : TReturn extends AsyncIterable<unknown>
-      ? null
-      : Awaited<TReturn>;
-
 type ToolDefinitionWithExecuteReturn<TInput, TOutput, TReturn> = ToolDefinition<TInput, TOutput> & {
   execute(input: TInput, ctx: ToolContext): TReturn;
-};
-
-type BackgroundToolDefinitionWithExecuteReturn<TInput, TOutput, TReturn> = BackgroundToolDefinition<
-  TInput,
-  TOutput
-> & {
-  execute(input: TInput, ctx: ToolContext, task: TaskExec): TReturn;
 };
 
 /**
@@ -270,33 +328,6 @@ type BackgroundToolDefinitionWithExecuteReturn<TInput, TOutput, TReturn> = Backg
  * stamps a brand that lifecycle code validates; it rejects raw object literals.
  */
 export function defineTool<
-  TSchema extends StandardSchemaV1<unknown, unknown> | StandardJSONSchemaV1<unknown, unknown>,
-  TReturn,
->(definition: {
-  description: BackgroundToolDefinition<unknown, unknown>["description"];
-  execution: "background";
-  inputSchema: TSchema;
-  outputSchema?: PublicToolDefinition<unknown, TaskReceipt>["outputSchema"];
-  execute(input: StandardSchemaV1.InferOutput<TSchema>, ctx: ToolContext, task: TaskExec): TReturn;
-  label?: BackgroundToolDefinition<
-    StandardSchemaV1.InferOutput<TSchema>,
-    BackgroundToolOutputFromExecuteReturn<TReturn>
-  >["label"];
-  approval?: BackgroundToolDefinition<StandardSchemaV1.InferOutput<TSchema>, unknown>["approval"];
-  approvalKey?: BackgroundToolDefinition<
-    StandardSchemaV1.InferOutput<TSchema>,
-    unknown
-  >["approvalKey"];
-  toModelOutput?: BackgroundToolDefinition<
-    unknown,
-    BackgroundToolOutputFromExecuteReturn<TReturn>
-  >["toModelOutput"];
-}): BackgroundToolDefinitionWithExecuteReturn<
-  StandardSchemaV1.InferOutput<TSchema>,
-  BackgroundToolOutputFromExecuteReturn<TReturn>,
-  TReturn
->;
-export function defineTool<
   TInputSchema extends StandardSchemaV1<unknown, unknown> | StandardJSONSchemaV1<unknown, unknown>,
   TOutputSchema extends StandardJSONSchemaV1<unknown, unknown>,
   TReturn extends
@@ -305,6 +336,7 @@ export function defineTool<
     | AsyncIterable<StandardJSONSchemaV1.InferOutput<TOutputSchema>>,
 >(definition: {
   description: ToolDefinition<unknown, unknown>["description"];
+  endsTurn?: ToolDefinition<unknown, StandardJSONSchemaV1.InferOutput<TOutputSchema>>["endsTurn"];
   inputSchema: TInputSchema;
   outputSchema: TOutputSchema;
   execute(input: StandardSchemaV1.InferOutput<TInputSchema>, ctx: ToolContext): TReturn;
@@ -328,6 +360,7 @@ export function defineTool<
   TReturn,
 >(definition: {
   description: ToolDefinition<unknown, unknown>["description"];
+  endsTurn?: ToolDefinition<unknown, ToolOutputFromExecuteReturn<TReturn>>["endsTurn"];
   inputSchema: TSchema;
   outputSchema?: JsonObject;
   execute(input: StandardSchemaV1.InferOutput<TSchema>, ctx: ToolContext): TReturn;
@@ -351,6 +384,7 @@ export function defineTool<
     | AsyncIterable<StandardJSONSchemaV1.InferOutput<TOutputSchema>>,
 >(definition: {
   description: ToolDefinition<unknown, unknown>["description"];
+  endsTurn?: ToolDefinition<unknown, StandardJSONSchemaV1.InferOutput<TOutputSchema>>["endsTurn"];
   inputSchema: JsonObject;
   outputSchema: TOutputSchema;
   execute(input: Record<string, unknown>, ctx: ToolContext): TReturn;
@@ -371,6 +405,7 @@ export function defineTool<
 >;
 export function defineTool<TReturn>(definition: {
   description: ToolDefinition<unknown, unknown>["description"];
+  endsTurn?: ToolDefinition<unknown, ToolOutputFromExecuteReturn<TReturn>>["endsTurn"];
   inputSchema: JsonObject;
   outputSchema?: JsonObject;
   execute(input: Record<string, unknown>, ctx: ToolContext): TReturn;
@@ -387,8 +422,8 @@ export function defineTool<TInput = unknown, TOutput = unknown>(
   definition: ToolDefinition<TInput, TOutput>,
 ): ToolDefinition<TInput, TOutput>;
 export function defineTool<TInput = unknown, TOutput = unknown>(
-  definition: ToolDefinition<TInput, TOutput> | BackgroundToolDefinition<TInput, TOutput>,
-): ToolDefinition<TInput, TOutput> | BackgroundToolDefinition<TInput, TOutput> {
+  definition: ToolDefinition<TInput, TOutput>,
+): ToolDefinition<TInput, TOutput> {
   return stampToolDefinition(definition, "defineTool");
 }
 
@@ -397,9 +432,9 @@ export function stampToolDefinition<
     readonly description: string;
     readonly inputSchema?: unknown;
     readonly outputSchema?: unknown;
-    readonly execute: (...args: never[]) => unknown;
+    readonly execute?: (...args: never[]) => unknown;
     readonly label?: ToolLabelDefinition;
-    readonly approval?: Approval<never>;
+    readonly approval?: ToolApproval<never>;
     readonly approvalKey?: (...args: never[]) => unknown;
     readonly toModelOutput?: (...args: never[]) => unknown;
   },

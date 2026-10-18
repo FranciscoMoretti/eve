@@ -82,7 +82,7 @@ describe("createSession", () => {
       continuationToken: "root-token",
       outputSchema,
       sessionId: "sess-root",
-      turnAgent: createTestTurnAgent({ outputSchema, reasoning: "high" }),
+      turnAgent: createTestTurnAgent({ reasoning: "high" }),
     });
 
     expect(session.agent.compactionModelReference).toEqual({ id: "summary-model" });
@@ -107,7 +107,7 @@ describe("createSession", () => {
       continuationToken: "root-token",
       sessionId: "sess-root",
       turnAgent: createTestTurnAgent({
-        availableSkills: [{ description: "Research topics.", name: "research" }],
+        listedSkills: [{ description: "Research topics.", name: "research" }],
       }),
     });
 
@@ -151,16 +151,6 @@ describe("createSession", () => {
       }),
     });
     expect(refreshed.history).toEqual([
-      { content: "Pinned tenant policy.", kind: "user", role: "user" },
-    ]);
-
-    const hydrated = hydrateDurableSession({
-      durable: projectToDurableSession(refreshed),
-      turnAgent: createTestTurnAgent({
-        initialMessages: [{ content: "Another deployment policy.", kind: "user", role: "user" }],
-      }),
-    });
-    expect(hydrated.history).toEqual([
       { content: "Pinned tenant policy.", kind: "user", role: "user" },
     ]);
   });
@@ -296,7 +286,6 @@ describe("createSession", () => {
       durable: {
         agent: { system: "You are a helpful assistant." },
         continuationToken: "root-token",
-        history: [],
         sessionId: "sess-root",
       },
       turnAgent: createTestTurnAgent(),
@@ -310,7 +299,6 @@ describe("createSession", () => {
       durable: {
         agent: { system: "You are a helpful assistant." },
         continuationToken: "subagent-token",
-        history: [],
         limits: {},
         rootSessionId: "sess-root",
         sessionId: "sess-child",
@@ -324,11 +312,6 @@ describe("createSession", () => {
   });
 
   it("persists run outputSchema through durable session projection and hydration", () => {
-    const agentOutputSchema = {
-      properties: { ignored: { type: "string" } },
-      required: ["ignored"],
-      type: "object",
-    } as const;
     const runOutputSchema = {
       properties: { title: { type: "string" } },
       required: ["title"],
@@ -338,42 +321,17 @@ describe("createSession", () => {
       continuationToken: "root-token",
       outputSchema: runOutputSchema,
       sessionId: "sess-root",
-      turnAgent: createTestTurnAgent({ outputSchema: agentOutputSchema }),
+      turnAgent: createTestTurnAgent(),
     });
 
     const durable = projectToDurableSession(session);
     const hydrated = hydrateDurableSession({
       durable,
-      turnAgent: createTestTurnAgent({ outputSchema: agentOutputSchema }),
+      turnAgent: createTestTurnAgent(),
     });
 
     expect(durable.outputSchema).toEqual(runOutputSchema);
     expect(hydrated.outputSchema).toEqual(runOutputSchema);
-  });
-
-  it("retains birth provider identity through durable projection and hydration", () => {
-    const localSandboxIdentity = {
-      version: 1,
-      sessionId: "sess-root",
-      backendName: "microsandbox",
-      appRoot: "/local/worker",
-    } as const;
-    const session = {
-      ...createSession({
-        continuationToken: "root-token",
-        sessionId: "sess-root",
-        turnAgent: createTestTurnAgent(),
-      }),
-      localSandboxIdentity,
-    };
-    const durable = projectToDurableSession(session);
-    expect(durable.localSandboxIdentity).toEqual(localSandboxIdentity);
-    expect(
-      hydrateDurableSession({
-        durable: JSON.parse(JSON.stringify(durable)),
-        turnAgent: createTestTurnAgent(),
-      }).localSandboxIdentity,
-    ).toEqual(localSandboxIdentity);
   });
 
   it("persists delegated root lineage through durable session projection and hydration", () => {

@@ -181,7 +181,7 @@ async function writeRuntimeLoaderSubagentFixture(agentRoot: string): Promise<voi
     ].join("\n"),
   );
   await writeFile(
-    join(researcherRoot, "tools", "search.mjs"),
+    join(researcherRoot, "tools", "lookup.mjs"),
     [
       'import { createSearchResponse } from "../lib/search-response.mjs";',
       "",
@@ -190,7 +190,12 @@ async function writeRuntimeLoaderSubagentFixture(agentRoot: string): Promise<voi
   );
   await writeFile(
     join(researcherRoot, "sandbox", "sandbox.mjs"),
-    ["export default {};\n"].join("\n"),
+    [
+      'import { DefaultSandbox, defineSandbox } from "eve/sandbox";',
+      "export const environment = DefaultSandbox.environment();",
+      "export default defineSandbox(() => environment.open());",
+      "",
+    ].join("\n"),
   );
 }
 
@@ -415,11 +420,12 @@ describe("runtime compiled artifact loaders", () => {
     expect(resolvedChannel.urlPath).toBe("/slack");
     expect(typeof resolvedChannel.fetch).toBe("function");
     expect(resolvedAgent.channels.filter((channel) => channel.name === "slack")).toHaveLength(1);
-    // The runtime module map excludes compile-only config, instructions,
-    // skills, and prompt schedules while retaining executable entries.
+    // The schedule wrapper loads its authored source to distinguish static
+    // schedules from collections; static schedules still execute via Cron.
     const rootModuleIds = Object.keys(moduleMap.nodes[ROOT_COMPILED_AGENT_NODE_ID]?.modules ?? {});
     expect(rootModuleIds.filter((moduleId) => !moduleId.startsWith("eve:"))).toEqual([
       "channels/slack.mjs",
+      "schedules/daily-digest.mjs",
       "tools/get_weather.mjs",
     ]);
     expect(rootModuleIds.some((moduleId) => moduleId.startsWith("eve:"))).toBe(true);
@@ -545,7 +551,7 @@ describe("runtime compiled artifact loaders", () => {
     ]);
     const researcherModuleIds = Object.keys(moduleMap.nodes["subagents/researcher"]?.modules ?? {});
     expect(researcherModuleIds.filter((moduleId) => !moduleId.startsWith("eve:defaults:"))).toEqual(
-      ["sandbox/sandbox.mjs", "tools/search.mjs"],
+      ["sandbox/sandbox.mjs", "tools/lookup.mjs"],
     );
     expect(researcherModuleIds.some((moduleId) => moduleId.startsWith("eve:defaults:"))).toBe(true);
     expect(researcherNode?.agent.instructions).toEqual([
@@ -574,7 +580,7 @@ describe("runtime compiled artifact loaders", () => {
     ).toBe(false);
     await expect(
       researcherNode?.agent.tools
-        .find((tool) => tool.name === "search")
+        .find((tool) => tool.name === "lookup")
         ?.execute?.({ query: "climate" }, { messages: [], toolCallId: "call_1" }),
     ).resolves.toEqual({
       query: "climate",

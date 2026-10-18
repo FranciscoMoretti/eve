@@ -66,10 +66,12 @@ function buildSummaryArtifact(summary: EveEvalRunSummary): Record<string, unknow
       status: result.result.status,
       assertions: result.assertions.map((a) => ({
         name: a.name,
+        key: a.key,
         score: a.score,
         severity: a.severity,
         threshold: a.threshold,
         passed: a.passed,
+        errored: a.errored,
         message: a.message,
         metadata: a.metadata,
       })),

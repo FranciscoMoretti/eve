@@ -74,6 +74,7 @@ describe("applyWorkflowTransform", () => {
 
   it.each([
     ["workflowEntry", "src/execution/session/entry.ts"],
+    ["connectionEventWorkflow", "src/runtime/connections/events/workflow.ts"],
     ["turnWorkflow", "src/execution/legacy-session/turn-workflow.ts"],
   ])("keeps %s stable across package versions and source moves", async (name, filename) => {
     const transformed = await applyWorkflowTransform(
@@ -96,7 +97,7 @@ describe("applyWorkflowTransform", () => {
     const transformed = await applyWorkflowTransform(
       filename,
       [
-        "export async function subagentToolExecuteWorkflow(): Promise<void> {",
+        "export async function agentToolServeWorkflow(): Promise<void> {",
         '  "use workflow";',
         "}",
         "",
@@ -106,18 +107,16 @@ describe("applyWorkflowTransform", () => {
       resolvePackageRoot(),
     );
 
-    expect(transformed.workflowManifest.workflows?.[filename]?.subagentToolExecuteWorkflow).toEqual(
-      {
-        workflowId: "workflow//eve//subagentToolExecuteWorkflow",
-      },
-    );
+    expect(transformed.workflowManifest.workflows?.[filename]?.agentToolServeWorkflow).toEqual({
+      workflowId: "workflow//eve//agentToolServeWorkflow",
+    });
     expect(transformed.code).toContain(
-      'globalThis.__private_workflows.set("workflow//eve//subagentToolExecuteWorkflow", subagentToolExecuteWorkflow);',
+      'globalThis.__private_workflows.set("workflow//eve//agentToolServeWorkflow", agentToolServeWorkflow);',
     );
   });
 
   it("stamps versioned package workflow metadata without consuming the framework body", async () => {
-    const filename = "src/execution/tools/sleep.ts";
+    const filename = "src/tools/provided/sleep-workflow.ts";
     const transformed = await applyWorkflowTransform(
       filename,
       [

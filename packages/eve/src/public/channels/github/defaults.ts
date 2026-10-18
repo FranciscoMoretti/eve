@@ -1,3 +1,10 @@
+import type { SandboxNetworkPolicy } from "#shared/sandbox-network-policy.js";
+import type { SandboxSession } from "#shared/sandbox-session.js";
+type NetworkPolicySandboxSession = SandboxSession & {
+  setNetworkPolicy(policy: SandboxNetworkPolicy): Promise<void>;
+};
+import { promptQueueEvents } from "#channel/prompt-queue.js";
+import { renderTextInputRequest } from "#channel/resolve-text.js";
 import type { SessionAuthContext } from "#channel/types.js";
 
 import { createLogger, extractErrorId, formatErrorHint, logError } from "#internal/logging.js";
@@ -13,12 +20,14 @@ import {
 } from "#public/channels/github/inbound.js";
 import type {
   GitHubChannelEvents,
+  GitHubEventContext,
   GitHubInboundContext,
   GitHubInboundResult,
   GitHubProgressConfig,
 } from "#public/channels/github/githubChannel.js";
 import { splitGitHubCommentBody } from "#public/channels/github/limits.js";
 import type { SessionContext } from "#public/definitions/callback-context.js";
+import type { RuntimeSandboxSession } from "#shared/sandbox-session.js";
 import type { InputRequest } from "#shared/input.js";
 
 const log = createLogger("github.defaults");
@@ -52,7 +61,7 @@ export function defaultGitHubAuth(ctx: GitHubInboundContext): SessionAuthContext
 }
 
 /** Options used by the built-in GitHub comment dispatch hook. */
-export interface GitHubDefaultDispatchOptions {
+interface GitHubDefaultDispatchOptions {
   readonly botName?: GitHubBotNameResolver;
 }
 
@@ -75,7 +84,7 @@ export async function defaultOnComment(
 }
 
 /** Options used by built-in GitHub event handlers. */
-export interface GitHubDefaultEventOptions {
+interface GitHubDefaultEventOptions {
   readonly api?: GitHubApiOptions;
   readonly botName?: GitHubBotNameResolver;
   readonly credentials?: GitHubChannelCredentials;
@@ -84,6 +93,13 @@ export interface GitHubDefaultEventOptions {
 
 /** Builds GitHub's built-in event handlers for acknowledgement and terminal output. */
 export function createDefaultEvents(options: GitHubDefaultEventOptions = {}): GitHubChannelEvents {
+  async function showPrompt(channel: GitHubEventContext, request: InputRequest): Promise<void> {
+    const sections = [renderInputRequest(request)];
+    const replyInstruction = renderReplyInstruction(request, await options.botName?.());
+    if (replyInstruction !== undefined) sections.push(replyInstruction);
+    await postCommentChunks(channel, sections.join("\n\n"));
+  }
+
   return {
     async "turn.started"(_event, channel, ctx) {
       if (options.progress?.reactions !== false) {
@@ -102,13 +118,8 @@ export function createDefaultEvents(options: GitHubDefaultEventOptions = {}): Gi
       await postCommentChunks(channel, event.message);
     },
 
-    async "input.requested"(event, channel, _ctx) {
-      if (event.requests.length === 0) return;
-      const sections = event.requests.map(renderInputRequest);
-      const replyInstruction = renderReplyInstruction(event.requests, await options.botName?.());
-      if (replyInstruction !== undefined) sections.push(replyInstruction);
-      await postCommentChunks(channel, sections.join("\n\n"));
-    },
+    // A comment can only answer the prompt it sees, so prompts post one at a time.
+    ...promptQueueEvents(showPrompt),
 
     async "session.failed"(event, channel) {
       const hint = formatErrorHint(event);
@@ -123,6 +134,7 @@ export function createDefaultEvents(options: GitHubDefaultEventOptions = {}): Gi
     },
 
     async "turn.failed"(event, channel, _ctx) {
+      if (event.terminal) return;
       const hint = formatErrorHint(event);
       const errorId = extractErrorId(event.details);
       const message = [
@@ -137,32 +149,21 @@ export function createDefaultEvents(options: GitHubDefaultEventOptions = {}): Gi
 }
 
 function renderInputRequest(request: InputRequest): string {
-  const lines = [request.prompt];
-  if (request.options !== undefined && request.options.length > 0) {
-    lines.push(
-      "",
-      ...request.options.map((option, index) => {
-        const description = option.description ? ` - ${option.description}` : "";
-        return `${index + 1}. ${option.label}${description}`;
-      }),
-    );
-  }
-  if (request.allowFreeform === true) {
-    lines.push("", "You can also reply with a custom answer.");
-  }
-  return lines.join("\n");
+  const body = renderTextInputRequest(request);
+  return request.allowFreeform === true
+    ? `${body}\n\nYou can also reply with a custom answer.`
+    : body;
 }
 
 // The default onComment hook only dispatches comments that @mention the bot,
 // so a prompt without this instruction invites replies that are silently ignored.
 function renderReplyInstruction(
-  requests: readonly InputRequest[],
+  request: InputRequest,
   botName: string | undefined,
 ): string | undefined {
   const name = botName?.trim();
   if (!name) return undefined;
-  const firstOption = requests.find((request) => (request.options?.length ?? 0) > 0)?.options?.[0];
-  const example = firstOption?.label ?? "<your answer>";
+  const example = request.options?.[0]?.label ?? "<your answer>";
   return `Answer by mentioning me in a reply, e.g. \`@${name} ${example}\`.`;
 }
 
@@ -174,20 +175,26 @@ async function checkoutRepositoryForTurn(
   const { state } = channel;
   try {
     const sandbox = await ctx.getSandbox();
-    const checkout = await checkoutGitHubRepository(sandbox, {
-      api: options.api,
-      baseRef: state.baseRef,
-      baseSha: state.baseSha,
-      credentials: options.credentials,
-      defaultBranch: state.defaultBranch,
-      headRef: state.headRef,
-      headSha: state.headSha,
-      includeBase: state.pullRequestNumber !== null,
-      installationId: state.installationId,
-      owner: state.owner,
-      pullRequestNumber: state.pullRequestNumber,
-      repo: state.repo,
-    });
+    if (!("setNetworkPolicy" in sandbox)) {
+      throw new Error("GitHub checkout requires a sandbox provider with mutable network policy.");
+    }
+    const checkout = await checkoutGitHubRepository(
+      sandbox as RuntimeSandboxSession & NetworkPolicySandboxSession,
+      {
+        api: options.api,
+        baseRef: state.baseRef,
+        baseSha: state.baseSha,
+        credentials: options.credentials,
+        defaultBranch: state.defaultBranch,
+        headRef: state.headRef,
+        headSha: state.headSha,
+        includeBase: state.pullRequestNumber !== null,
+        installationId: state.installationId,
+        owner: state.owner,
+        pullRequestNumber: state.pullRequestNumber,
+        repo: state.repo,
+      },
+    );
     state.checkoutPath = checkout.path;
     state.headSha = checkout.sha;
     state.baseRef = checkout.baseRef;

@@ -1,7 +1,9 @@
 import {
-  getVercelSandboxCredentials,
   getVercelSandboxFetch,
+  resolveVercelSandboxCredentials,
 } from "#execution/sandbox/bindings/vercel-credentials.js";
+import { isVercelSandboxMissingError } from "#execution/sandbox/bindings/vercel-errors.js";
+import { errorMessage } from "#execution/sandbox/bindings/vercel-options.js";
 import type {
   VercelCreateOptions,
   VercelGetOptions,
@@ -17,7 +19,7 @@ export async function getNamedVercelSandbox(input: {
   try {
     return await input.sandboxModule.Sandbox.get(await getVercelSandboxGetOptions(input));
   } catch (error) {
-    if (isSandboxMissingError(error)) {
+    if (isVercelSandboxMissingError(error)) {
       return null;
     }
 
@@ -34,50 +36,11 @@ async function getVercelSandboxGetOptions(input: {
   readonly createOptions: VercelCreateOptions;
   readonly sandboxName: string;
 }): Promise<VercelGetOptions> {
-  const baseOptions = {
+  return {
+    ...(await resolveVercelSandboxCredentials(input.createOptions)),
     fetch: getVercelSandboxFetch(input.createOptions),
     name: input.sandboxName,
     resume: false,
+    signal: input.createOptions.signal,
   };
-
-  try {
-    const credentials = await getVercelSandboxCredentials(input.createOptions);
-    return {
-      ...baseOptions,
-      ...credentials,
-      signal: input.createOptions.signal,
-    } as VercelGetOptions;
-  } catch {
-    return baseOptions;
-  }
-}
-
-function isSandboxMissingError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const status =
-    (error as { response?: { status?: number } }).response?.status ??
-    (error as { cause?: { response?: { status?: number } } }).cause?.response?.status;
-
-  return status === 404;
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const responseJson = (error as { readonly json?: unknown }).json;
-    const responseText = (error as { readonly text?: unknown }).text;
-    const responseBody =
-      typeof responseText === "string" && responseText.length > 0
-        ? responseText
-        : responseJson !== undefined
-          ? JSON.stringify(responseJson)
-          : undefined;
-    if (responseBody !== undefined) {
-      return `${error.message}: ${responseBody}`;
-    }
-    return error.message;
-  }
-  return String(error);
 }

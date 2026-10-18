@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_CONNECT_PACKAGE_VERSION, resolveVersionToken } from "./version-tokens.js";
+import { resolveVersionToken } from "./version-tokens.js";
 
 // These tests always execute from the dev tree (vitest runs over src), so the
 // fallback's sources — eve's package.json and the workspace catalog — are the
@@ -14,11 +14,6 @@ describe("resolveVersionToken", () => {
   it("returns stamped values untouched", () => {
     expect(resolveVersionToken("connectPackageVersion", "0.2.2")).toBe("0.2.2");
     expect(resolveVersionToken("evePackage.version", "1.0.0-beta.3")).toBe("1.0.0-beta.3");
-  });
-
-  it("uses a concrete default Connect version", () => {
-    expect(DEFAULT_CONNECT_PACKAGE_VERSION).toBe("2.2.0");
-    expect(DEFAULT_CONNECT_PACKAGE_VERSION).not.toMatch(/^__/);
   });
 
   it("resolves eve runtime and dependency version tokens from eve's own package.json", () => {

@@ -1,54 +1,76 @@
-import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
-import type {
-  WorkflowToolRunMessage,
-  WorkflowToolRunOutcomeMessage,
-  WorkflowToolRunRequestMessage,
-} from "#execution/tools/workflow/messages.js";
-import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
-import type { SessionStateCursor } from "#execution/session/state-cursor.js";
-import { applyTaskAgentRequest } from "#execution/tools/subagent/task-agent-requests.js";
-import { cancelAgentInvocationOwnerStep } from "#execution/tools/subagent/task-cancel.js";
-import { releaseAgentInvocationOwnerStep } from "#execution/tools/subagent/invoke-step.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import { deliverWorkflowAuthorization } from "#execution/tools/workflow/owner.js";
+import type { AppliedRunMessage } from "#execution/tools/workflow/apply-run-messages-step.js";
 import {
-  workflowToolRunOutcomeToSubagentResult,
+  runMessageBatchBudget,
+  type WorkflowToolAskRequest,
+  type WorkflowToolRunMessage,
+  type WorkflowToolRunOutcomeMessage,
+  type WorkflowToolRunRequestMessage,
+  type WorkflowToolRunWithdrawMessage,
+} from "#execution/tools/workflow/messages.js";
+import {
+  withdrawFinishedRunQuestionsStep,
+  withdrawWorkflowToolRunQuestionStep,
+} from "#execution/tools/workflow/withdraw-step.js";
+import type { SessionStateCursor } from "#execution/session/state-cursor.js";
+import { isWorkflowMessage, type SessionInboxReader } from "#execution/session-inbox/inbox.js";
+import { isTaskRunMessage } from "#execution/tasks/session.js";
+import {
   workflowToolRunOutcomeToToolResult,
   workflowToolRunRequestToInputRequestPayload,
 } from "#execution/tools/workflow/owner-inbox.js";
 import {
-  findWorkflowToolRun,
-  isInboxSubagentResultFromRecordedWorkflowToolRun,
+  findBlockingWorkflowToolRun,
   isInboxToolResultFromRecordedWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
-import type {
-  RuntimeActionResult,
-  RuntimeSubagentResult,
-  RuntimeToolResultActionResult,
-} from "#shared/action-types.js";
+import type { WorkflowAskRoute } from "#harness/hitl/relays.js";
+import type { RuntimeActionResult } from "#shared/action-types.js";
 
 interface HandlerInput<T> {
-  readonly callbackMetadataUrl: string;
   readonly cursor: SessionStateCursor;
   readonly message: T;
 }
 
+export function isAppliedRunMessage(message: WorkflowToolRunMessage): message is AppliedRunMessage {
+  return message.kind === "agent-started" || message.kind === "report" || isTaskRunMessage(message);
+}
+
+/**
+ * Removes the applied run messages at the front of the inbox, in arrival
+ * order, while `admits` takes them. One batch's caller passes its budget on.
+ */
+export function takeLeadingAppliedRunMessages(
+  inbox: SessionInboxReader,
+  admits = runMessageBatchBudget(),
+): AppliedRunMessage[] {
+  return inbox.takeLeading(
+    (payload): payload is AppliedRunMessage =>
+      isWorkflowMessage(payload) && isAppliedRunMessage(payload) && admits(payload),
+  );
+}
+
+/**
+ * Handles a run message the session does not apply as it reads it: a
+ * question, its withdrawal, or an `execute` run's outcome.
+ */
 export async function handleWorkflowToolRunMessage(
-  input: HandlerInput<WorkflowToolRunMessage>,
+  input: HandlerInput<Exclude<WorkflowToolRunMessage, AppliedRunMessage>>,
 ): Promise<RuntimeActionResult | undefined> {
   const { message } = input;
   switch (message.kind) {
+    // Only task runs report started, reply, or usage, and the session applies those as it reads them.
+    case "started":
+    case "reply":
+    case "usage":
+      return undefined;
     case "outcome":
       return await handleWorkflowToolRunOutcome({ ...input, message });
     case "request":
       await handleWorkflowToolRunRequest({ ...input, message });
       return undefined;
-    case "report":
-      await emitWorkflowToolRunReportStep({
-        from: message.from,
-        sessionWritable: input.cursor.sessionWritable,
-        update: message.update,
-      });
+    case "withdraw":
+      await handleWorkflowToolRunWithdraw({ ...input, message });
       return undefined;
   }
 }
@@ -56,66 +78,23 @@ export async function handleWorkflowToolRunMessage(
 /**
  * Settles a workflow tool run outcome against the turn's recorded runs and
  * returns the runtime action result the turn should accept, or `undefined`
- * when the outcome does not bind to a run this turn owns.
+ * when the outcome does not bind to a run this turn owns. Requests the run
+ * relayed are withdrawn first, since nobody can answer them anymore.
  */
 async function handleWorkflowToolRunOutcome(
   input: HandlerInput<WorkflowToolRunOutcomeMessage>,
 ): Promise<RuntimeActionResult | undefined> {
   const { cursor, message } = input;
-  const recorded = findWorkflowToolRun(
-    cursor.sessionState.snapshot.session.state,
-    message.from.callId,
-  );
-  if (recorded?.runId !== message.from.runId) return undefined;
+  const state = cursor.sessionState.snapshot.session.state;
+  const recorded = findBlockingWorkflowToolRun(state, message.from.callId, message.from.turnId);
+  if (recorded?.address.runId !== message.from.runId) return undefined;
 
-  const result: RuntimeSubagentResult | RuntimeToolResultActionResult =
-    recorded.resultKind === "subagent"
-      ? await settleSubagentOutcome(input)
-      : workflowToolRunOutcomeToToolResult(message);
+  const result = workflowToolRunOutcomeToToolResult(message);
+  if (!isInboxToolResultFromRecordedWorkflowToolRun(state, result)) return undefined;
 
-  // Any workflow tool run may have invoked agents through its request channel,
-  // so leases are released regardless of the run's result kind.
-  await cancelAgentInvocationOwnerStep({
-    ownerId: message.from.runId,
-    serializedContext: cursor.serializedContext,
-    sessionState: cursor.sessionState,
-  });
-  const released = await releaseAgentInvocationOwnerStep({
-    cancelled: message.result.status === "cancelled",
-    ownerId: message.from.runId,
-    sessionState: cursor.sessionState,
-  });
-  await cursor.apply({
-    serializedContext: cursor.serializedContext,
-    sessionState: released.sessionState,
-  });
-
-  const sessionSnapshotState = cursor.sessionState.snapshot.session.state;
-  const accepted =
-    result.kind === "subagent-result"
-      ? result.callId === message.from.callId &&
-        isInboxSubagentResultFromRecordedWorkflowToolRun(sessionSnapshotState, result)
-      : isInboxToolResultFromRecordedWorkflowToolRun(sessionSnapshotState, result);
-  return accepted ? result : undefined;
-}
-
-async function settleSubagentOutcome(
-  input: HandlerInput<WorkflowToolRunOutcomeMessage>,
-): Promise<RuntimeSubagentResult> {
-  const { cursor, message } = input;
-  const result = workflowToolRunOutcomeToSubagentResult(message);
-  if (result.origin === "child") {
-    await cursor.apply(
-      await applyTaskAgentRequest(
-        {
-          accumulateUsage: false,
-          ownerId: message.from.runId,
-          replyTo: message.from.runId,
-          request: { kind: "agent-settled", result },
-        },
-        requestContext(input),
-      ),
-    );
+  if (cursor.sessionState.hasProxyInputRequests) {
+    const { runId } = message.from;
+    await cursor.advance((current) => withdrawFinishedRunQuestionsStep({ ...current, runId }));
   }
   return result;
 }
@@ -124,76 +103,46 @@ async function handleWorkflowToolRunRequest(
   input: HandlerInput<WorkflowToolRunRequestMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  if (message.request.kind === "agent-invoke" || message.request.kind === "agent-settled") {
-    const recorded = findWorkflowToolRun(
-      cursor.sessionState.snapshot.session.state,
-      message.from.callId,
-    );
-    if (recorded?.runId !== message.from.runId) {
-      if (message.request.kind === "agent-invoke") {
-        await resumeHookStep(message.replyTo, {
-          kind: "runtime-action-result",
-          results: [
-            {
-              callId: message.request.invocationId,
-              isError: true,
-              kind: "subagent-result",
-              origin: "dispatch",
-              output: {
-                code: "AGENT_INVOCATION_NOT_ADMITTED",
-                message: "The workflow tool run no longer owns this agent invocation.",
-              },
-              subagentName: message.request.input.target,
-            },
-          ],
-        });
-      }
-      return;
-    }
-    await cursor.apply(
-      await applyTaskAgentRequest(
-        {
-          accumulateUsage: message.from.resultKind !== "subagent",
-          ownerId: message.from.runId,
-          replyTo: message.replyTo,
-          request: message.request,
-        },
-        requestContext(input),
-      ),
-    );
-    return;
-  }
   if (message.request.kind === "authorization-request") {
-    await cursor.apply(
-      await runProxySubagentEventStep({
-        hookPayload: message.request.event,
-        sessionWritable: cursor.sessionWritable,
-        serializedContext: cursor.serializedContext,
-        sessionState: cursor.sessionState,
-      }),
-    );
-    if (message.request.event.childSessionId === message.from.runId)
-      await resumeHookStep(message.replyTo, null, { ifPresent: true });
+    const request = message.request;
+    await deliverWorkflowAuthorization({ ...message, request }, async () => {
+      await cursor.advance((state) =>
+        runProxySubagentEventStep({ hookPayload: request.event, ...state }),
+      );
+    });
     return;
   }
-  await cursor.apply(
-    await runProxySubagentEventStep({
-      ...(message.requestCoordinates === undefined
-        ? { answerHook: { runId: message.from.runId } }
-        : {}),
+  await cursor.advance((state) =>
+    runProxySubagentEventStep({
+      ...(message.request.kind === "ask" && {
+        workflowAsk: createWorkflowAskRoute(message.request),
+      }),
       hookPayload: workflowToolRunRequestToInputRequestPayload(message),
-      sessionWritable: cursor.sessionWritable,
-      serializedContext: cursor.serializedContext,
-      sessionState: cursor.sessionState,
+      runId: message.from.runId,
+      ...state,
     }),
   );
 }
 
-function requestContext(input: HandlerInput<unknown>) {
-  return {
-    callbackBaseUrl: resolveWorkflowCallbackBaseUrl(input.callbackMetadataUrl),
-    sessionWritable: input.cursor.sessionWritable,
-    serializedContext: input.cursor.serializedContext,
-    sessionState: input.cursor.sessionState,
-  };
+/**
+ * A run asks to withdraw a `ctx.ask()` question. The session decides: it
+ * withdraws the question unless it already accepted an answer or stopped
+ * offering it, and tells the run either way.
+ */
+async function handleWorkflowToolRunWithdraw(
+  input: HandlerInput<WorkflowToolRunWithdrawMessage>,
+): Promise<void> {
+  const { cursor, message } = input;
+  await cursor.advance((state) =>
+    withdrawWorkflowToolRunQuestionStep({
+      ...state,
+      control: message.control,
+      requestId: message.replyTo,
+      runId: message.from.runId,
+    }),
+  );
+}
+
+function createWorkflowAskRoute(ask: WorkflowToolAskRequest): WorkflowAskRoute {
+  return { control: ask.control };
 }

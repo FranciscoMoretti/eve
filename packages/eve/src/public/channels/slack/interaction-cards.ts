@@ -1,4 +1,4 @@
-import { resolveSlackBotToken } from "#public/channels/slack/api.js";
+import { callSlackApi } from "#public/channels/slack/api.js";
 import { buildAnsweredBlocks, isHitlAction } from "#public/channels/slack/hitl.js";
 import {
   SLACK_CARD_SUBTEXT_MAX_LENGTH,
@@ -71,7 +71,8 @@ function actionsContainActionId(actions: unknown, actionId: string): boolean {
   return actions.some((element) => isObjectRecord(element) && element.action_id === actionId);
 }
 
-function answeredBlocksFromActionBlock(input: {
+/** Retires an answered `card` in place: same single block, buttons replaced by the answer. */
+export function answeredBlocksFromActionBlock(input: {
   readonly answerLabel: string;
   readonly block: unknown;
   readonly userId: string;
@@ -183,21 +184,16 @@ async function updateAnsweredCard(input: {
   readonly installationTeamId?: string;
   readonly messageTs: string;
 }): Promise<void> {
-  const token = await resolveSlackBotToken(input.deps.config.credentials?.botToken, {
-    teamId: input.installationTeamId,
-  });
-  const response = await fetch("https://slack.com/api/chat.update", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({
+  await callSlackApi({
+    api: input.deps.api,
+    botToken: input.deps.config.credentials?.botToken,
+    context: { teamId: input.installationTeamId },
+    operation: "chat.update",
+    body: {
       channel: input.channelId,
       ts: input.messageTs,
       blocks: input.blocks,
       text: `Answered: ${input.answerLabel}`,
-    }),
+    },
   });
-  if (!response.ok) throw new Error(`Slack chat.update returned HTTP ${response.status}`);
 }

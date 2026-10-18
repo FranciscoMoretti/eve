@@ -14,6 +14,7 @@ export default defineSchedule({
     const session = await to(updates, {}).send("Prepare the daily summary.", { auth: appAuth });
     const result = await session.send("Include yesterday's activity.", {
       auth: appAuth,
+      title: "Daily summary",
       turnPolicy: "queue",
     });
     if (result.status === "session_not_active") return;

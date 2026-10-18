@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { GitHubCredentialProvider, GitHubRepository } from "./config.js";
+import type { GitHubCredentialProvider, GitHubRepository } from "./remote/config.js";
 import type { PreparedSelfModificationWorkspace } from "./git-workspace.js";
 import { assertFullSha, assertGitRef, assertOperationId } from "./identifiers.js";
 import {
@@ -25,7 +25,7 @@ export interface PublishedSelfModificationProposal {
   readonly deployed: false;
 }
 
-export interface GitHubDraftPublisherInput {
+interface GitHubDraftPublisherInput {
   readonly credentialProvider: GitHubCredentialProvider;
   readonly description: string;
   readonly fetch?: typeof fetch;

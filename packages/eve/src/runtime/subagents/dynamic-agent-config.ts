@@ -7,9 +7,8 @@ import {
   isDynamicModelDefinition,
   type AgentLimitsDefinition,
   type AgentReasoningDefinition,
+  type AgentToolExposure,
 } from "#shared/agent-definition.js";
-import type { JsonObject } from "#shared/json.js";
-import { serializeOutputSchema } from "#tools/schema.js";
 
 export interface DynamicSubagentAgentConfig {
   readonly compaction?: {
@@ -19,9 +18,8 @@ export interface DynamicSubagentAgentConfig {
   readonly description: string;
   readonly limits?: AgentLimitsDefinition;
   readonly model: DynamicSubagentModelReference;
-  readonly outputSchema?: JsonObject;
   readonly reasoning?: AgentReasoningDefinition;
-  readonly tool?: boolean;
+  readonly tool?: AgentToolExposure;
 }
 
 export type DynamicSubagentModelReference = RuntimeModelReference;
@@ -56,9 +54,8 @@ export async function normalizeDynamicSubagentAgentConfig(input: {
     description: string;
     limits?: AgentLimitsDefinition;
     model: DynamicSubagentModelReference;
-    outputSchema?: JsonObject;
     reasoning?: AgentReasoningDefinition;
-    tool?: boolean;
+    tool?: AgentToolExposure;
   } = {
     description: definition.description,
     model: await normalizeDurableModelSelection({
@@ -95,9 +92,6 @@ export async function normalizeDynamicSubagentAgentConfig(input: {
   }
   if (definition.limits !== undefined) {
     config.limits = definition.limits;
-  }
-  if (definition.outputSchema !== undefined) {
-    config.outputSchema = serializeOutputSchema(definition.outputSchema);
   }
   if (definition.reasoning !== undefined) {
     config.reasoning = definition.reasoning;

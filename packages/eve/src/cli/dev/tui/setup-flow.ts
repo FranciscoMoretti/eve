@@ -1,6 +1,5 @@
 import type { ChannelSetupChoice, ChannelSetupChoiceOptions } from "#setup/cli/index.js";
 import type { SearchActionOption } from "#setup/cli/select-state.js";
-import type { ModelSettingsRequest, ModelSettingsResult } from "#setup/flows/model.js";
 import type { ProviderPickerChoice, ProviderPickerRequest } from "#setup/flows/provider.js";
 import type { PlannerNavigation, SelectMetadata, SelectNotice } from "#setup/prompter.js";
 
@@ -10,14 +9,9 @@ export type SetupEditableSelectResult =
   | { kind: "selected"; value: string }
   | { kind: "edited"; value: string; text: string };
 
-/** Animation shown while a setup flow is between questions. */
-export type SetupFlowIndicator = "spinner" | "pulse";
-
-/** Ephemeral setup status, with external user action distinct from background work. */
-export type SetupFlowStatus = string | { kind: "external-action"; text: string; emphasis: string };
-
 interface SetupSelectRequestBase {
   message: string;
+  helpText?: string;
   description?: string;
   metadata?: readonly SelectMetadata[];
   options: readonly SetupPanelOption[];
@@ -75,7 +69,7 @@ export type SetupSelectResult =
 export type SetupFlowInterrupt = "escape" | "ctrl-c";
 
 export interface SetupFlowRenderer {
-  begin(title: string, indicator?: SetupFlowIndicator): void;
+  begin(title: string): void;
   /** Sets progress owned by an enclosing setup journey, independent of its active question. */
   setNavigation?(navigation: PlannerNavigation | undefined): void;
   end(options?: { preserveDiagnostics?: boolean }): void;
@@ -93,8 +87,6 @@ export interface SetupFlowRenderer {
   }): Promise<SetupEditableSelectResult | undefined>;
   /** Provider-only picker with masked async validation. Not part of Prompter. */
   readProviderPicker(options: ProviderPickerRequest): Promise<ProviderPickerChoice | undefined>;
-  /** Composite Change-model screen: catalog list, reasoning slider, tier toggle. Not part of Prompter. */
-  readModelEditor(options: ModelSettingsRequest): Promise<ModelSettingsResult | undefined>;
   readText(options: {
     message: string;
     placeholder?: string;
@@ -112,7 +104,7 @@ export interface SetupFlowRenderer {
    * whichever settles first wins.
    */
   readChoice(options: ChannelSetupChoiceOptions): ChannelSetupChoice;
-  setStatus(status: SetupFlowStatus | undefined): void;
+  setStatus(status: string | undefined): void;
   renderLine(text: string, tone: "info" | "success" | "warning" | "error"): void;
   replaceContent?(content?: {
     headline: string;

@@ -105,7 +105,7 @@ void (async () => {
     await Promise.all([
       writeFile(
         join(agentRoot, "agent.ts"),
-        'import { defineAgent } from "eve";\n\nexport default defineAgent({\n  model: "openai/gpt-5.6-luna-fast",\n});\n',
+        'import { defineAgent } from "eve";\n\nexport default defineAgent({\n  model: "spacexai/grok-4.7",\n});\n',
       ),
       writeFile(join(agentRoot, "instructions.md"), "Help Alice with her questions.\n"),
     ]);
@@ -156,7 +156,7 @@ void (async () => {
       // the first prompt only when its module graph loads — the exact surface
       // the oxc-parser regression crashed.
 
-      await screen.waitForText("Choose a connection", 15_000);
+      await screen.waitForText("Vercel Account", 15_000);
       await screen.waitForText("Anthropic API Key", 5_000);
       console.log(theme.muted("[tui-packed-install] /login opened connection setup"));
 

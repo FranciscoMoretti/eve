@@ -12,6 +12,7 @@ import {
 } from "#internal/testing/mocks/mock-channel-operations.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { teamsChannel, type TeamsChannelState } from "#public/channels/teams/index.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 function adapter(channel: unknown) {
   return asCompiled<TeamsChannelState>(channel).adapter;
@@ -88,6 +89,7 @@ async function firePost(
       method: "POST",
     }),
     {
+      ...mockAgentRouteArgs(),
       from(continuationToken) {
         return baseFrom(continuationToken);
       },
@@ -137,7 +139,6 @@ describe("teamsChannel", () => {
         caller: { type: "anonymous" },
         channel: { kind: "channel:teams" },
         environment: "production",
-        mode: "conversation",
         state: teamsAdapter.state,
       }),
     ).toBe(audience);
@@ -350,7 +351,7 @@ describe("teamsChannel", () => {
       ctx,
     );
 
-    expect(ctx.state.pendingApprovalCards).toEqual({});
+    expect(ctx.state.pendingPromptCards).toEqual({});
 
     const { send } = await firePost(channel, {
       ...baseActivity({ conversationType: "channel" }),
@@ -384,7 +385,7 @@ describe("teamsChannel", () => {
       { inputResponses: delivery.inputResponses, state: delivery.state },
       ctx,
     );
-    expect(ctx.state.pendingApprovalCards).toEqual({
+    expect(ctx.state.pendingPromptCards).toEqual({
       approval_1: { activityId: "approval-card", prompt: "Approve deployment?" },
     });
 
@@ -520,6 +521,39 @@ describe("teamsChannel", () => {
     expect(initialToken).toBe("TENANT:CONV:THREAD_ROOT");
   });
 
+  it("keeps approval bookkeeping when a sent message carries its channel state", async () => {
+    const channel = teamsChannel({ credentials: { tokenProvider: () => "token" } });
+    const send = vi.fn(async () => ({ id: "SESSION" }));
+    await channel.receive!(
+      {
+        target: {
+          conversationId: "CONV",
+          conversationType: "channel",
+          replyToActivityId: "THREAD_ROOT",
+          serviceUrl: "https://service.example/teams",
+          tenantId: "TENANT",
+        },
+        auth: null,
+        message: "Begin",
+      },
+      mockChannelContext<TeamsChannelState>(send as never),
+    );
+    const delivery = (
+      send.mock.calls[0] as unknown[]
+    )[1] as ObservedChannelDelivery<TeamsChannelState>;
+    const teamsAdapter = adapter(channel);
+    const ctx = buildAdapterContext(teamsAdapter, stubAccessor());
+    const card = { activityId: "approval-card", prompt: "Approve deployment?" };
+    const responder = { id: "USER", name: "Ada" };
+    ctx.state.pendingPromptCards = { approval_1: card };
+    ctx.state.approvalResponderAccounts = { "teams:TENANT:USER": responder };
+
+    await teamsAdapter.deliver!({ message: "Begin", state: delivery.state }, ctx);
+
+    expect(ctx.state.pendingPromptCards).toEqual({ approval_1: card });
+    expect(ctx.state.approvalResponderAccounts).toEqual({ "teams:TENANT:USER": responder });
+  });
+
   it("receive starts proactive sessions and anchors initial channel messages", async () => {
     const requests: Array<{ body: unknown; url: string }> = [];
     const channel = teamsChannel({
@@ -580,6 +614,141 @@ function messageActivity(input: { readonly conversationType: string }): Record<s
     type: "message",
   };
 }
+
+describe("teamsChannel sign-in button", () => {
+  const SIGN_IN_URL = "https://connect.example.test/a/attempt-1";
+  const required = (data: Record<string, unknown> = {}) =>
+    makeEvent("authorization.required", {
+      attemptId: "attempt-1",
+      authorization: { url: SIGN_IN_URL, userCode: "CODE-42" },
+      description: "Sign in to linear",
+      name: "linear",
+      principalId: "teams:TENANT:USER",
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn-1",
+      ...data,
+    });
+  const completed = makeEvent("authorization.completed", {
+    attemptId: "attempt-1",
+    name: "linear",
+    outcome: "declined",
+    sequence: 1,
+    stepIndex: 0,
+    turnId: "turn-1",
+  });
+
+  function sessionWith(events: readonly UnstampedMessageStreamEvent[]) {
+    return {
+      getEventStream: async () =>
+        new ReadableStream({
+          start(controller) {
+            for (const event of events) controller.enqueue(event);
+            controller.close();
+          },
+        }),
+      getStreamTailIndex: async () => events.length - 1,
+    };
+  }
+
+  function press(from: Record<string, unknown> = { id: "USER", name: "Ada" }) {
+    return {
+      ...baseActivity({ conversationType: "channel" }),
+      from,
+      name: "adaptiveCard/action",
+      type: "invoke",
+      value: {
+        action: {
+          data: {
+            eve_authorization: {
+              attemptId: "attempt-1",
+              name: "linear",
+              replyToActivityId: "THREAD_ROOT",
+            },
+          },
+          type: "Action.Execute",
+          verb: "eve.authorization.reveal",
+        },
+      },
+    };
+  }
+
+  it("answers the person signing in with a card only they see, carrying the link and code", async () => {
+    const resolveSession = vi.fn(async () => sessionWith([required()]));
+    const channel = teamsChannel({ credentials: { webhookVerifier: () => true } });
+
+    const { response } = await firePost(channel, press(), { resolveSession });
+
+    const body = await response.json();
+    expect(resolveSession).toHaveBeenCalledWith("TENANT:CONV:THREAD_ROOT");
+    expect(body).toMatchObject({ type: "application/vnd.microsoft.card.adaptive" });
+    expect(JSON.stringify(body)).toContain(SIGN_IN_URL);
+    expect(JSON.stringify(body)).toContain("CODE-42");
+  });
+
+  it.each([
+    {
+      case: "someone else presses it",
+      config: {},
+      events: [required()],
+      from: { id: "USER-BOB", name: "Bob" },
+      reply: "Only the person who needs to sign in can open this sign-in.",
+    },
+    {
+      case: "the attempt has no principal",
+      config: {},
+      events: [required({ principalId: undefined })],
+      from: undefined,
+      reply: "Only the person who needs to sign in can open this sign-in.",
+    },
+    {
+      case: "onInputResponse rejects the press",
+      config: { onInputResponse: () => null },
+      events: [required()],
+      from: undefined,
+      reply: "Only the person who needs to sign in can open this sign-in.",
+    },
+    {
+      case: "onInputResponse throws",
+      config: {
+        onInputResponse: () => {
+          throw new Error("directory lookup failed");
+        },
+      },
+      events: [required()],
+      from: undefined,
+      reply: "Only the person who needs to sign in can open this sign-in.",
+    },
+    {
+      case: "the attempt already completed",
+      config: {},
+      events: [required(), completed],
+      from: undefined,
+      reply: "This sign-in is no longer active.",
+    },
+    {
+      case: "the thread has no session",
+      config: {},
+      events: undefined,
+      from: undefined,
+      reply: "This sign-in is no longer active.",
+    },
+  ])("withholds the sign-in when $case", async ({ config, events, from, reply }) => {
+    const channel = teamsChannel({ credentials: { webhookVerifier: () => true }, ...config });
+
+    const { response } = await firePost(channel, press(from), {
+      resolveSession: async () => (events === undefined ? undefined : sessionWith(events)),
+    });
+
+    const body = await response.json();
+    expect(body).toEqual({
+      statusCode: 200,
+      type: "application/vnd.microsoft.activity.message",
+      value: reply,
+    });
+    expect(JSON.stringify(body)).not.toContain(SIGN_IN_URL);
+  });
+});
 
 function baseActivity(input: { readonly conversationType: string }): Record<string, unknown> {
   return {

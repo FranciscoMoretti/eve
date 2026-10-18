@@ -18,7 +18,6 @@ import { resolveAgent } from "#runtime/resolve-agent.js";
 import { resolveDynamicSubagentDefinition } from "#runtime/resolve-dynamic-subagent.js";
 import { loadResolvedModuleExport } from "#runtime/resolve-helpers.js";
 import { createRuntimeSandboxRegistry } from "#runtime/sandbox/registry.js";
-import { LOAD_SKILL_TOOL_NAME } from "#runtime/skills/fragment-context.js";
 import { createRuntimeSubagentRegistry } from "#runtime/subagents/registry.js";
 import { createRuntimeToolRegistry } from "#runtime/tools/registry.js";
 import { createWorkspacePromptSection } from "#runtime/workspace/spec.js";
@@ -28,6 +27,7 @@ import type {
   ResolvedRuntimeRemoteAgentNode,
   ResolvedRuntimeSubagentNode,
 } from "#runtime/types.js";
+import type { AgentToolExposure } from "#shared/agent-definition.js";
 
 /**
  * Input for resolving the compiled authored manifest and flattened module graph
@@ -135,7 +135,10 @@ async function resolveRuntimeAgentNode(
     moduleMap: input.moduleMap,
     nodeId: input.nodeId,
   });
-  const toolRegistry = await createRuntimeToolRegistry({ tools: agent.tools }, { nodeId });
+  const toolRegistry = await createRuntimeToolRegistry(
+    { tools: agent.tools },
+    { deferSelfAgent: agent.config?.tool === "deferred", nodeId },
+  );
 
   const sandboxRegistry = createRuntimeSandboxRegistry({
     sandbox: agent.sandbox,
@@ -150,10 +153,7 @@ async function resolveRuntimeAgentNode(
           .replaceAll("/", "-"),
       ];
     }),
-    reservedToolNames: [
-      LOAD_SKILL_TOOL_NAME,
-      ...toolRegistry.preparedTools.map((tool) => tool.name),
-    ],
+    reservedToolNames: toolRegistry.preparedTools.map((tool) => tool.name),
     subagents: await resolveRuntimeSubagents({
       childNodeIdsByParentNodeId: input.childNodeIdsByParentNodeId,
       manifest: input.manifest,
@@ -174,7 +174,6 @@ async function resolveRuntimeAgentNode(
     toolRegistry,
     turnAgent: createResolvedRuntimeTurnAgent({
       agent,
-      dynamicSubagentsAvailable: subagentRegistry.dynamicResolvers.length > 0,
       id: input.agentId,
       nodeId,
       tools: [...toolRegistry.preparedTools, ...subagentRegistry.preparedTools],
@@ -242,7 +241,7 @@ async function resolveRuntimeSubagent(input: {
   readonly subagentNodesById: ReadonlyMap<string, CompiledSubagentNode>;
 }): Promise<ResolvedRuntimeSubagentNode> {
   const variant:
-    | { readonly description: string; readonly dynamic?: never; readonly tool?: boolean }
+    | { readonly description: string; readonly dynamic?: never; readonly tool?: AgentToolExposure }
     | {
         readonly description?: never;
         readonly dynamic: ResolvedDynamicSubagentDefinition;
@@ -305,11 +304,10 @@ async function resolveRuntimeRemoteAgent(input: {
     logicalPath: string;
     name: string;
     nodeId: string;
-    outputSchema?: ResolvedRuntimeRemoteAgentNode["outputSchema"];
     path: string;
     sourceId: string;
     sourceKind: "module";
-    tool?: boolean;
+    tool?: AgentToolExposure;
     url: string;
   } = {
     description: input.sourceRef.description,
@@ -317,7 +315,6 @@ async function resolveRuntimeRemoteAgent(input: {
     logicalPath: input.sourceRef.logicalPath,
     name: input.sourceRef.name,
     nodeId: toRuntimeNodeId(input.sourceRef.nodeId),
-    outputSchema: input.sourceRef.outputSchema,
     path: input.sourceRef.path,
     sourceId: input.sourceRef.sourceId,
     sourceKind: "module",
@@ -401,7 +398,7 @@ function attachInheritedSandboxWorkspaceResources(input: {
   );
 
   for (const [nodeId, node] of input.nodesByNodeId) {
-    if (node.sandboxRegistry.sandbox.definition.inheritsParent !== true) continue;
+    if (node.sandboxRegistry.sandbox.definition.kind !== "parent") continue;
     if (node.agent.dynamicSkillResolvers.length > 0) {
       throw new ResolveRuntimeAgentGraphError(
         `Sandbox "${node.sandboxRegistry.sandbox.definition.logicalPath}" selects parent.sandbox but agent node "${nodeId}" defines dynamic skills. Remove the child dynamic skills or give the child its own sandbox.`,
@@ -447,7 +444,7 @@ function resolveSandboxOwnerNode(input: {
       nodeId: input.nodeId,
     });
   }
-  if (node.sandboxRegistry.sandbox.definition.inheritsParent !== true) return node;
+  if (node.sandboxRegistry.sandbox.definition.kind !== "parent") return node;
 
   const parentNodeId = input.parentNodeIdByChildNodeId.get(input.nodeId);
   if (parentNodeId === undefined) {

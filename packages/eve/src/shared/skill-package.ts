@@ -1,10 +1,19 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { mapWithConcurrency } from "#shared/map-with-concurrency.js";
 import type { SandboxSession } from "#shared/sandbox-session.js";
 import type { NamedSkillDefinition } from "#shared/skill-definition.js";
 import { resolveSandboxSkillRoot, resolveSandboxSkillWritePath } from "#shared/skill-paths.js";
+
+/**
+ * Each sandbox write is a remote round trip (Vercel Sandbox also resolves the
+ * path with a command first), so writing a package's files one at a time makes
+ * a dynamic skill's first sync cost seconds.
+ */
+const SANDBOX_WRITE_CONCURRENCY = 16;
 
 export interface NormalizedSkillPackageFile {
   readonly content: Buffer;
@@ -12,12 +21,26 @@ export interface NormalizedSkillPackageFile {
 }
 
 export interface MaterializableSkillPackage {
+  readonly deferred?: boolean;
   readonly description: string;
   readonly files: readonly NormalizedSkillPackageFile[];
   readonly license?: string;
   readonly markdown: string;
   readonly metadata?: Readonly<Record<string, string>>;
   readonly name: string;
+}
+
+export function stripSkillFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+}
+
+/** Content hash over every package file, including `SKILL.md`. */
+export function skillPackageRevision(skill: MaterializableSkillPackage): string {
+  const hash = createHash("sha256");
+  for (const file of skill.files) {
+    hash.update(`${file.relativePath}\0${file.content.byteLength}\0`).update(file.content);
+  }
+  return hash.digest("hex");
 }
 
 /**
@@ -45,6 +68,7 @@ export function normalizeSkillPackage(input: NamedSkillDefinition): Materializab
   files.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
 
   return {
+    deferred: input.deferred,
     description: input.description,
     files,
     license: input.license,
@@ -79,7 +103,7 @@ export async function writeSkillPackageToSandbox(input: {
   readonly sandbox: SandboxSession;
   readonly skill: MaterializableSkillPackage;
 }): Promise<void> {
-  for (const file of input.skill.files) {
+  await mapWithConcurrency(input.skill.files, SANDBOX_WRITE_CONCURRENCY, async (file) => {
     await input.sandbox.writeBinaryFile({
       content: file.content,
       path: await resolveSandboxSkillWritePath({
@@ -88,7 +112,7 @@ export async function writeSkillPackageToSandbox(input: {
         sandbox: input.sandbox,
       }),
     });
-  }
+  });
 }
 
 /**
@@ -112,7 +136,7 @@ export async function removeSkillPackageFromSandbox(input: {
  * Validates a runtime-contributed skill name before it becomes one path
  * segment under the sandbox skill root.
  */
-export function assertSafeSkillPackageName(name: string): void {
+function assertSafeSkillPackageName(name: string): void {
   if (
     name.length === 0 ||
     name.startsWith(".") ||

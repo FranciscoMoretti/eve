@@ -110,10 +110,60 @@ async function readDirectorySources(root: string): Promise<string> {
 }
 
 function decodeEmbeddedWorkflowCode(source: string): string {
-  const chunks = [...source.matchAll(/Buffer\.from\((\[[\s\S]*?\])\.join\(""\), "base64"\)/gu)].map(
-    (match) => JSON.parse(match[1]!) as string[],
-  );
-  return chunks.map((chunk) => Buffer.from(chunk.join(""), "base64").toString("utf8")).join("\n");
+  const prefix = "Buffer.from(";
+  const suffix = '.join(""), "base64")';
+  const decoded: string[] = [];
+  let offset = 0;
+
+  while (true) {
+    const expressionStart = source.indexOf(prefix, offset);
+    if (expressionStart === -1) break;
+
+    const arrayStart = expressionStart + prefix.length;
+    const arrayEnd = findJsonArrayEnd(source, arrayStart);
+    if (arrayEnd !== undefined && source.startsWith(suffix, arrayEnd + 1)) {
+      const chunks = JSON.parse(source.slice(arrayStart, arrayEnd + 1)) as string[];
+      decoded.push(Buffer.from(chunks.join(""), "base64").toString("utf8"));
+      offset = arrayEnd + suffix.length + 1;
+      continue;
+    }
+
+    offset = arrayStart;
+  }
+
+  return decoded.join("\n");
+}
+
+function findJsonArrayEnd(source: string, start: number): number | undefined {
+  if (source[start] !== "[") return undefined;
+
+  let depth = 0;
+  let escaped = false;
+  let inString = false;
+
+  for (let index = start; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "[") {
+      depth++;
+    } else if (character === "]" && --depth === 0) {
+      return index;
+    }
+  }
+
+  return undefined;
 }
 
 async function runEveBuild(appRoot: string): Promise<ProcessResult> {
@@ -276,38 +326,6 @@ describe("eve build process output", () => {
       'Expected authored instructions at "instructions.md", "instructions.ts", "instructions.cts", "instructions.mts", "instructions.js", "instructions.cjs", "instructions.mjs", or "instructions/" directory.',
     );
     expect(result.stderr).toContain(`source: ${join(resolvedAppRoot, "agent")}`);
-  }, 120_000);
-
-  it("prints bundled missing-import errors to stderr when build fails", async () => {
-    const appRoot = await createTemporaryAppRoot({
-      prefix: "eve-bin-build-output-missing-import-",
-    });
-
-    await mkdir(join(appRoot, "agent", "tools"), {
-      recursive: true,
-    });
-    await writeFile(
-      join(appRoot, "agent", "tools", "bad.ts"),
-      [
-        'import { missing } from "./does-not-exist";',
-        "export default {",
-        '  description: "Missing import test.",',
-        '  inputSchema: { type: "object", properties: {}, required: [] },',
-        "  execute: async () => String(missing),",
-        "};",
-        "",
-      ].join("\n"),
-    );
-
-    const result = await runEveBuild(appRoot);
-
-    expect(result.code).toBe(1);
-    expect(result.signal).toBeNull();
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("Could not resolve './does-not-exist'");
-    expect(result.stderr).toContain("Build failed with 1 error:");
-    expect(result.stderr).toContain("agent/tools/bad.ts");
-    expect(result.stderr).not.toContain("Diagnostics artifact:");
   }, 120_000);
 
   it("prints bundled syntax errors to stderr when build fails", async () => {

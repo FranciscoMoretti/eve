@@ -3,7 +3,7 @@ title: "Overview"
 description: "Choose a deployment strategy and prepare an eve agent for production."
 ---
 
-Deploy eve to Vercel or run it as a Node service on your own infrastructure. Your deployment strategy determines the build output, workflow storage, sandbox backend, and routing. The agent’s filesystem-based configuration remains portable across these strategies.
+Deploy eve to Vercel or run it as a Node service on your own infrastructure. Your deployment strategy determines the build output, workflow storage, sandbox provider, and routing. The agent’s filesystem-based configuration remains portable across these strategies.
 
 ## Choose a deployment strategy
 
@@ -14,7 +14,7 @@ Choose where the eve runtime will run:
 | [Vercel](./vercel)             | `.vercel/output`       | Vercel Workflow                | Vercel Sandbox                  | You want Vercel to operate the runtime services       |
 | [Self-hosting](./self-hosting) | `.output/` Node server | Local or custom Workflow world | Docker, microsandbox, or custom | You operate your own Node or container infrastructure |
 
-eve is frontend agnostic and can be deployed within Next.js, Nuxt, or SvelteKit applications. See [Frontend integrations](../frontend/overview) for more details.
+eve is frontend agnostic and can be deployed within Next.js, Nuxt, SvelteKit, or TanStack Start applications. See [Frontend integrations](../frontend/overview) for more details.
 
 ## Prepare for production
 
@@ -47,7 +47,7 @@ curl https://your_agent.example.com/eve/v1/health
 Then connect the development terminal user interface (TUI) to the deployment and send a real message:
 
 ```bash
-eve dev https://your_agent.example.com
+eve remote connect --url https://your_agent.example.com
 ```
 
 Set `VERCEL_AUTOMATION_BYPASS_SECRET` locally first if a Vercel deployment uses Deployment Protection.
@@ -58,4 +58,4 @@ Follow the guide for your deployment platform or application topology:
 
 - [Deploy to Vercel](./vercel): use Vercel Build Output, Workflow, Sandbox, Cron, and observability
 - [Self-host eve](./self-hosting): run the Nitro Node server with infrastructure you manage
-- [Frontend integrations](../frontend/overview): mount eve alongside Next.js, Nuxt, or SvelteKit
+- [Frontend integrations](../frontend/overview): mount eve alongside Next.js, Nuxt, SvelteKit, or TanStack Start

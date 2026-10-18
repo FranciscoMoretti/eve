@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { readDevelopmentEnvironmentHostValues } from "#cli/dev/environment.js";
-import { resolveCompiledModuleExtensionScopeNamespace } from "#compiler/module-map.js";
-import { bundleAuthoredModuleForGeneration } from "#internal/authored-module-loader.js";
 import { computeChannelRouteRegistrations } from "#internal/nitro/host/channel-routes.js";
 import type { PreparedDevelopmentApplicationHost } from "#internal/nitro/host/types.js";
+import { usesLocalVercelSchedules } from "#internal/schedules/consumer-route.js";
 
 export async function computeDevelopmentHostFingerprint(
   host: PreparedDevelopmentApplicationHost,
@@ -28,21 +27,22 @@ export async function computeDevelopmentHostFingerprint(
       extensionScopes: agentNodes
         .flatMap((node) => node.extensionMounts)
         .map((mount) => ({
-          packageNamespace: mount.packageNamespace,
+          mountId: mount.mountId,
           sourceRoot: mount.sourceRoot,
         }))
-        .sort((left, right) => left.sourceRoot.localeCompare(right.sourceRoot)),
-      sandboxBackends: [
+        .sort((left, right) => left.mountId.localeCompare(right.mountId)),
+      sandboxProviders: [
         ...new Set(
           agentNodes
-            .map((node) => node.sandbox?.backendName)
-            .filter((backendName): backendName is string => backendName !== undefined),
+            .map((node) => node.sandbox?.providerName)
+            .filter((providerName): providerName is string => providerName !== undefined),
         ),
       ].sort((left, right) => left.localeCompare(right)),
     },
     channels: computeChannelRouteRegistrations(host),
     environment: readDevelopmentEnvironmentHostValues(host.appRoot),
     instrumentation: await readInstrumentationSource(host),
+    localScheduleConsumer: usesLocalVercelSchedules(manifest),
     workflow: {
       // Authored workflow bodies and step registrations are bundled into the
       // host, so their sources are structural, not runtime, state.
@@ -58,27 +58,9 @@ export async function computeDevelopmentHostFingerprint(
 }
 
 async function readInstrumentationSource(host: PreparedDevelopmentApplicationHost): Promise<{
-  readonly kind: "directory" | "file";
-  readonly modules: readonly { readonly slot: string | null; readonly source: string }[];
+  readonly kind: "directory";
+  readonly modules: readonly { readonly slot: string; readonly source: string }[];
 } | null> {
-  const instrumentation = host.compileResult.manifest.instrumentation;
-  if (instrumentation !== undefined) {
-    const binding = host.compileResult.manifest.bindings[instrumentation.sourceId];
-    if (binding === undefined) {
-      throw new Error(
-        `Compiled instrumentation source "${instrumentation.sourceId}" has no binding.`,
-      );
-    }
-    const source =
-      binding.backing.kind === "filesystem"
-        ? await bundleAuthoredModuleForGeneration(binding.backing.sourcePath, {
-            externalDependencies: binding.backing.externalDependencies,
-            extensionScopeNamespace: resolveCompiledModuleExtensionScopeNamespace(binding),
-          })
-        : JSON.stringify(binding.backing);
-    return { kind: "file", modules: [{ slot: null, source }] };
-  }
-
   const paths = host.compiledArtifacts.instrumentationSourcePaths;
   const layout = host.compiledArtifacts.instrumentationLayout;
   if (paths === undefined || layout === undefined) {
@@ -88,7 +70,7 @@ async function readInstrumentationSource(host: PreparedDevelopmentApplicationHos
   return {
     kind: layout.kind,
     modules: sources.map((source, index) => ({
-      slot: layout.kind === "directory" ? (layout.slots[index] ?? null) : null,
+      slot: layout.slots[index]!,
       source,
     })),
   };

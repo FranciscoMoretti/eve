@@ -86,6 +86,13 @@ export function connectionProtocols(connection: ConnectionIdentity): ConnectionP
  */
 export const INTEGRATIONS: readonly IntegrationEntry[] = [
   {
+    slug: "eve",
+    name: "Web Chat",
+    kind: "channel",
+    tagline: "Embed a first-party web chat UI backed by your agent.",
+    surfaces: { scaffoldable: true, registry: true, gallery: true },
+  },
+  {
     slug: "slack",
     name: "Slack",
     kind: "channel",
@@ -142,20 +149,6 @@ export const INTEGRATIONS: readonly IntegrationEntry[] = [
     tagline:
       "Delegate Linear issues and comments through Agent Sessions, with guided Connect setup.",
     surfaces: { scaffoldable: false, registry: true, gallery: true },
-  },
-  {
-    slug: "eve",
-    name: "Web Chat",
-    kind: "channel",
-    tagline: "Embed a first-party web chat UI backed by your agent.",
-    surfaces: { scaffoldable: true, registry: true, gallery: true },
-  },
-  {
-    slug: "buzz",
-    name: "Buzz",
-    kind: "channel",
-    tagline: "Talk to your eve agent from Buzz through its ACP desktop harness.",
-    surfaces: { scaffoldable: false, registry: false, gallery: true },
   },
   {
     slug: "chat-sdk-gchat",
@@ -277,6 +270,13 @@ export const INTEGRATIONS: readonly IntegrationEntry[] = [
     surfaces: { scaffoldable: false, registry: true, gallery: true },
   },
   {
+    slug: "chat-sdk-gmail",
+    name: "Gmail",
+    kind: "channel",
+    tagline: "Turn labelled Gmail threads into agent conversations via the Chat SDK.",
+    surfaces: { scaffoldable: false, registry: true, gallery: true },
+  },
+  {
     slug: "agent-browser",
     name: "agent-browser",
     kind: "extension",
@@ -316,6 +316,13 @@ export const INTEGRATIONS: readonly IntegrationEntry[] = [
     name: "Jetty",
     kind: "extension",
     tagline: "Grade agent turns, compare experiments, and store durable evaluation trajectories.",
+    surfaces: { scaffoldable: false, registry: true, gallery: true },
+  },
+  {
+    slug: "link",
+    name: "Link",
+    kind: "extension",
+    tagline: "Give your eve agent guarded access to Link wallet and purchase tools.",
     surfaces: { scaffoldable: false, registry: true, gallery: true },
   },
   {
@@ -375,6 +382,18 @@ export const INTEGRATIONS: readonly IntegrationEntry[] = [
       description:
         "Browser Use: run browser automation tasks, inspect sessions, and manage browser profiles.",
       mcp: { url: "https://api.browser-use.com/v3/mcp" },
+    },
+  },
+  {
+    slug: "dataforseo",
+    name: "DataForSEO",
+    kind: "connection",
+    tagline: "Run SEO, keyword, and SERP data lookups through DataForSEO's MCP server.",
+    surfaces: { scaffoldable: false, registry: true, gallery: false },
+    connection: {
+      description:
+        "DataForSEO: run SEO, keyword, and SERP data lookups through DataForSEO's MCP server.",
+      mcp: { url: "https://mcp.dataforseo.com/v3/mcp" },
     },
   },
   {
@@ -725,6 +744,18 @@ export const INTEGRATIONS: readonly IntegrationEntry[] = [
     connection: {
       description: "Razorpay: payments, settlements, and dashboard data.",
       mcp: { url: "https://mcp.razorpay.com/mcp" },
+    },
+  },
+  {
+    slug: "sanity",
+    name: "Sanity",
+    kind: "connection",
+    tagline: "Query and edit Sanity content, inspect schemas, and manage releases.",
+    surfaces: { scaffoldable: false, registry: true, gallery: true },
+    connection: {
+      description:
+        "Sanity: query content with GROQ, edit documents, inspect schemas, and manage releases.",
+      mcp: { url: "https://mcp.sanity.io" },
     },
   },
   {

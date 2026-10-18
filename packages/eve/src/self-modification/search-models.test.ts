@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseGatewayModelCatalog } from "#shared/gateway-model-catalog.js";
 
-import searchModels, { searchGatewayModels } from "./extension/tools/search_models.js";
+import searchModels, {
+  searchGatewayModels,
+} from "./extension/subagents/agent/tools/search_models.js";
 
 const CATALOG = {
   data: [
@@ -21,8 +23,8 @@ const CATALOG = {
       type: "language",
     },
     {
-      id: "openai/gpt-5.6-luna-fast",
-      name: "GPT-5.6 Luna Fast",
+      id: "openai/gpt-6-luna-fast",
+      name: "GPT-6 Luna Fast",
       owned_by: "openai",
       tags: [],
       type: "language",
@@ -49,8 +51,8 @@ describe("searchGatewayModels", () => {
   it("uses the same language-model eligibility as /model", () => {
     expect(searchGatewayModels(parseGatewayModelCatalog(CATALOG), "luna")).toEqual([
       {
-        id: "openai/gpt-5.6-luna-fast",
-        name: "GPT-5.6 Luna Fast",
+        id: "openai/gpt-6-luna-fast",
+        name: "GPT-6 Luna Fast",
         provider: "openai",
       },
     ]);

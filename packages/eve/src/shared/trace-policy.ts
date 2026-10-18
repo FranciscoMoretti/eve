@@ -1,12 +1,14 @@
 import { shouldCaptureInstrumentationContent } from "#shared/instrumentation-content.js";
 import type { ConversationContext } from "#shared/conversation-context.js";
+
+// Keep sampled-flag checks free of OTel imports for workflow driver bundles.
+export function isSampledTrace(context: { readonly traceFlags: number }): boolean {
+  return (context.traceFlags & 1) !== 0;
+}
 import {
   DROP_INSTRUMENTATION,
   type InstrumentationDecision,
 } from "#shared/instrumentation-decision.js";
-
-/** @deprecated Use `TraceCapturePolicy` to select directional content. */
-export type InstrumentationCapture = "content" | "metadata";
 
 export type TraceCaptureContext = { readonly agentName: string } & ConversationContext;
 
@@ -20,18 +22,6 @@ export type TracePolicyDecision =
 
 export type TraceCapturePolicy = (trace: TraceCaptureContext) => TracePolicyDecision | boolean;
 
-export function legacyCaptureTracePolicy(
-  capture: InstrumentationCapture | undefined,
-): TraceCapturePolicy | undefined {
-  if (capture === undefined) return undefined;
-  const recordsContent = capture === "content";
-  return () => ({
-    emit: true,
-    recordInputs: recordsContent,
-    recordOutputs: recordsContent,
-  });
-}
-
 export function resolveTracePolicy(
   policy: TraceCapturePolicy | undefined,
   trace: TraceCaptureContext,
@@ -39,14 +29,7 @@ export function resolveTracePolicy(
 ): InstrumentationDecision {
   try {
     const decision = policy?.(trace);
-    return resolveTracePolicyDecision(
-      decision ?? {
-        emit: true,
-        recordInputs: trace.audience === "public" || trace.environment === "development",
-        recordOutputs: trace.audience === "public" || trace.environment === "development",
-      },
-      trace,
-    );
+    return resolveTracePolicyDecision(decision ?? true, trace);
   } catch (error) {
     try {
       onError?.(error);
@@ -72,5 +55,8 @@ export function resolveTracePolicyDecision(
     action: "record",
     recordInputs: decision.recordInputs,
     recordOutputs: decision.recordOutputs,
+    ...(decision.recordInputs || decision.recordOutputs
+      ? { explicitContentAudience: context.audience }
+      : undefined),
   };
 }

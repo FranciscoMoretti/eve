@@ -1,9 +1,11 @@
 import { createMdxComponents } from "@vercel/geistdocs/mdx";
 import { File, Files, Folder } from "fumadocs-ui/components/files";
 import { Step, Steps } from "fumadocs-ui/components/steps";
+import { Flag } from "lucide-react";
 import type { MDXComponents } from "mdx/types";
 import Link from "next/link";
 import { AgentRuntimeDiagram } from "./agent-runtime-diagram";
+import { EveCodeBenchmark } from "./eve-code-benchmark";
 
 const localComponents: MDXComponents = {
   a: ({ href, ...props }) =>
@@ -19,8 +21,10 @@ const localComponents: MDXComponents = {
     ),
   File,
   Files,
+  Flag,
   Folder,
   AgentRuntimeDiagram,
+  EveCodeBenchmark,
   Step,
   Steps,
 };

@@ -18,6 +18,7 @@ docs, prompts, comments, and headings.
 
 - `packages/eve` — the framework and `eve` CLI (the main package)
 - `packages/eve-catalog` — internal, unpublished library
+- `packages/eve-code` — `@eve/code`, internal source of the `eve/extensions/code` extension shipped in `eve`
 - `apps/fixtures` — shared agent fixtures used by e2e, TUI smoke tests, and local dev
 - `apps/frameworks`, `apps/templates`, `apps/docs` — framework integrations, templates, docs site
 - `docs` — published documentation content
@@ -26,7 +27,7 @@ docs, prompts, comments, and headings.
 
 ## Git workflow
 
-Every fork PR must review the [README fork inventory](README.md#chatjs-fork-inventory).
+Every fork PR must review the [README fork inventory](README.md#retained-contracts).
 Update affected behaviors, why each patch remains, and its removal condition; remove
 entries for retired patches. For no inventory change, state "inventory reviewed; no
 change" in the PR. Upstream rebases must update the comparison baseline and recheck
@@ -62,8 +63,10 @@ pnpm docs:check         # docs frontmatter and nav validation
 
 pnpm test               # unit + integration
 pnpm test:unit          # unit tests (<3s)
-pnpm test:integration   # integration tests (<10s)
+pnpm test:integration   # integration tests (several minutes; leave the full run to CI)
 pnpm test:scenario      # scenario tests (2–5 min; requires pnpm build first)
+pnpm test:framework-fixtures # apps/frameworks smoke builds (requires pnpm build first)
+pnpm test:webchat       # web chat template in headless Chromium (needs playwright-core's chromium-headless-shell)
 pnpm test:e2e           # fixture-owned eve eval suites (CI only)
 pnpm test:tui           # TUI smoke scripts (not e2e)
 ```
@@ -76,6 +79,13 @@ narrowest relevant test when a change needs behavioral validation. Copy edits,
 typo fixes, small code reorganizations, and similar non-behavioral changes can
 proceed without local integration or scenario runs. CI is always the official
 line of defense, and every required check must pass before merge.
+
+Do not run a whole integration or scenario tier, or a whole multi-channel
+suite such as the channel conformance suite, locally unless the task
+expressly needs it (for example, the user asks, or you are chasing a failure
+only the full run reproduces). Scope local runs to the files and test names
+your change touches with a path and `-t` filter, and leave the full suites to
+CI.
 
 ## Agent-ready product principles
 
@@ -165,6 +175,9 @@ exhaustive task inventories. Use a compact diagram when it makes a lifecycle
 or ownership relationship materially clearer.
 
 ## Testing
+
+Use the [`test-audit`](./.agents/skills/test-audit/SKILL.md) skill when
+writing, reviewing, or pruning tests.
 
 Tests belong in one of four tiers. Pick the tightest tier that can express the
 assertion:

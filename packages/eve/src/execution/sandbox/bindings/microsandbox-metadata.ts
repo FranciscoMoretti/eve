@@ -2,23 +2,95 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type { SandboxNetworkPolicy } from "#shared/sandbox-network-policy.js";
+import {
+  isSandboxNetworkPolicy,
+  type SandboxNetworkPolicy,
+} from "#shared/sandbox-network-policy.js";
 
 export const MICROSANDBOX_METADATA_VERSION = 2;
 export const MICROSANDBOX_METADATA_FILE_NAME = "metadata.json";
 
 export interface MicrosandboxTemplateMetadata {
+  readonly image?: string;
   readonly optionsHash: string;
   readonly snapshotName: string;
   readonly version: typeof MICROSANDBOX_METADATA_VERSION;
 }
 
 export interface MicrosandboxSessionMetadata {
+  readonly image?: string;
   readonly networkPolicy?: SandboxNetworkPolicy;
   readonly optionsHash: string;
   readonly sandboxName: string;
   readonly stateSnapshotName?: string;
   readonly version: typeof MICROSANDBOX_METADATA_VERSION;
+  readonly resources?: MicrosandboxResourceMetadata;
+}
+
+export interface MicrosandboxResourceFact {
+  readonly kind: "sandbox" | "state-snapshot";
+  readonly name: string;
+  readonly phase: "allocating" | "live" | "removing" | "removed";
+  readonly nativeId?: string;
+  readonly nativePath?: string;
+}
+
+/** Local provider facts, independent of application retention policy. */
+export interface MicrosandboxResourceMetadata {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly authority: string;
+  readonly entries: readonly MicrosandboxResourceFact[];
+}
+
+function isResourceFact(value: unknown): value is MicrosandboxResourceFact {
+  return (
+    isRecord(value) &&
+    ["sandbox", "state-snapshot"].includes(String(value.kind)) &&
+    (value.phase === "allocating" ||
+      (typeof value.nativeId === "string" && value.nativeId.length > 0)) &&
+    (value.nativePath === undefined || typeof value.nativePath === "string") &&
+    typeof value.name === "string" &&
+    value.name.length > 0 &&
+    ["allocating", "live", "removing", "removed"].includes(String(value.phase))
+  );
+}
+
+function isResourceMetadata(value: unknown): value is MicrosandboxResourceMetadata {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.sessionId === "string" &&
+    value.sessionId.length > 0 &&
+    typeof value.authority === "string" &&
+    value.authority.length > 0 &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isResourceFact) &&
+    new Set(value.entries.map((entry) => `${entry.kind}:${entry.name}`)).size ===
+      value.entries.length
+  );
+}
+
+export function createMicrosandboxSessionMetadata(input: {
+  readonly networkPolicy: SandboxNetworkPolicy | undefined;
+  readonly optionsHash: string;
+  readonly sandboxName: string;
+  readonly stateSnapshotName: string | undefined;
+}): MicrosandboxSessionMetadata {
+  const metadata: {
+    networkPolicy?: SandboxNetworkPolicy;
+    optionsHash: string;
+    sandboxName: string;
+    stateSnapshotName?: string;
+    version: typeof MICROSANDBOX_METADATA_VERSION;
+  } = {
+    optionsHash: input.optionsHash,
+    sandboxName: input.sandboxName,
+    version: MICROSANDBOX_METADATA_VERSION,
+  };
+  if (input.networkPolicy !== undefined) metadata.networkPolicy = input.networkPolicy;
+  if (input.stateSnapshotName !== undefined) metadata.stateSnapshotName = input.stateSnapshotName;
+  return metadata;
 }
 
 export function resolveMicrosandboxMetadataPath(rootPath: string): string {
@@ -37,6 +109,7 @@ export async function readTemplateMetadata(
     return null;
   }
   return {
+    image: typeof metadata.image === "string" ? metadata.image : undefined,
     optionsHash: metadata.optionsHash,
     snapshotName: metadata.snapshotName,
     version: MICROSANDBOX_METADATA_VERSION,
@@ -63,17 +136,23 @@ export function readSessionMetadataRecord(value: unknown): MicrosandboxSessionMe
   if (
     value.version !== MICROSANDBOX_METADATA_VERSION ||
     typeof value.optionsHash !== "string" ||
-    typeof value.sandboxName !== "string"
+    typeof value.sandboxName !== "string" ||
+    (value.networkPolicy !== undefined && !isSandboxNetworkPolicy(value.networkPolicy))
   ) {
     return null;
   }
+  if (value.resources !== undefined && !isResourceMetadata(value.resources)) {
+    throw new Error("Invalid microsandbox resource metadata.");
+  }
   return {
-    networkPolicy: value.networkPolicy as SandboxNetworkPolicy | undefined,
+    image: typeof value.image === "string" ? value.image : undefined,
+    networkPolicy: value.networkPolicy,
     optionsHash: value.optionsHash,
     sandboxName: value.sandboxName,
     stateSnapshotName:
       typeof value.stateSnapshotName === "string" ? value.stateSnapshotName : undefined,
     version: MICROSANDBOX_METADATA_VERSION,
+    resources: value.resources,
   };
 }
 

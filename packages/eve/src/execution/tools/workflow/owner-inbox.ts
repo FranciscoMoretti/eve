@@ -1,20 +1,15 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type {
   WorkflowToolRunOutcomeMessage,
-  WorkflowToolRunReport,
   WorkflowToolRunRef,
   WorkflowToolInputRequestBatch,
   WorkflowToolRequest,
   WorkflowToolRunRequestMessage,
 } from "#execution/tools/workflow/messages.js";
+import { rebuildSerializableError } from "#execution/workflow-errors.js";
 import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
-import type { RuntimeSubagentResult } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
 import type { ToolInputRequest } from "#tools/definition.js";
-import type { WorkflowToolRunTaskInputRequest } from "#execution/tasks/child/workflow.js";
-import type { TaskCommand, TaskInboundMessage, TaskInboundUpdate } from "#tasks/types.js";
-import { isTaskMessage } from "#tools/task.js";
-import { SUBAGENT_EXECUTION_FAILED } from "#subagents/agent-handle-errors.js";
 import { parseJsonValue, type JsonValue } from "#shared/json.js";
 
 export function workflowToolRunOutcomeToToolResult(
@@ -29,106 +24,37 @@ export function workflowToolRunOutcomeToToolResult(
       toolName: from.toolName,
     };
   }
+  if (result.status === "failed") {
+    return {
+      callId: from.callId,
+      // The output keeps what the model reads; the serialized error still carries the thrown name.
+      errorName: rebuildSerializableError(result.error).name,
+      isError: true,
+      kind: "tool-result",
+      output: workflowToolRunFailureOutput(message),
+      toolName: from.toolName,
+    };
+  }
   return {
     callId: from.callId,
     isError: true,
     kind: "tool-result",
-    output:
-      result.status === "failed"
-        ? errorMessage(result.error)
-        : (result.reason ?? "The workflow tool run was cancelled."),
+    output: result.reason ?? "The workflow tool run was cancelled.",
     toolName: from.toolName,
   };
 }
 
-/** Reads a blocking agent result returned through an ordinary run outcome. */
-export function workflowToolRunOutcomeToSubagentResult(
-  message: WorkflowToolRunOutcomeMessage,
-): RuntimeSubagentResult {
-  if (message.result.status === "completed" && isRuntimeSubagentResult(message.result.output)) {
-    return message.result.output;
-  }
-  const output =
-    message.result.status === "failed"
-      ? errorMessage(message.result.error)
-      : message.result.status === "cancelled"
-        ? (message.result.reason ?? "The agent invocation was cancelled.")
-        : "The agent invocation returned an invalid result.";
-  return {
-    callId: message.from.callId,
-    isError: true,
-    kind: "subagent-result",
-    origin: "dispatch",
-    output,
-    subagentName: message.from.toolName,
-  };
-}
-
-export function workflowToolRunOutcomeToTaskCommand(
-  message: WorkflowToolRunOutcomeMessage,
-): TaskCommand {
-  if (message.result.status === "completed") {
-    return { data: message.result.output, kind: "complete" };
-  }
-  if (message.result.status === "failed") {
-    return {
-      data:
-        message.from.resultKind === "subagent"
-          ? subagentFailureOutput(message.result.error)
-          : errorMessage(message.result.error),
-      kind: "fail",
-    };
-  }
-  return { kind: "cancel" };
-}
-
-function subagentFailureOutput(error: unknown): JsonValue {
-  const parsed = parseJsonValueOrUndefined(error);
-  if (
-    parsed !== undefined &&
+export function workflowToolRunFailureOutput(message: WorkflowToolRunOutcomeMessage): JsonValue {
+  if (message.result.status !== "failed")
+    throw new TypeError("Expected a failed workflow outcome.");
+  const parsed = parseJsonValueOrUndefined(message.result.error);
+  return parsed !== undefined &&
     typeof parsed === "object" &&
     parsed !== null &&
     !Array.isArray(parsed) &&
     typeof Reflect.get(parsed, "code") === "string"
-  ) {
-    return parsed;
-  }
-  return {
-    code: SUBAGENT_EXECUTION_FAILED,
-    message: errorMessage(error),
-  };
-}
-
-export function workflowToolRunReportToTaskPayload(
-  report: WorkflowToolRunReport,
-  taskId: string,
-  updateIndex: number,
-): TaskInboundMessage | TaskInboundUpdate {
-  if (isTaskMessage(report.update)) {
-    return {
-      callId: report.from.callId,
-      kind: "task-message",
-      message: report.update.message,
-      messageEpoch: taskId,
-      messageIndex: updateIndex,
-    };
-  }
-  return {
-    callId: report.from.callId,
-    kind: "task-update",
-    message: typeof report.update === "string" ? report.update : JSON.stringify(report.update),
-    updateEpoch: taskId,
-    updateIndex,
-  };
-}
-
-function isRuntimeSubagentResult(value: unknown): value is RuntimeSubagentResult {
-  if (typeof value !== "object" || value === null) return false;
-  const origin = Reflect.get(value, "origin");
-  return (
-    Reflect.get(value, "kind") === "subagent-result" &&
-    (origin === "child" || origin === "dispatch")
-  );
+    ? parsed
+    : errorMessage(message.result.error);
 }
 
 function errorMessage(error: unknown): string {
@@ -150,18 +76,19 @@ function parseJsonValueOrUndefined(value: unknown): JsonValue | undefined {
 export function workflowToolRunRequestToInputRequestPayload(
   message: WorkflowToolRunRequestMessage,
 ): SubagentInputRequestHookPayload {
-  const { from, replyTo, request, requestCoordinates } = message;
+  const { from, replyTo, requestCoordinates } = message;
   return {
     callId: from.callId,
     childContinuationToken: replyTo,
     childSessionId: from.runId,
+    childSessionInbox: message.childSessionInbox,
+    remote: message.remote,
+    inputSource: message.inputSource,
     event: {
-      requests:
-        request.kind === "input-batch"
-          ? request.requests
-          : [normalizeInputRequest(request, from, replyTo)],
+      requests: workflowToolRunInputRequests(message),
       sequence: requestCoordinates?.sequence ?? from.sequence,
       stepIndex: requestCoordinates?.stepIndex ?? from.stepIndex,
+      taskId: from.taskId,
       turnId: requestCoordinates?.turnId ?? from.turnId,
     },
     kind: "subagent-input-request",
@@ -169,20 +96,12 @@ export function workflowToolRunRequestToInputRequestPayload(
   };
 }
 
-export function workflowToolRunRequestToTaskInputRequest(
+export function workflowToolRunInputRequests(
   message: WorkflowToolRunRequestMessage,
-): WorkflowToolRunTaskInputRequest {
-  const { from, replyTo, request, requestCoordinates } = message;
-  const base = {
-    kind: "task-input-request" as const,
-    replyTo,
-    sequence: requestCoordinates?.sequence ?? from.sequence,
-    stepIndex: requestCoordinates?.stepIndex ?? from.stepIndex,
-    turnId: requestCoordinates?.turnId ?? from.turnId,
-  };
-  return request.kind === "input-batch"
-    ? { ...base, requests: request.requests }
-    : { ...base, request: normalizeInputRequest(request, from, replyTo) };
+): readonly InputRequest[] {
+  return message.request.kind === "input-batch"
+    ? message.request.requests
+    : [normalizeInputRequest(message.request, message.from, message.replyTo)];
 }
 
 function normalizeInputRequest(
@@ -191,9 +110,6 @@ function normalizeInputRequest(
   requestId: string,
 ): InputRequest {
   switch (request.kind) {
-    case "agent-invoke":
-    case "agent-settled":
-      throw new TypeError("A workflow agent request cannot be normalized as human input.");
     case "authorization-request":
       throw new TypeError("A workflow authorization event cannot be normalized as human input.");
     case "ask":

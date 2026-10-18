@@ -1,33 +1,64 @@
-## ChatJS fork inventory
+## ChatJS eve 0.80.1 integration candidate
 
-This inventory describes the maintained `francisco/chatjs-package` branch relative to
-upstream [`eve@0.61.0` (`241e5004`)](https://github.com/vercel/eve/commit/241e5004cb1ac1e2bcd716a154bbc64f5a61cc53).
-It is a list of our remaining patches, not a claim that newer upstream releases lack them.
-[Build and distribution details](CHATJS.md).
+[Draft #9](https://github.com/FranciscoMoretti/eve/pull/9) upgrades the maintained
+fork to eve 0.80.1. Review the residual changes against exact upstream commit
+`e3cea42486e7e32b7b3001bb5912e076b5443ad5`.
 
-| Change                                | What it does / why it remains                                                                                                                                                | Removal condition                                                                                                                                                    |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Exact approval receipts               | Binds execution to the winning authenticated approval. ChatJS rechecks owner and current tool policy at execution time.                                                      | A supported runtime preserves the same call/input/approver binding and callback through rediscovery, cancellation and restart.                                       |
-| Message metadata and identity         | Carries caller operation IDs and tool selection to the exact received message; keeps replayed message IDs stable. Pending sends and selected-tool context use this evidence. | Supported correlation on create/send retains every coalesced caller token; ChatJS owns display data separately.                                                      |
-| Creation-operation lookup             | Binds an authenticated immutable creation operation to its allocated session. Lost responses must not create another conversation.                                           | Supported lookup recovers the same allocation without reissuing uncertain work.                                                                                      |
-| Checkpoints and forks                 | Captures/reads/restores native and named boundaries, including document and sandbox state. Conversation branching needs a consistent snapshot.                               | Supported checkpoints and owned forks pass boundary, state-restoration and resource-isolation tests.                                                                 |
-| History import and projection         | Imports trusted transcript seeds and restores history with stable message/tool identities and model display. New conversation copies still need this.                        | Supported authenticated import/fork APIs preserve these semantics without replaying inherited tools or billing.                                                      |
-| Attachment staging                    | Resolves owned files and stages copied/seeded attachments, with retry after staging failure.                                                                                 | Supported file resolution preserves ownership and complete attachment content through copy/fork.                                                                     |
-| Sandbox lifecycle                     | Adds local identity receipts, owned checkpoints, cleanup and Microsandbox 0.6 lifecycle/serialized mutations. Prevents foreign-resource deletion and preserves forked files. | Supported backend APIs provide equivalent ownership, snapshot and cleanup guarantees for the selected SDK.                                                           |
-| Resumable HTTP streams                | Adds tail positions, bounded reads, heartbeats and lease-end control frames. Clients reconnect without treating controls as messages.                                        | Supported transport resumes exact durable positions and bounds idle connections.                                                                                     |
-| Next production startup               | Starts local/named workers during production-server initialization, before rewrite handling.                                                                                 | A supported Next integration passes production startup and routing checks.                                                                                           |
-| Distribution and protocol integration | Ships `@chat-js/eve` with matching exports, compiler/stream capabilities and stable workflow identities.                                                                     | All required runtime contracts are supported, the application passes against that release, and the scoped package plus remaining integration patches can be dropped. |
+### Retained contracts
 
-**Every fork PR must update this inventory:** add or revise affected rows and their
-removal conditions, delete rows when their patches are retired, and state “inventory
-reviewed; no change” in the PR when no row changes. Rebase/upgrade PRs must update the
-comparison baseline and re-evaluate each row. Each PR must link its companion ChatJS
-PR (or explain why none is needed), summarize entries added/narrowed/removed, and
-state application/package adoption order. Link upstream issues or discussions when
-known; distinguish an upstream implementation from a verified replacement for our
-contract. Fresh-start deployment requires no
-old-session continuation or historical billing import. PostgreSQL-world patches live
-in ChatJS and are tracked separately from this eve fork.
+| Contract                                  | Purpose                                                                                                                                                                               | Removal criterion                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Trusted transcript seeds                  | An authenticated channel resolves accepted app reservations. Fresh sessions import completed conversation content and stage explicit attachments without replaying historical tools.  | Equivalent upstream trusted initialization and attachment ownership. |
+| Local resource ownership and deletion     | Persisted VM IDs and state snapshot digest/path receipts bind resources to their owner and canonical cache. Retirement fences allocation; deletion requires confirmed native absence. | Equivalent upstream ownership, retirement, and confirmed removal.    |
+| Microsandbox SDK and development shutdown | SDK 0.6.18 and verified VM shutdown preserve normal session resume state within the CLI exit window.                                                                                  | Equivalent upstream SDK lifecycle.                                   |
+| Scoped package resolution                 | Compiler lookups support the published `@chat-js/eve` package and its self references through an `eve` dependency alias.                                                              | Equivalent upstream scoped publication support.                      |
+
+Copies start with fresh sandboxes. They retain conversation history, documents,
+and explicit attachments; installed packages, arbitrary files, and running
+processes are not copied. Historical turn checkpoints, sandbox fork snapshots,
+borrower retention, and required document checkpoint hooks are removed. ChatJS
+captures the current completed conversation under its own admission and document
+locks. No custom native operation lookup or admission ledger remains. Interrupted
+create/copy/send operations can stay unresolved and are never redispatched on
+missing evidence.
+
+### Distribution and evidence
+
+ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.2`.
+The published package corresponds to signed source commit
+`97aba72836dad4194a08a002e08a2bf8d38809cf`, including these simplifications and
+the isolated-layout development import fix. The `chatjs` tag points to `.2`;
+`latest` remains `0.61.0-chatjs.0`.
+
+Registry bytes match the tested artifact. SHA-512 integrity:
+`lm6eZBc0hj9cSd2iZnhXt772GqHUHp1q3RWNshEBfTxZNyM8sEOnJr5U0MDXJENtRUsg7hGjRtduMG0CzpIA2Q==`.
+A clean frozen registry install resolves `.2` in all four app consumers. The
+isolated module regression and nested development startup pass. Historical
+`.1` startup failure came from an internal unscoped package import and is fixed
+in `.2`.
+
+Fork prerelease versions do not name upstream container images. Set
+`EVE_SANDBOX_IMAGE_TAG=0.80.1` for the matching upstream image; ChatJS commands
+default to this tag and preserve an explicit override.
+
+[ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
+app review. Historical evidence and upstream replacement reviews remain linked
+in [startup #8](https://github.com/FranciscoMoretti/eve/pull/8),
+[streams #10](https://github.com/FranciscoMoretti/eve/pull/10), and
+[approvals #11](https://github.com/FranciscoMoretti/eve/pull/11).
+Their results apply to their recorded commits, not automatically to this head.
+
+### Authority limits
+
+Resource retirement requires `MSB_BACKEND=local`, one canonical cache, matching
+HOME/MSB_HOME, and an absolute MSB_HOME when set. Remote hosts, cache mismatches,
+unattributed metadata, and crashed locks fail closed. Locks are never stolen.
+State snapshot restoration verifies its recorded digest and artifact path;
+cleanup refuses replacement resources that reuse names. Old fork-resource
+records are unsupported and fail closed. This is not distributed fencing or
+production cutover validation. Extension contract history remains immutable;
+removed APIs require current extension epochs. No legacy session or billing
+import is provided.
 
 ---
 
@@ -78,13 +109,15 @@ npx eve@latest init my-agent
 ```
 
 This creates a new `my-agent` directory, installs its dependencies, initializes Git, and starts
-the interactive terminal UI.
+the interactive terminal UI. The generated agent uses `openai/gpt-6-luna-fast` with high reasoning.
 
 To start with another AI Gateway model, pass its model ID:
 
 ```bash
 npx eve@latest init my-agent --model openai/gpt-5.6-terra
 ```
+
+Passing `--model` without `--reasoning` uses the provider's default reasoning. Pass `--reasoning` to set it explicitly.
 
 To add eve to an existing project, pass a path:
 
@@ -126,7 +159,8 @@ Choose the model in `agent/agent.ts`:
 import { defineAgent } from "eve";
 
 export default defineAgent({
-  model: "openai/gpt-5.6-luna-fast",
+  model: "openai/gpt-6-luna-fast",
+  reasoning: "high",
 });
 ```
 
@@ -139,6 +173,20 @@ npm run dev
 That's a working agent. Add human-in-the-loop prompts, subagents, and schedules as needed.
 Follow the [first-agent tutorial](https://eve.dev/docs/tutorial/first-agent) for a complete
 walkthrough.
+
+### Add Web Chat
+
+From your agent's directory, link a Vercel project and add Web Chat:
+
+```bash
+npx eve link
+npx eve add channel/web
+```
+
+Choose a hosting layout, then **Sign in with Vercel** to provision authentication for members of the project's team.
+You can also select **Web Chat** from the terminal UI's `/add` channel picker.
+Run `npx eve deploy` when ready to publish. Local development works without browser sign-in.
+See the [Web Chat setup guide](https://eve.dev/docs/channels/eve#web-chat-with-sign-in-with-vercel) for permissions and recovery.
 
 ## Community
 

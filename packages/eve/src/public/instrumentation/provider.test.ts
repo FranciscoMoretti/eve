@@ -11,16 +11,9 @@ import {
   type InstrumentationMemoryOperationStartedEvent,
   type InstrumentationMemoryOperationTerminalEvent,
   type InstrumentationMemoryRecord,
-  type InstrumentationSetupContext,
 } from "#public/instrumentation/index.js";
 
 describe("defineInstrumentation", () => {
-  it("keeps the legacy setup context constructible with only the agent name", () => {
-    const context: InstrumentationSetupContext = { agentName: "weather" };
-
-    expect(context).toEqual({ agentName: "weather" });
-  });
-
   it("brands a provider-shaped declaration", () => {
     const provider = defineInstrumentation({
       events: {
@@ -44,19 +37,11 @@ describe("defineInstrumentation", () => {
     expect(provider.tracePolicy).toBe(tracePolicy);
   });
 
-  it("brands a legacy config-shaped declaration", () => {
-    const config = defineInstrumentation({ functionId: "support", recordInputs: false });
-
-    expect(isInstrumentationProvider(config)).toBe(true);
-    expect(config.functionId).toBe("support");
-    expect(config).toMatchObject({ functionId: "support", recordInputs: false });
-  });
-
   it("infers terminal handler events from union-typed discriminants", () => {
     const provider = defineInstrumentation({
       events: {
-        "action.completed": (event) => void [event.acceptedAtMs, event.outcome, event.usage],
-        "action.failed": (event) => void [event.acceptedAtMs, event.errorCode, event.outcome],
+        "tool.call.completed": (event) => void [event.acceptedAtMs, event.outcome, event.usage],
+        "tool.call.failed": (event) => void [event.acceptedAtMs, event.errorCode, event.outcome],
         "session.completed": (event) => void event.sessionId,
         "step.attempt.completed": (event) => void event.scope,
         "turn.failed": (event) => void event.error,
@@ -64,6 +49,12 @@ describe("defineInstrumentation", () => {
     });
 
     expect(isInstrumentationProvider(provider)).toBe(true);
+    defineInstrumentation({
+      events: {
+        // @ts-expect-error Action hooks were replaced by tool.call hooks.
+        "action.started": () => {},
+      },
+    });
   });
 
   it("exposes durable input request and resolution events", () => {

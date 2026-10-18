@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { loadDevelopmentEnvironmentFiles } from "#cli/dev/environment.js";
-import { prewarmBuiltAppSandboxes } from "#execution/sandbox/prewarm.js";
 import type { ProductionServerHandle } from "#internal/nitro/host/types.js";
 
 const DEFAULT_PRODUCTION_SERVER_HOST = "0.0.0.0";
@@ -205,10 +204,6 @@ export async function startProductionServer(
   }
 
   await loadDevelopmentEnvironmentFiles(appRoot);
-  await prewarmBuiltAppSandboxes({
-    appRoot,
-    log: (message) => console.log(message),
-  });
 
   const host = options.host ?? DEFAULT_PRODUCTION_SERVER_HOST;
   const port = await resolveListenPort({
@@ -219,7 +214,10 @@ export async function startProductionServer(
     host,
     port,
   });
+  // Startup output is kept only for URL detection and startup diagnostics.
+  // After readiness it is dropped so a long-running server does not grow it.
   let output = "";
+  let ready = false;
   let closing = false;
   let startError: unknown;
 
@@ -236,11 +234,11 @@ export async function startProductionServer(
   });
 
   child.stdout?.on("data", (chunk: Buffer) => {
-    output += chunk.toString("utf8");
+    if (!ready) output += chunk.toString("utf8");
     process.stdout.write(chunk);
   });
   child.stderr?.on("data", (chunk: Buffer) => {
-    output += chunk.toString("utf8");
+    if (!ready) output += chunk.toString("utf8");
     process.stderr.write(chunk);
   });
 
@@ -274,6 +272,8 @@ export async function startProductionServer(
       getOutput: () => output,
       knownUrl,
     });
+    ready = true;
+    output = "";
 
     return {
       async close() {

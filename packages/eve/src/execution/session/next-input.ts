@@ -1,5 +1,5 @@
-import type { CheckpointSessionHookPayload } from "#channel/types.js";
-import type { DeliverPayload } from "#channel/types.js";
+import { storedProjection } from "#harness/session-machine/view.js";
+import { openInputs } from "#protocol/session-projection.js";
 import { routeSelectedDelivery } from "#execution/session/route-selected-delivery.js";
 import type {
   SessionControl,
@@ -7,35 +7,27 @@ import type {
   TurnSelection,
 } from "#execution/session/input-queue.js";
 import type { SessionInboxReader } from "#execution/session-inbox/inbox.js";
-import {
-  admitSessionInboxPayload,
-  applySessionCancellation,
-} from "#execution/session/admission.js";
+import { admitSessionInboxPayload } from "#execution/session/admission.js";
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
 import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.js";
-import { getSessionTaskCohorts } from "#tasks/session-task-cohorts.js";
 
 export type NextTurnInstruction =
-  | CheckpointSessionHookPayload
   | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
-  | { readonly kind: "authorization-resume"; readonly payloads: readonly DeliverPayload[] }
   | { readonly kind: SessionControl }
   | { readonly kind: "closed" }
   | { readonly kind: "cancel-turn" }
+  /** `session.cancel()` while no turn runs, but tasks are working. */
+  | { readonly kind: "cancel-working-tasks" }
   | TurnSelection;
 
 /**
- * Waits for the next input the parked owner must act on. While an
- * authorization challenge is open, its callbacks collect in the queue and
- * resume the challenge once every expected attempt has reported; ordinary
- * deliveries keep starting turns in the meantime. Fully routed descendant
- * deliveries leave nothing for the parent, so the wait continues.
+ * Waits for the next input the parked owner must act on. Fully routed
+ * descendant deliveries leave nothing for the parent, so the wait continues.
  */
 export async function nextTurnDelivery(input: {
   readonly inbox: SessionInboxReader;
   readonly cursor: SessionStateCursor;
-  readonly deferDeliveries?: boolean;
-  readonly expectedAttemptIds?: ReadonlySet<string>;
+  readonly hasWorkingTasks: () => boolean;
   readonly queue: SessionInputQueue;
 }): Promise<NextTurnInstruction> {
   const { inbox, cursor, queue } = input;
@@ -43,17 +35,10 @@ export async function nextTurnDelivery(input: {
   // pumped) is the only kind that may move the session to another deployment.
   let freshSequence: number | undefined;
   while (true) {
-    const selected = queue.takeNext(
-      getSessionTaskCohorts(cursor.sessionState.snapshot.session.state),
-      {
-        deferDeliveries: input.deferDeliveries,
-        expectedAttemptIds: input.expectedAttemptIds,
-        freshSequence: inbox.hasPending() ? undefined : freshSequence,
-      },
-    );
-    if (selected?.kind === "checkpoint") return selected;
+    const selected = queue.takeNext({
+      freshSequence: inbox.hasPending() ? undefined : freshSequence,
+    });
     if (selected?.kind === "control") return { kind: selected.control };
-    if (selected?.kind === "authorization-resume") return selected;
     if (selected?.kind === "turn") {
       const routed = await routeSelectedDelivery(selected, cursor);
       if (routed.kind === "cancel-turn") return routed;
@@ -72,16 +57,16 @@ export async function nextTurnDelivery(input: {
     const admitted = await admitSessionInboxPayload(payload, input);
     freshSequence =
       wasIdle && admitted.kind === "delivery" ? admitted.admission.sequence : undefined;
-    switch (admitted.kind) {
-      case "workflow":
-        return { kind: "workflow", message: admitted.message };
-      case "cancel":
-        await applySessionCancellation(admitted.command, input);
-        break;
-      case "delivery":
-      case "consumed":
-      case "runtime-action-result":
-        break;
+    if (admitted.kind === "workflow") return { kind: "workflow", message: admitted.message };
+    if (
+      admitted.kind === "cancel" &&
+      openInputs(storedProjection(cursor.sessionState.snapshot.session.state)).some(
+        (input) => input.request.kind === "session-limit",
+      )
+    )
+      return { kind: "cancel-turn" };
+    if (admitted.kind === "cancel" && input.hasWorkingTasks()) {
+      return { kind: "cancel-working-tasks" };
     }
   }
 }

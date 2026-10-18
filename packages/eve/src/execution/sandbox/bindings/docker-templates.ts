@@ -3,6 +3,7 @@ import { mkdir, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { type DockerCli, createDockerCli } from "#execution/sandbox/bindings/docker-cli.js";
+import { DOCKER_SANDBOX_LABEL } from "#execution/sandbox/bindings/docker-container.js";
 import type { ResolvedDockerSandboxOptions } from "#execution/sandbox/bindings/docker-options.js";
 import { expectDockerSuccess } from "#execution/sandbox/bindings/docker-utils.js";
 import {
@@ -36,7 +37,9 @@ export async function pruneDockerSandboxTemplates(input: {
   readonly retainCount?: number;
 }): Promise<void> {
   const cli = input.dockerCli ?? createDockerCli();
-  const markersDirectory = resolveDockerTemplateMarkersDirectory(input.appRoot);
+  const markersDirectory = resolveDockerTemplateMarkersDirectory(
+    resolveSandboxCacheDirectory(input.appRoot),
+  );
 
   let entries: Dirent<string>[];
   try {
@@ -98,13 +101,13 @@ function dockerTemplateImageTag(input: {
 }
 
 export function resolveDockerTemplateMarkerPath(
-  appRoot: string,
+  storagePath: string,
   input: {
     readonly optionsHash: string;
     readonly templateKey: string;
   },
 ): string {
-  return join(resolveDockerTemplateMarkersDirectory(appRoot), dockerTemplateImageTag(input));
+  return join(resolveDockerTemplateMarkersDirectory(storagePath), dockerTemplateImageTag(input));
 }
 
 export async function touchDockerTemplateMarker(
@@ -123,6 +126,38 @@ export async function touchDockerTemplateMarker(
 export async function dockerImageExists(cli: DockerCli, imageReference: string): Promise<boolean> {
   const result = await cli.run(["image", "inspect", "--format", "{{.Id}}", imageReference]);
   return result.exitCode === 0;
+}
+
+export async function commitDockerTemplateImage(input: {
+  readonly cli: DockerCli;
+  readonly containerIdentity: string;
+  readonly imageReference: string;
+  readonly templateKey: string;
+}): Promise<"committed" | "reused"> {
+  const result = await input.cli.run([
+    "commit",
+    "--change",
+    `LABEL ${DOCKER_SANDBOX_LABEL}=1`,
+    "--change",
+    `LABEL ${DOCKER_SANDBOX_LABEL}.role=template`,
+    "--change",
+    `LABEL ${DOCKER_SANDBOX_LABEL}.template-key=${input.templateKey}`,
+    input.containerIdentity,
+    input.imageReference,
+  ]);
+  if (result.exitCode === 0) {
+    return "committed";
+  }
+
+  // Template image tags are daemon-scoped while preparation locks are
+  // app-scoped. Accept only the loser of that exact publication race.
+  const publishedByPeer =
+    /already(?:\s*|-)?exists/iu.test(`${result.stderr}\n${result.stdout}`) &&
+    (await dockerImageExists(input.cli, input.imageReference));
+  if (!publishedByPeer) {
+    expectDockerSuccess(result, `commit sandbox template image "${input.imageReference}"`);
+  }
+  return "reused";
 }
 
 export async function ensureDockerBaseImage(
@@ -151,6 +186,6 @@ export async function ensureDockerBaseImage(
   expectDockerSuccess(await cli.run(["pull", options.image]), `pull base image "${options.image}"`);
 }
 
-function resolveDockerTemplateMarkersDirectory(appRoot: string): string {
-  return join(resolveSandboxCacheDirectory(appRoot), "docker", "templates");
+function resolveDockerTemplateMarkersDirectory(storagePath: string): string {
+  return join(storagePath, "docker", "templates");
 }

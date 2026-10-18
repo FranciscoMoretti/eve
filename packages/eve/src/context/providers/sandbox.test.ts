@@ -4,7 +4,7 @@ import { ensureSandboxAccess } from "#execution/sandbox/ensure.js";
 import type { HarnessSession } from "#harness/types.js";
 import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import type { RuntimeSandboxRegistry } from "#runtime/sandbox/registry.js";
-import { SessionIdKey } from "#context/keys.js";
+import { SandboxTerminalCleanupKey, SessionIdKey } from "#context/keys.js";
 import {
   BundleKey,
   ChannelKey,
@@ -59,6 +59,8 @@ describe("sandboxProvider", () => {
   beforeEach(() => {
     vi.mocked(ensureSandboxAccess).mockResolvedValue({
       captureState: vi.fn().mockResolvedValue({ initialized: false, session: null }),
+      detach: vi.fn().mockResolvedValue(undefined),
+      end: vi.fn().mockResolvedValue(undefined),
       get: vi.fn().mockResolvedValue(null),
       stop: vi.fn().mockResolvedValue(undefined),
     });
@@ -87,7 +89,28 @@ describe("sandboxProvider", () => {
     );
   });
 
-  it("tags sandbox backend resources with agent, channel, and session id", async () => {
+  it("exposes terminal cleanup through a framework-only context key", async () => {
+    const ctx = new ContextContainer();
+    const registry: RuntimeSandboxRegistry = createStubSandboxRegistry();
+    const end = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ensureSandboxAccess).mockResolvedValueOnce({
+      captureState: vi.fn().mockResolvedValue({ session: null }),
+      detach: vi.fn().mockResolvedValue(undefined),
+      end,
+      get: vi.fn().mockResolvedValue(null),
+      stop: vi.fn().mockResolvedValue(undefined),
+    });
+    ctx.set(BundleKey, createBundle({ agentName: "weather-agent", registry }));
+    ctx.set(ChannelKey, { kind: "slack" });
+    ctx.set(SessionIdKey, "session_1");
+
+    await sandboxProvider.create(ctx, createHarnessSession());
+    await ctx.require(SandboxTerminalCleanupKey)("expired");
+
+    expect(end).toHaveBeenCalledExactlyOnceWith("expired");
+  });
+
+  it("passes the owning session identity to sandbox access", async () => {
     const ctx = new ContextContainer();
     const registry: RuntimeSandboxRegistry = createStubSandboxRegistry();
 
@@ -100,11 +123,7 @@ describe("sandboxProvider", () => {
     expect(ensureSandboxAccess).toHaveBeenCalledWith(
       expect.objectContaining({
         ownsSandbox: true,
-        tags: {
-          agent: "weather-agent",
-          channel: "slack",
-          sessionId: "session_1",
-        },
+        sessionId: "session_1",
       }),
     );
   });
