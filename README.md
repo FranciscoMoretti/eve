@@ -31,6 +31,11 @@ are subsequent, **unreleased** changes. The app's narrowed copy behavior uses th
 existing trusted-seed API and does not require publishing these removals. A future
 package release remains a separate decision.
 
+The published `.1` has a dev-startup defect in isolated nested dependency layouts:
+its self-modification filesystem imports the unscoped package name. This draft
+fixes that internal import and includes an isolated-package regression. The fix
+is also unreleased, so the app Playwright startup remains blocked on a release.
+
 [ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
 app review. Historical evidence and upstream replacement reviews remain linked
 in [startup #8](https://github.com/FranciscoMoretti/eve/pull/8),

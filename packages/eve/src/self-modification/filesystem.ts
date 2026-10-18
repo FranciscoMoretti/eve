@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { IFileSystem } from "just-bash";
 
-import { getLocalDevCapability } from "eve/local-dev";
+import { getLocalDevCapability } from "#runtime/local-dev-capability.js";
 
 export async function createSelfModificationFilesystem(input: {
   readonly appRoot?: string;

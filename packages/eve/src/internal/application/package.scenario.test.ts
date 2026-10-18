@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -51,5 +51,26 @@ describe("installed package self references", () => {
       `const { resolvePackageDependencyPath } = await import(${JSON.stringify(entry)}); console.log(resolvePackageDependencyPath("eve/context"));`,
     ]);
     expect(stdout.trim()).toBe(realpathSync.native(contextPath));
+  });
+});
+
+describe("isolated scoped development modules", () => {
+  it("loads the self-modification filesystem without a hoisted eve alias", async () => {
+    const root = await createScratchDirectory("eve-scoped-development-");
+    const manifest = JSON.parse(
+      await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+    );
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ ...manifest, name: "@chat-js/eve" }),
+    );
+    await cp(new URL("../../../dist", import.meta.url), join(root, "dist"), { recursive: true });
+    const entry = pathToFileURL(join(root, "dist/src/self-modification/filesystem.js")).href;
+    const { stdout } = await run(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `const module = await import(${JSON.stringify(entry)}); console.log(typeof module.createSelfModificationFilesystem);`,
+    ]);
+    expect(stdout.trim()).toBe("function");
   });
 });
