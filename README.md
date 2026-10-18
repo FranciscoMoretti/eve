@@ -24,17 +24,18 @@ missing evidence.
 
 ### Distribution and evidence
 
-ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.1`.
-That published package corresponds to `d2349a800d7ec62a99ace2078250c6ffdcb94faa`
-and uses the `chatjs` tag; `latest` remains unchanged. The removals in this draft
-are subsequent, **unreleased** changes. The app's narrowed copy behavior uses the
-existing trusted-seed API and does not require publishing these removals. A future
-package release remains a separate decision.
+ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.2`.
+The published package corresponds to signed source commit
+`97aba72836dad4194a08a002e08a2bf8d38809cf`, including these simplifications and
+the isolated-layout development import fix. The `chatjs` tag points to `.2`;
+`latest` remains `0.61.0-chatjs.0`.
 
-The published `.1` has a dev-startup defect in isolated nested dependency layouts:
-its self-modification filesystem imports the unscoped package name. This draft
-fixes that internal import and includes an isolated-package regression. The fix
-is also unreleased, so the app Playwright startup remains blocked on a release.
+Registry bytes match the tested artifact. SHA-512 integrity:
+`lm6eZBc0hj9cSd2iZnhXt772GqHUHp1q3RWNshEBfTxZNyM8sEOnJr5U0MDXJENtRUsg7hGjRtduMG0CzpIA2Q==`.
+A clean frozen registry install resolves `.2` in all four app consumers. The
+isolated module regression and nested development startup pass. Historical
+`.1` startup failure came from an internal unscoped package import and is fixed
+in `.2`.
 
 [ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
 app review. Historical evidence and upstream replacement reviews remain linked
