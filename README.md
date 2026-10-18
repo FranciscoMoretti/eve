@@ -37,6 +37,10 @@ isolated module regression and nested development startup pass. Historical
 `.1` startup failure came from an internal unscoped package import and is fixed
 in `.2`.
 
+Fork prerelease versions do not name upstream container images. Set
+`EVE_SANDBOX_IMAGE_TAG=0.80.1` for the matching upstream image; ChatJS commands
+default to this tag and preserve an explicit override.
+
 [ChatJS #850](https://github.com/FranciscoMoretti/chat-js/pull/850) is the integrated
 app review. Historical evidence and upstream replacement reviews remain linked
 in [startup #8](https://github.com/FranciscoMoretti/eve/pull/8),
