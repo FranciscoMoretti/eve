@@ -31,13 +31,13 @@ describe("microsandbox package installation guidance", () => {
         host: { loadOptionalPackage, resolveProjectPath: (path) => path },
         options: resolveMicrosandboxOptions({ setup: { autoInstall: false } }),
       }),
-    ).rejects.toThrow("pnpm add -D microsandbox@0.6.18");
+    ).rejects.toThrow("pnpm add -D microsandbox@0.5.5");
     expect(loadOptionalPackage).toHaveBeenCalledWith(
       expect.objectContaining({
         autoInstall: false,
         packageName: "microsandbox",
-        installPackageName: "microsandbox@0.6.18",
-        missingMessage: expect.stringContaining("`pnpm add -D microsandbox@0.6.18`"),
+        installPackageName: "microsandbox@0.5.5",
+        missingMessage: expect.stringContaining("`pnpm add -D microsandbox@0.5.5`"),
       }),
     );
   });
@@ -47,41 +47,14 @@ const metadataState = vi.hoisted(() => ({
   writeSessionMetadata: vi.fn(),
 }));
 
-it("does not finish stopping until the persisted VM has stopped, so resume cannot reconnect to a draining process", async () => {
-  let finishStop!: () => void;
-  const stopped = new Promise<void>((resolve) => {
-    finishStop = resolve;
-  });
-  const detach = vi.fn(async () => {});
-  const stopWithTimeout = vi.fn(() => stopped);
-  const vm = new MicrosandboxVm(
-    {
-      module: { Sandbox: { get: async () => ({ stopWithTimeout }) } } as never,
-      options: resolveMicrosandboxOptions(undefined),
-      sessionKey: "source",
-    },
-    { stop: async () => {}, detach } as never,
-    "source-vm",
-    undefined,
-  );
-  const stopping = vm.stop();
-  await vi.waitFor(() => expect(stopWithTimeout).toHaveBeenCalledWith(10_000));
-  expect(detach).not.toHaveBeenCalled();
-  finishStop();
-  await stopping;
-  expect(detach).toHaveBeenCalledOnce();
+vi.mock("#execution/sandbox/bindings/microsandbox-metadata.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("#execution/sandbox/bindings/microsandbox-metadata.js")>();
+  return {
+    ...actual,
+    writeSessionMetadata: metadataState.writeSessionMetadata,
+  };
 });
-
-// Resource ownership and retirement races have filesystem integration coverage;
-// these unit cases own SDK lifecycle ordering and network-policy behavior.
-vi.mock("#execution/sandbox/bindings/microsandbox-resource-metadata.js", () => ({
-  updateMicrosandboxMaterialization: (path: string, _sessionId: string, metadata: unknown) =>
-    metadataState.writeSessionMetadata(path, metadata),
-  withMicrosandboxResourceOperation: (input: {
-    resource: { name: string };
-    run: (previouslyLive: boolean) => Promise<unknown>;
-  }) => input.run(input.resource.name === "eve-sbx-ses-old"),
-}));
 
 // The microsandbox native bindings ship for macOS (Apple Silicon) and
 // glibc Linux only; keep every microsandbox suite off Windows.
@@ -205,20 +178,6 @@ describe.skipIf(process.platform === "win32")("connectMicrosandbox", () => {
       optionsHash: "options-hash",
       sandboxName: "eve-sbx-ses-old",
       stateSnapshotName: "eve-sbx-state-existing",
-      resources: {
-        version: 1,
-        sessionId: "session-key",
-        authority: "/fixture",
-        entries: [
-          {
-            kind: "state-snapshot",
-            name: "eve-sbx-state-existing",
-            phase: "live",
-            nativeId: "state-digest",
-            nativePath: "/snapshots/eve-sbx-state-existing",
-          },
-        ],
-      },
       version: 2,
     };
 
@@ -230,7 +189,7 @@ describe.skipIf(process.platform === "win32")("connectMicrosandbox", () => {
       sessionKey: "session-key",
     });
 
-    expect(runtime.createdFromSnapshot).toBe("/snapshots/eve-sbx-state-existing");
+    expect(runtime.createdFromSnapshot).toBe("eve-sbx-state-existing");
     expect(metadataState.writeSessionMetadata).toHaveBeenLastCalledWith(
       "/tmp/eve-microsandbox-session/metadata.json",
       expect.objectContaining({
@@ -696,7 +655,6 @@ function createMockMicrosandboxModule(
     async remove() {},
     async snapshot(snapshotName: string) {
       createdFromSnapshot = snapshotName;
-      snapshots.add(snapshotName);
     },
     async stopWithTimeout() {},
   };
@@ -705,9 +663,6 @@ function createMockMicrosandboxModule(
   const module = {
     MicrosandboxError: class extends Error {},
     Sandbox: {
-      async listWith() {
-        return { sandboxes: [] };
-      },
       async get() {
         return oldHandle;
       },
@@ -719,12 +674,6 @@ function createMockMicrosandboxModule(
       },
     },
     Snapshot: {
-      async open() {
-        return { digest: "state-digest" };
-      },
-      async list() {
-        return [...snapshots].map((name) => ({ name, digest: name }));
-      },
       async get(snapshotName: string) {
         if (!snapshots.has(snapshotName)) {
           throw new Error(`snapshot store unavailable for ${snapshotName}`);
@@ -733,7 +682,6 @@ function createMockMicrosandboxModule(
       },
       async remove(snapshotName: string) {
         removedSnapshots.push(snapshotName);
-        snapshots.delete(snapshotName);
       },
     },
   };

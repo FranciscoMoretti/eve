@@ -1,13 +1,21 @@
-import { realpath } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import {
   DOCKER_SANDBOX_LABEL,
   stopDockerContainerIfRunning,
 } from "#execution/sandbox/bindings/docker-container.js";
 import { createDockerCli, DockerUnavailableError } from "#execution/sandbox/bindings/docker-cli.js";
-import { readSessionMetadata } from "#execution/sandbox/bindings/microsandbox-metadata.js";
-import { loadMicrosandboxWithoutInstall } from "#execution/sandbox/bindings/microsandbox-runtime.js";
+import {
+  MICROSANDBOX_METADATA_VERSION,
+  readSessionMetadata,
+  writeSessionMetadata,
+} from "#execution/sandbox/bindings/microsandbox-metadata.js";
+import {
+  createProviderName,
+  loadMicrosandboxWithoutInstall,
+  removeSnapshotIfExists,
+  stopAndSnapshotMicrosandboxSandbox,
+} from "#execution/sandbox/bindings/microsandbox-runtime.js";
 import {
   EVE_DEVELOPMENT_SANDBOX_METADATA_PATH_TAG,
   EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG,
@@ -70,32 +78,16 @@ async function stopDevelopmentMicrosandboxResources(
     return;
   }
 
-  const sandboxes = [];
-  let cursor: string | undefined;
-  const cursors = new Set<string>();
-  do {
-    const page = await module.Sandbox.listWith((list) => {
-      const scoped = list.labels({
-        "eve.provider": "microsandbox",
-        [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
-      });
-      return cursor === undefined ? scoped : scoped.cursor(cursor);
-    });
-    sandboxes.push(...page.sandboxes);
-    cursor = page.nextCursor;
-    if (cursor !== undefined && cursors.has(cursor))
-      throw new Error("Microsandbox cleanup pagination did not advance.");
-    if (cursor !== undefined) cursors.add(cursor);
-  } while (cursor !== undefined);
+  const sandboxes = await module.Sandbox.listWith({
+    labels: {
+      "eve.provider": "microsandbox",
+      [EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG]: devRunId,
+    },
+  });
 
   await Promise.all(
     sandboxes
-      .filter(
-        (sandbox) =>
-          (sandbox.status === "running" || sandbox.status === "draining") &&
-          getMicrosandboxLabel(sandbox.configJson, "eve.provider") === "microsandbox" &&
-          getMicrosandboxLabel(sandbox.configJson, EVE_DEVELOPMENT_SANDBOX_RUN_ID_TAG) === devRunId,
-      )
+      .filter((sandbox) => sandbox.status === "running" || sandbox.status === "draining")
       .map(async (sandbox) => {
         const metadataPath = getMicrosandboxLabel(
           sandbox.configJson,
@@ -108,30 +100,29 @@ async function stopDevelopmentMicrosandboxResources(
         }
 
         const metadata = await readSessionMetadata(metadataPath);
-        const resources = metadata?.resources;
-        const authority = join(await realpath(appRoot), ".eve/sandbox-cache/microsandbox");
-        const vm = resources?.entries.find(
-          (entry) =>
-            entry.kind === "sandbox" && entry.name === sandbox.name && entry.phase === "live",
-        );
-        if (
-          metadata === null ||
-          metadata.sandboxName !== sandbox.name ||
-          resources?.authority !== authority ||
-          vm?.nativeId === undefined ||
-          dirname(dirname(dirname(metadataPath))) !== authority ||
-          (await realpath(metadataPath)) !== metadataPath
-        )
-          throw new Error("Development microsandbox resource ownership is unavailable.");
+        if (metadata === null || metadata.sandboxName !== sandbox.name) {
+          const handle = await module.Sandbox.get(sandbox.name);
+          await handle.stopWithTimeout(10_000).catch(() => {});
+          return;
+        }
 
-        // Development resumes the same persisted VM. Do not allocate a snapshot
-        // inside the CLI's bounded shutdown window: termination can interrupt its
-        // receipt, leaving a permanently unknown allocation on every normal exit.
-        log?.(`stopping development microsandbox session "${sandbox.name}"`);
-        const handle = await module.Sandbox.get(sandbox.name);
-        if (handle.id !== vm.nativeId) throw new Error("Microsandbox VM was replaced.");
-        await handle.stop();
-        await handle.stopWithTimeout(10_000);
+        log?.(`snapshotting development microsandbox session "${sandbox.name}" before shutdown`);
+        const previousStateSnapshotName = metadata.stateSnapshotName;
+        const stateSnapshotName = createProviderName(
+          "eve-sbx-state",
+          `${metadata.sandboxName}:${randomUUID()}`,
+        );
+        await stopAndSnapshotMicrosandboxSandbox(module, sandbox.name, stateSnapshotName);
+        await writeSessionMetadata(metadataPath, {
+          networkPolicy: metadata.networkPolicy,
+          optionsHash: metadata.optionsHash,
+          sandboxName: metadata.sandboxName,
+          stateSnapshotName,
+          version: MICROSANDBOX_METADATA_VERSION,
+        });
+        if (previousStateSnapshotName !== undefined) {
+          await removeSnapshotIfExists(module, previousStateSnapshotName);
+        }
       }),
   );
 }
