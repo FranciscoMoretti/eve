@@ -7,18 +7,42 @@ Compare the residual fork against exact upstream commit
 `e3cea42486e7e32b7b3001bb5912e076b5443ad5` (eve 0.80.1), not upstream's moving
 `main`. Recheck every entry when changing that baseline.
 
+This shared-workspace seed contract is source-only until a new fork package is
+released. ChatJS must adopt that version together with its workspace ownership
+change; the currently published package does not provide this contract.
+
 ### Retained contracts
 
 Three feature areas contain four review slices. The rows describe current
 patches; proposed destinations are investigation directions, not confirmed
-upstream equivalents or submitted contributions.
+upstream equivalents or submitted contributions. T1 and the remaining T2 are
+parts of one proposed upstream capability: **initialize a conversation from
+history, including its attachment references**. Keep both patch IDs until that
+capability replaces their implementations.
 
-| ID / feature area              | Retained change and source                                                                                                                                                                       | Why it remains / ChatJS boundary                                                                                                                          | Removal condition / investigation direction                                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                           | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.        | Adopt an upstream trusted initial-transcript API that initializes both native history and events. Investigate a generic server-side seed contract.                                    |
-| T2 / Transcript initialization | [Imported attachment staging](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                               | Fresh sandboxes must receive explicit attachments. ChatJS owns access checks, copied file references and URL authorization; eve stages and hydrates them. | An upstream transcript/attachment resolver supports equivalent staging and ownership checks. Investigate with T1.                                                                     |
-| R2 / Local resource management | [Hosted-build import separation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) keeps the development-environment helper independent of the optional installer.            | Hosted builds can prune the installer while the native runtime still needs the helper.                                                                    | Upstream accepts the import/pruning fix or provides an equivalent build path. Candidate for a standalone bug fix.                                                                     |
-| P1 / Package resolution        | [Scoped package/self-reference resolution](packages/eve/src/internal/application/package.ts) and the [internal development-capability import](packages/eve/src/self-modification/filesystem.ts). | ChatJS installs `@chat-js/eve` under the `eve` alias, including isolated dependency layouts.                                                              | Retire scoped-distribution handling when ChatJS returns to upstream eve, or upstream supports generic package identity resolution. Investigate the internal import fix independently. |
+| ID / feature area              | Retained change and source                                                                                                                                                                       | Why it remains / ChatJS boundary                                                                                                                                                                  | Removal condition / investigation direction                                                                                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                           | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.                                                | Adopt an upstream trusted history-initialization API covering native history, display events, and the attachment acceptance criteria below (T2).                                    |
+| T2 / Transcript initialization | [Shared-workspace attachment resolution](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                    | Fork history references existing files in one app-owned workspace. ChatJS owns authorization and immutable originals; eve verifies existing paths and hydrates model input without copying files. | Retire with the attachment portion of the T1 history-initialization proposal: existing workspace references, authorization and equivalent integrity checks.                                            |
+| R2 / Local resource management | [Hosted-build import separation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) keeps the development-environment helper independent of the optional installer.            | Hosted builds can prune the installer while the native runtime still needs the helper.                                                                                                            | Upstream accepts the import/pruning fix or provides an equivalent build path. Candidate for a standalone bug fix.                                                                     |
+| P1 / Package resolution        | [Scoped package/self-reference resolution](packages/eve/src/internal/application/package.ts) and the [internal development-capability import](packages/eve/src/self-modification/filesystem.ts). | ChatJS installs `@chat-js/eve` under the `eve` alias, including isolated dependency layouts.                                                                                                      | Retire scoped-distribution handling when ChatJS returns to upstream eve, or upstream supports generic package identity resolution. Investigate the internal import fix independently. |
+
+The combined history-initialization proposal must:
+
+- Initialize a new conversation from selected history, including image/PDF
+  attachment references, without replaying historical tools.
+- Resolve those references in the existing shared workspace without allocating
+  another sandbox or copying workspace files. Shared paths alone do not initialize
+  the new session's native attachment metadata.
+- Preserve authorization and integrity checks, including on later turns and after
+  compaction, while retaining access to immutable uploaded originals when their
+  mutable working copies are edited or deleted.
+
+T2 therefore remains an attachment requirement within history initialization,
+not a separate workspace-copy feature. ChatJS owns workspace membership, access
+control and immutable original storage; eve needs to reconstruct valid native
+attachment references for the imported history. This is the agreed proposal scope,
+not a claim that upstream already supports it or that either patch is removed.
 
 R1, L1 and L2 are retired in this source tree. Companion
 [ChatJS #865](https://github.com/FranciscoMoretti/chat-js/pull/865) owns persistent
@@ -41,9 +65,11 @@ source-boundary capture belong to ChatJS. This inventory does not propose moving
 those responsibilities into eve. No upstream contribution is claimed for a row
 until a proposal or PR is linked here.
 
-Copies start with fresh sandboxes. They retain conversation history, documents,
-and explicit attachments; installed packages, arbitrary files, and running
-processes are not copied. Historical turn checkpoints, sandbox fork snapshots,
+Forks share the same app-owned workspace. They retain only the selected conversation
+history while files, installed environment, and sandbox state remain shared and
+are never rolled back to the historical boundary. Imported explicit attachments
+reuse previously observed paths without destination allocation or duplicate writes.
+ChatJS retains immutable uploaded originals separately from mutable working files. Historical turn checkpoints, sandbox fork snapshots,
 borrower retention, and required document checkpoint hooks are removed. ChatJS
 captures the current completed conversation under its own admission and document
 locks. No custom native operation lookup or admission ledger remains. Interrupted

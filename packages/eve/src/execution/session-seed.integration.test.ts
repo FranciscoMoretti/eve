@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { pngBytes } from "#internal/testing/media-fixtures.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import { createSessionStep } from "#execution/create-session-step.js";
 import { emitSessionTranscriptSeedStep } from "#execution/emit-session-transcript-seed-step.js";
@@ -13,7 +14,10 @@ import {
   stagePendingSeedAttachments,
   seedFileDigests,
 } from "#harness/seed-attachments.js";
-import { hydrateSandboxAttachments } from "#harness/attachment-staging.js";
+import {
+  stageAttachmentsToSandbox,
+  hydrateSandboxAttachments,
+} from "#harness/attachment-staging.js";
 
 vi.mock("#runtime/sessions/compiled-agent-cache.js", () => ({
   getCompiledRuntimeAgentBundle: vi.fn(),
@@ -104,62 +108,103 @@ it("installs ordered copy history and stable display without replaying historica
   ).rejects.toThrow("fresh root");
 });
 
-it("keeps failed copied files pending and rejects missing or mutated destination bytes on later hydration", async () => {
-  const runtime = await createTestRuntime();
-  const sandbox = mockSandbox({ id: "destination-only" });
-  const initial = markSeedAttachmentsPending({
-    ...createSession({ continuationToken: "copy", sessionId: "destination", turnAgent }),
-    history: [
+it.each([
+  { mediaType: "image/png", bytes: pngBytes(2, 3) },
+  {
+    mediaType: "application/pdf",
+    bytes: Buffer.from("%PDF-1.4\n1 0 obj <</Type /Catalog>> endobj\n%%EOF"),
+  },
+])(
+  "reuses shared $mediaType paths without copying files and rejects unavailable or changed originals",
+  async ({ mediaType, bytes }) => {
+    const runtime = await createTestRuntime();
+    const sandbox = mockSandbox({ id: "shared-workspace" });
+    const source = await runtime.runAsSession({ sessionId: "source", sandbox }, () =>
+      stageAttachmentsToSandbox([{ type: "file", data: bytes, mediaType, filename: "notes.txt" }]),
+    );
+    if (typeof source === "string" || source[0]?.type !== "file" || !source[0].filename)
+      throw new Error("Expected a staged source file.");
+    const existingPath = source[0].filename;
+    const initial = markSeedAttachmentsPending(
       {
-        role: "user",
-        kind: "user",
-        content: [
+        ...createSession({ continuationToken: "copy", sessionId: "destination", turnAgent }),
+        history: [
           {
-            type: "file",
-            data: new URL("https://chat.example/destination-file"),
-            mediaType: "text/plain",
-            filename: "notes.txt",
+            role: "user",
+            kind: "user",
+            content: [
+              {
+                type: "file",
+                data: new URL("https://chat.example/destination-file"),
+                mediaType,
+                filename: "notes.txt",
+              },
+            ],
           },
         ],
       },
-    ],
-  });
-  const channel = {
-    kind: "copy",
-    state: {},
-    fetchFile: vi.fn(async () => Buffer.from("owned destination bytes")),
-  };
-  await expect(
-    runtime.runAsSession({ sandbox, channel: { ...channel, fetchFile: async () => null } }, () =>
-      stagePendingSeedAttachments(initial),
-    ),
-  ).rejects.toThrow("did not resolve");
-  expect(initial.state?.["eve.pending-seed-files"]).toBe(true);
-  const staged = await runtime.runAsSession({ sandbox, channel }, () =>
-    stagePendingSeedAttachments(initial),
-  );
-  expect(channel.fetchFile).toHaveBeenCalledOnce();
-  expect(staged.state?.["eve.pending-seed-files"]).toBeUndefined();
-  const digests = seedFileDigests(staged);
-  await expect(
-    runtime.runAsSession({ sandbox }, () => hydrateSandboxAttachments(staged.history, digests)),
-  ).resolves.toHaveLength(1);
-  await expect(
-    runtime.runAsSession({ sandbox: mockSandbox({ id: "different-sandbox" }) }, () =>
-      hydrateSandboxAttachments(staged.history, digests),
-    ),
-  ).rejects.toThrow("unavailable or changed");
-  await expect(
-    runtime.runAsSession({ sandbox: mockSandbox({ id: "compacted-destination" }) }, () =>
-      hydrateSandboxAttachments(
-        [{ role: "user", content: "Compacted attachment reference" }],
-        digests,
+      {
+        attachments: "channel",
+        messages: [
+          {
+            role: "user",
+            parts: [
+              {
+                type: "file",
+                url: "https://chat.example/destination-file",
+                mediaType,
+                filename: "notes.txt",
+                existingPath,
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const channel = {
+      kind: "copy",
+      state: {},
+      fetchFile: vi.fn(async () => ({ bytes, mediaType })),
+    };
+    await expect(
+      runtime.runAsSession({ sandbox, channel: { ...channel, fetchFile: async () => null } }, () =>
+        stagePendingSeedAttachments(initial),
       ),
-    ),
-  ).rejects.toThrow("unavailable or changed");
-  const path = Object.keys(digests)[0]!;
-  await sandbox.session.writeBinaryFile({ path, content: Buffer.from("changed") });
-  await expect(
-    runtime.runAsSession({ sandbox }, () => hydrateSandboxAttachments(staged.history, digests)),
-  ).rejects.toThrow("unavailable or changed");
-});
+    ).rejects.toThrow("did not resolve");
+    expect(initial.state?.["eve.pending-seed-files"]).toEqual({
+      "https://chat.example/destination-file": existingPath,
+    });
+    const staged = await runtime.runAsSession({ sandbox, channel }, () =>
+      stagePendingSeedAttachments(initial),
+    );
+    expect(channel.fetchFile).toHaveBeenCalledOnce();
+    expect(sandbox.writes).toHaveLength(1); // Only the original upload; importing history performs no write.
+    expect(staged.state?.["eve.pending-seed-files"]).toBeUndefined();
+    const digests = seedFileDigests(staged);
+    const modelHistory = await runtime.runAsSession({ sessionId: "fork", sandbox }, () =>
+      hydrateSandboxAttachments(staged.history, digests),
+    );
+    const content = modelHistory[0]?.content;
+    if (!Array.isArray(content)) throw new Error("Expected attachment model content.");
+    const modelFile = content.find((part) => part.type === "file");
+    expect(modelFile?.data).toEqual(bytes);
+    await expect(
+      runtime.runAsSession({ sandbox: mockSandbox({ id: "different-sandbox" }) }, () =>
+        hydrateSandboxAttachments(staged.history, digests),
+      ),
+    ).rejects.toThrow("unavailable or changed");
+    await expect(
+      runtime.runAsSession({ sandbox: mockSandbox({ id: "compacted-destination" }) }, () =>
+        hydrateSandboxAttachments(
+          [{ role: "user", content: "Compacted attachment reference" }],
+          digests,
+        ),
+      ),
+    ).rejects.toThrow("unavailable or changed");
+    const path = Object.keys(digests)[0]!;
+    await sandbox.session.writeBinaryFile({ path, content: Buffer.from("changed") });
+    await expect(
+      runtime.runAsSession({ sandbox }, () => hydrateSandboxAttachments(staged.history, digests)),
+    ).rejects.toThrow("unavailable or changed");
+  },
+);

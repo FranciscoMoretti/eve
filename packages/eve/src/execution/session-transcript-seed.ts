@@ -12,8 +12,10 @@ const file = z.strictObject({
     .url()
     .refine(
       (value) => ["https:", "http:"].includes(new URL(value).protocol),
-      "Seed files require a copied HTTP URL.",
+      "Seed files require an authorized original HTTP URL.",
     ),
+  /** Canonical path observed when this file was staged in the shared workspace. */
+  existingPath: z.string().startsWith("/").min(1),
   mediaType: z.string().min(1),
   filename: z.string().optional(),
   size: z.number().int().nonnegative().optional(),

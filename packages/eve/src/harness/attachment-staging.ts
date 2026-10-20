@@ -91,9 +91,10 @@ export async function stageAttachmentsForAdapter(
   );
 }
 
-/** Trusted copy files must resolve through the destination channel, never public fallback. */
+/** Imported files resolve through the authenticated channel and reuse the shared workspace. */
 export async function stageSeedFile(
   part: FilePart,
+  existingPath: string,
 ): Promise<{ readonly part: FilePart; readonly digest: string }> {
   const ctx = loadContext();
   const adapter = ctx.get(ChannelKey);
@@ -110,6 +111,7 @@ export async function stageSeedFile(
     resolved,
     sandbox,
     adapter.uploadPolicy ?? DEFAULT_UPLOAD_POLICY,
+    existingPath,
   );
   if (staged.type !== "file") throw new Error("Copied file violates attachment policy.");
   return { part: staged, digest: createHash("sha256").update(resolved.bytes).digest("hex") };
@@ -606,6 +608,7 @@ async function stageResolvedBytes(
   resolved: FetchFileResult,
   sandbox: SandboxSession,
   policy: UploadPolicy | undefined,
+  existingPath?: string,
 ): Promise<FilePart | TextPart> {
   const mediaType = verifyMediaType(
     resolved.bytes,
@@ -626,13 +629,36 @@ async function stageResolvedBytes(
       );
     }
   }
-  const ref = await writeSandboxRef(
-    resolved.bytes,
-    mediaType,
-    resolved.filename ?? part.filename,
-    sandbox,
-  );
+  const ref =
+    existingPath === undefined
+      ? await writeSandboxRef(
+          resolved.bytes,
+          mediaType,
+          resolved.filename ?? part.filename,
+          sandbox,
+        )
+      : await reuseSandboxRef(resolved.bytes, mediaType, existingPath, sandbox);
   return { ...part, data: encodeSandboxRef(ref), filename: ref.path, mediaType: ref.mediaType };
+}
+
+/** Verify the app-selected shared path and reconstruct native metadata without writing. */
+async function reuseSandboxRef(
+  bytes: Buffer,
+  mediaType: string,
+  path: string,
+  sandbox: SandboxSession,
+): Promise<SandboxRef> {
+  const root = sandbox.resolvePath(ATTACHMENTS_ROOT).replace(/\/$/, "");
+  if (!path.startsWith(`${root}/`) || path.split("/").some((part) => part === ".." || part === "."))
+    throw new Error("Imported attachment path is outside the shared attachment workspace.");
+  const stored = await sandbox.readBinaryFile({ path });
+  if (
+    !stored ||
+    !bytes.equals(Buffer.from(stored)) ||
+    basename(dirname(path)) !== sha256Prefix(bytes)
+  )
+    throw new Error("Imported attachment is unavailable or changed in the shared workspace.");
+  return { ...readMediaMetadata(bytes, mediaType), path };
 }
 
 /**

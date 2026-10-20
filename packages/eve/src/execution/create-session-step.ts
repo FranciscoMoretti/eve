@@ -100,10 +100,10 @@ export async function createSessionStep(input: {
   const seeded =
     prepared === undefined
       ? session
-      : markSeedAttachmentsPending({
-          ...session,
-          history: [...session.history, ...prepared.history],
-        });
+      : markSeedAttachmentsPending(
+          { ...session, history: [...session.history, ...prepared.history] },
+          input.seed!,
+        );
   const { history, sessionState } = createDurableSessionValues(seeded);
   return { history, state: sessionState };
 }
