@@ -380,20 +380,30 @@ event. Creation does not execute historical tools or call a model. New display
 IDs are deterministic within the destination. Model provenance is display data,
 not an execution receipt or permission. No general history-import API is exposed.
 
-Files must already have destination HTTP URLs. They resolve only through the
-destination channel before the first model call; missing ownership, unavailable
-sandbox, failed storage, or upload-policy rejection stops continuation with the
-pending history intact. Copied-file digests remain checked before later model
-calls, including after compaction. Missing or changed bytes cause failure rather
-than silently replacing copied context with a text note. Ordinary uploads keep
-their existing behavior.
+Each seeded file must include its authorized original HTTP `url` and an
+`existingPath` previously observed in the shared sandbox. The application must
+validate that the destination conversation may access that workspace and that
+its selected source history owns the attachment. Neither field may come directly
+from an untrusted browser request.
 
-Copies start with a fresh sandbox. Installed packages, arbitrary filesystem contents,
-and running processes are not copied. The application must capture a completed
-conversation consistently with its document revisions and send-admission fence;
-active turns, pending approvals and unresolved dispatches cannot be copied.
-Historical boundary requests are rejected. The runtime does not retain historical
-copy checkpoints or restore source sandbox snapshots.
+Before the first model call, eve resolves the original bytes through the
+current authenticated channel, checks upload policy, verifies the existing file
+and constructs its native attachment reference. It does not write or copy the
+file. The current provider must expose the same backing workspace to both
+sessions; the provider interface does not require a new sandbox for each session.
+Missing paths, changed bytes or unavailable authorization stop continuation with
+the pending history intact. Digests remain checked on later calls, including
+after compaction, so an imported original cannot silently disappear from model
+input. Applications may resolve immutable originals from their own storage in
+their provider's `readBinaryFile` implementation while keeping tool working
+copies mutable.
+
+ChatJS forks share files, installed environment and sandbox state. Historical
+forks change conversation history only; they do not roll back workspace files.
+The application owns workspace membership, turn serialization and resource
+retention after conversation deletion. A public transcript alone does not grant
+workspace access. The runtime does not retain historical copy checkpoints or
+restore sandbox snapshots.
 
 Creation responses return the native session ID. Applications journal immutable
 intent before dispatch and retain that positive receipt. Interrupted requests may

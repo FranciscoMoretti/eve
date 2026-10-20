@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { AgentSpanIdGenerator } from "#compiled/@vercel/agent-runs/index.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 import { jsonSchema, type FilePart, type ModelMessage } from "ai";
@@ -3787,7 +3788,8 @@ describe("runProxySubagentEventStep", () => {
   });
 });
 
-it("stages pending copied history before model execution and keeps failed staging out of the model", async () => {
+it("resolves shared history without writes before model execution and fences unavailable files", async () => {
+  const existingPath = `/workspace/.eve/attachments/${createHash("sha256").update("diagram-bytes").digest("hex").slice(0, 16)}/copied.txt`;
   const sourceHistory: HarnessSession["history"] = [
     {
       role: "user",
@@ -3804,11 +3806,14 @@ it("stages pending copied history before model execution and keeps failed stagin
   ];
   const original = createStubSession({
     history: sourceHistory,
-    state: { "eve.pending-seed-files": true },
+    state: { "eve.pending-seed-files": { "https://files.example/copied.txt": existingPath } },
   });
   installSessionStoreMocks([original]);
   vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(createTurnStepTestBundle());
-  const sandbox = mockSandbox({ id: "copied-destination" });
+  const sandbox = mockSandbox({
+    id: "shared-workspace",
+    initialFiles: { [existingPath]: "diagram-bytes" },
+  });
   vi.mocked(ensureSandboxAccess).mockResolvedValueOnce(sandbox.access as never);
   const execute = vi.fn(async (session: HarnessSession): Promise<StepResult> => ({
     next: null,
@@ -3827,7 +3832,7 @@ it("stages pending copied history before model execution and keeps failed stagin
   const file = (modelSession.history[0]!.content as FilePart[])[0]!;
   expect(isSandboxRefUrl(file.data)).toBe(true);
   expect(modelSession.state?.["eve.pending-seed-files"]).toBeUndefined();
-  expect(sandbox.writes).toHaveLength(1);
+  expect(sandbox.writes).toHaveLength(0);
 
   execute.mockClear();
   installSessionStoreMocks([original]);
@@ -3842,5 +3847,7 @@ it("stages pending copied history before model execution and keeps failed stagin
     }),
   ).rejects.toThrow("destination channel and sandbox");
   expect(execute).not.toHaveBeenCalled();
-  expect(original.state?.["eve.pending-seed-files"]).toBe(true);
+  expect(original.state?.["eve.pending-seed-files"]).toEqual({
+    "https://files.example/copied.txt": existingPath,
+  });
 });
