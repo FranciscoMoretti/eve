@@ -1,9 +1,5 @@
-import {
-  updateMicrosandboxMaterialization,
-  withMicrosandboxResourceOperation,
-} from "#execution/sandbox/bindings/microsandbox-resource-metadata.js";
 import { createHash, randomUUID } from "node:crypto";
-import { access, stat } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { posix } from "node:path";
 
 import { shellQuote } from "#execution/sandbox/shell-quote.js";
@@ -21,8 +17,7 @@ import {
   createMicrosandboxSessionMetadata,
   MICROSANDBOX_METADATA_VERSION,
   type MicrosandboxSessionMetadata,
-  type MicrosandboxResourceFact,
-  readSessionMetadata,
+  writeSessionMetadata,
 } from "#execution/sandbox/bindings/microsandbox-metadata.js";
 import {
   assertMicrosandboxPlatformCandidate,
@@ -46,12 +41,10 @@ import {
   isMicrosandboxNotFoundError,
   isMicrosandboxSnapshotSourceRunningError,
   isMicrosandboxStillRunningError,
+  removeSnapshotIfExists,
   snapshotExists,
 } from "#execution/sandbox/bindings/microsandbox-provider-state.js";
-import type {
-  Sandbox as MicrosandboxSandbox,
-  Snapshot as MicrosandboxSnapshot,
-} from "microsandbox";
+import type { Sandbox as MicrosandboxSandbox } from "microsandbox";
 
 export {
   isMicrosandboxNotFoundError,
@@ -63,7 +56,7 @@ export {
 export type MicrosandboxModule = typeof import("microsandbox");
 
 const MICROSANDBOX_PACKAGE_NAME = "microsandbox";
-const MICROSANDBOX_PACKAGE_VERSION = "0.6.18";
+const MICROSANDBOX_PACKAGE_VERSION = "0.5.5";
 const MICROSANDBOX_INSTALL_SPECIFIER = `${MICROSANDBOX_PACKAGE_NAME}@${MICROSANDBOX_PACKAGE_VERSION}`;
 const MICROSANDBOX_CONNECT_TIMEOUT_MS = 10_000;
 const MICROSANDBOX_STOP_TIMEOUT_MS = 10_000;
@@ -135,15 +128,13 @@ export class MicrosandboxVm {
       `${this.#input.sessionKey}:${randomUUID()}`,
     );
 
-    await this.resourceOperation("state-snapshot", stateSnapshotName, "allocate", () =>
-      this.stopAndSnapshot(stateSnapshotName),
-    );
+    await this.stopAndSnapshot(stateSnapshotName);
     this.#stateSnapshotName = stateSnapshotName;
     if (this.#metadataPath !== undefined) {
       await this.writeMetadata(this.#metadataPath, optionsHash);
     }
     if (previousStateSnapshotName !== undefined) {
-      await this.removeResource("state-snapshot", previousStateSnapshotName);
+      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
     }
     return createMicrosandboxSessionMetadata({
       networkPolicy: this.#networkPolicy,
@@ -169,11 +160,6 @@ export class MicrosandboxVm {
 
   async stop(): Promise<void> {
     await this.#sandbox.stop();
-    // SDK stop requests shutdown; the persisted handle waits for it. Reconnecting
-    // before that wait can attach to the old process just as it exits.
-    await (
-      await this.#input.module.Sandbox.get(this.#sandboxName)
-    ).stopWithTimeout(MICROSANDBOX_STOP_TIMEOUT_MS);
     await this.detach();
   }
 
@@ -200,12 +186,12 @@ export class MicrosandboxVm {
   }
 
   async removePersisted(): Promise<void> {
-    await this.removeResource("sandbox", this.#sandboxName);
+    await removeSandboxIfExists(this.#input.module, this.#sandboxName);
     const stateSnapshotName = this.#stateSnapshotName;
     if (stateSnapshotName === undefined) {
       return;
     }
-    await this.removeResource("state-snapshot", stateSnapshotName);
+    await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
     this.#stateSnapshotName = undefined;
   }
 
@@ -217,10 +203,8 @@ export class MicrosandboxVm {
     );
     const previousSandboxName = this.#sandboxName;
 
-    await this.resourceOperation("state-snapshot", stateSnapshotName, "allocate", () =>
-      this.stopAndSnapshot(stateSnapshotName),
-    );
-    await this.removeResource("sandbox", previousSandboxName);
+    await this.stopAndSnapshot(stateSnapshotName);
+    await removeSandboxIfExists(this.#input.module, previousSandboxName);
 
     const nextSandboxName = createProviderName(
       "eve-sbx-ses",
@@ -228,8 +212,6 @@ export class MicrosandboxVm {
     );
     this.#sandbox = await createMicrosandbox({
       fromSnapshot: stateSnapshotName,
-      metadataPath: this.#metadataPath,
-      sessionKey: this.#input.sessionKey,
       module: this.#input.module,
       name: nextSandboxName,
       networkPolicy: policy,
@@ -244,9 +226,9 @@ export class MicrosandboxVm {
     if (this.#metadataPath !== undefined && this.#optionsHash !== undefined) {
       await this.writeMetadata(this.#metadataPath, this.#optionsHash);
     }
-    await this.removeResource("state-snapshot", stateSnapshotName);
+    await removeSnapshotIfExists(this.#input.module, stateSnapshotName);
     if (previousStateSnapshotName !== undefined) {
-      await this.removeResource("state-snapshot", previousStateSnapshotName);
+      await removeSnapshotIfExists(this.#input.module, previousStateSnapshotName);
     }
   }
 
@@ -281,14 +263,9 @@ export class MicrosandboxVm {
     return adaptMicrosandboxExecToSandboxProcess(handle);
   }
 
-  async stopAndSnapshot(snapshotName: string): Promise<MicrosandboxSnapshot> {
+  async stopAndSnapshot(snapshotName: string): Promise<void> {
     await this.#sandbox.stop().catch(() => {});
-    return await stopAndSnapshotMicrosandboxSandbox(
-      this.#input.module,
-      this.#sandboxName,
-      snapshotName,
-      this.#sandbox.id,
-    );
+    await stopAndSnapshotMicrosandboxSandbox(this.#input.module, this.#sandboxName, snapshotName);
   }
 
   async writeFiles(
@@ -315,60 +292,13 @@ export class MicrosandboxVm {
   async writeMetadata(path: string, optionsHash: string): Promise<void> {
     this.#metadataPath = path;
     this.#optionsHash = optionsHash;
-    await updateMicrosandboxMaterialization(path, this.#input.sessionKey, {
+    await writeSessionMetadata(path, {
       image: this.#input.options.image,
       networkPolicy: this.#networkPolicy,
       optionsHash,
       sandboxName: this.#sandboxName,
       stateSnapshotName: this.#stateSnapshotName,
       version: MICROSANDBOX_METADATA_VERSION,
-    });
-  }
-
-  private async resourceOperation<T>(
-    kind: MicrosandboxResourceFact["kind"],
-    name: string,
-    operation: "allocate" | "remove",
-    run: (previouslyLive: boolean, nativeId?: string) => Promise<T>,
-  ): Promise<T> {
-    if (this.#metadataPath === undefined) return await run(false);
-    return await withMicrosandboxResourceOperation({
-      path: this.#metadataPath,
-      sessionId: this.#input.sessionKey,
-      resource: { kind, name },
-      operation,
-      run,
-      identify: async (result) => {
-        if (typeof result !== "object" || result === null)
-          throw new Error("Microsandbox allocation returned no identity receipt.");
-        if (kind === "sandbox" && "id" in result && typeof result.id === "string")
-          return { nativeId: result.id };
-        if (
-          kind !== "sandbox" &&
-          "digest" in result &&
-          typeof result.digest === "string" &&
-          "path" in result &&
-          typeof result.path === "string"
-        )
-          return { nativeId: result.digest, nativePath: result.path };
-        throw new Error("Microsandbox allocation returned an invalid identity receipt.");
-      },
-    });
-  }
-
-  private async removeResource(
-    kind: MicrosandboxResourceFact["kind"],
-    name: string,
-  ): Promise<void> {
-    await this.resourceOperation(kind, name, "remove", async (_live, nativeId) => {
-      const resources =
-        this.#metadataPath === undefined || nativeId === undefined
-          ? undefined
-          : (await readSessionMetadata(this.#metadataPath))?.resources;
-      const nativePath = resources?.entries.find(
-        (entry) => entry.kind === kind && entry.name === name,
-      )?.nativePath;
-      await removeMicrosandboxResource(this.#input.module, { kind, name, nativeId, nativePath });
     });
   }
 
@@ -392,7 +322,6 @@ export class MicrosandboxVm {
 }
 
 export async function createPreparedMicrosandbox(input: {
-  readonly metadataPath?: string;
   readonly fromSnapshot?: string;
   readonly log?: (message: string) => void;
   readonly module: MicrosandboxModule;
@@ -407,8 +336,6 @@ export async function createPreparedMicrosandbox(input: {
   const initialNetworkPolicy = input.setupBaseRuntime ? "allow-all" : input.networkPolicy;
   const sandbox = await createMicrosandbox({
     fromSnapshot: input.fromSnapshot,
-    metadataPath: input.metadataPath,
-    sessionKey: input.sessionKey,
     log: input.log,
     module: input.module,
     name: input.name,
@@ -430,7 +357,6 @@ export async function createPreparedMicrosandbox(input: {
     sandbox,
     input.name,
     initialNetworkPolicy,
-    input.metadataPath,
   );
 
   if (input.setupBaseRuntime) {
@@ -475,20 +401,10 @@ export async function connectMicrosandbox(input: {
     return await restoreMicrosandboxSessionSnapshot(input);
   }
 
-  const sandbox = await withMicrosandboxResourceOperation<MicrosandboxSandbox>({
-    path: input.metadataPath,
-    sessionId: input.sessionKey,
-    resource: { kind: "sandbox", name: input.metadata.sandboxName },
-    operation: "allocate",
-    identify: async (sandbox) => ({ nativeId: sandbox.id }),
-    run: async (previouslyLive, nativeId) => {
-      if (handle.id !== nativeId) throw new Error("Microsandbox VM was replaced.");
-      if (!previouslyLive) throw new Error("Microsandbox resume ownership is unavailable.");
-      return handle.status === "running" || handle.status === "draining"
-        ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
-        : await handle.startDetached();
-    },
-  });
+  const sandbox =
+    handle.status === "running" || handle.status === "draining"
+      ? await handle.connectWithTimeout(MICROSANDBOX_CONNECT_TIMEOUT_MS)
+      : await handle.startDetached();
 
   return new MicrosandboxVm(
     {
@@ -521,21 +437,9 @@ async function restoreMicrosandboxSessionSnapshot(input: {
     return null;
   }
 
-  const stateReceipt = input.metadata.resources?.entries.find(
-    (entry) =>
-      entry.kind === "state-snapshot" &&
-      entry.name === input.metadata.stateSnapshotName &&
-      entry.phase === "live",
-  );
-  if (stateReceipt?.nativeId === undefined || stateReceipt.nativePath === undefined)
-    throw new Error("Microsandbox state snapshot ownership is unavailable.");
-  if ((await input.module.Snapshot.open(stateReceipt.nativePath)).digest !== stateReceipt.nativeId)
-    throw new Error("Microsandbox state snapshot was replaced.");
   const sandboxName = createProviderName("eve-sbx-ses", `${input.sessionKey}:${randomUUID()}`);
   const sandbox = await createMicrosandbox({
-    fromSnapshot: stateReceipt.nativePath,
-    metadataPath: input.metadataPath,
-    sessionKey: input.sessionKey,
+    fromSnapshot: input.metadata.stateSnapshotName,
     module: input.module,
     name: sandboxName,
     networkPolicy: input.metadata.networkPolicy,
@@ -544,18 +448,7 @@ async function restoreMicrosandboxSessionSnapshot(input: {
     user: MICROSANDBOX_USER,
     workdir: WORKSPACE_ROOT,
   });
-  await withMicrosandboxResourceOperation({
-    path: input.metadataPath,
-    sessionId: input.sessionKey,
-    resource: { kind: "sandbox", name: input.metadata.sandboxName },
-    operation: "remove",
-    run: (_live, nativeId) =>
-      removeMicrosandboxResource(input.module, {
-        kind: "sandbox",
-        name: input.metadata.sandboxName,
-        nativeId,
-      }),
-  });
+  await removeSandboxIfExists(input.module, input.metadata.sandboxName);
 
   const vm = new MicrosandboxVm(
     {
@@ -699,15 +592,13 @@ export async function stopAndSnapshotMicrosandboxSandbox(
   module: MicrosandboxModule,
   sandboxName: string,
   snapshotName: string,
-  expectedId?: string,
-): Promise<MicrosandboxSnapshot> {
+): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const handle = await module.Sandbox.get(sandboxName);
-    if (expectedId !== undefined && handle.id !== expectedId)
-      throw new Error("Microsandbox VM was replaced.");
     await handle.stopWithTimeout(attempt === 0 ? MICROSANDBOX_STOP_TIMEOUT_MS : 0).catch(() => {});
     try {
-      return await handle.snapshot(snapshotName);
+      await handle.snapshot(snapshotName);
+      return;
     } catch (error) {
       if (!isMicrosandboxSnapshotSourceRunningError(error) || attempt === 2) {
         throw error;
@@ -716,7 +607,6 @@ export async function stopAndSnapshotMicrosandboxSandbox(
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
-  throw new Error("Microsandbox snapshot capture did not complete.");
 }
 
 export function createProviderName(prefix: string, key: string, extra = ""): string {
@@ -738,8 +628,6 @@ export async function doesPathExist(path: string): Promise<boolean> {
 }
 
 async function createMicrosandbox(input: {
-  readonly metadataPath?: string;
-  readonly sessionKey?: string;
   readonly fromSnapshot?: string;
   readonly log?: (message: string) => void;
   readonly module: MicrosandboxModule;
@@ -758,6 +646,7 @@ async function createMicrosandbox(input: {
     .labels(resolveMicrosandboxLabels(input.tags))
     .memory(input.options.memoryMiB)
     .pullPolicy(input.options.pullPolicy)
+    .replace()
     .workdir(input.workdir);
 
   if (input.fromSnapshot !== undefined) {
@@ -783,26 +672,11 @@ async function createMicrosandbox(input: {
     input.fromSnapshot === undefined
       ? `image "${input.options.image}"`
       : `snapshot "${input.fromSnapshot}"`;
-  if (input.metadataPath === undefined) builder = builder.replace();
-  const create = () =>
-    createMicrosandboxWithProgress({
-      builder: applyMicrosandboxNetwork(builder, input.networkPolicy),
-      errorType: input.module.MicrosandboxError,
-      log: input.log,
-      source,
-    });
-  if (input.metadataPath === undefined) return await create();
-  if (input.sessionKey === undefined) throw new Error("Microsandbox session owner is required.");
-  return await withMicrosandboxResourceOperation({
-    path: input.metadataPath,
-    sessionId: input.sessionKey,
-    resource: { kind: "sandbox", name: input.name },
-    operation: "allocate",
-    identify: async (sandbox) => ({ nativeId: sandbox.id }),
-    run: async (previouslyLive) => {
-      if (previouslyLive) throw new Error("Microsandbox resource must be resumed, not replaced.");
-      return await create();
-    },
+  return await createMicrosandboxWithProgress({
+    builder: applyMicrosandboxNetwork(builder, input.networkPolicy),
+    errorType: input.module.MicrosandboxError,
+    log: input.log,
+    source,
   });
 }
 
@@ -842,71 +716,4 @@ function resolveMicrosandboxLabels(
     "eve.provider": "microsandbox",
     ...withDevelopmentSandboxTags(tags),
   };
-}
-
-/** Confirms exact absence after removal; an SDK error message is not an absence proof. */
-export async function removeMicrosandboxResource(
-  module: MicrosandboxModule,
-  resource: Pick<MicrosandboxResourceFact, "kind" | "name" | "nativeId" | "nativePath">,
-): Promise<void> {
-  if (resource.kind !== "sandbox") {
-    if (resource.nativeId !== undefined) {
-      const path = resource.nativePath;
-      if (path === undefined) throw new Error("Microsandbox snapshot path receipt is unavailable.");
-      const exists = await stat(path).then(
-        () => true,
-        (error) => {
-          if (error?.code === "ENOENT") return false;
-          throw error;
-        },
-      );
-      if (!exists) return;
-      const current = await module.Snapshot.open(path);
-      if (current.digest !== resource.nativeId)
-        throw new Error("Microsandbox snapshot was replaced.");
-      // A digest targets the receipt's artifact, and native child protection stays enabled.
-      await module.Snapshot.remove(resource.nativeId);
-      const remains = await stat(path).then(
-        () => true,
-        (error) => {
-          if (error?.code === "ENOENT") return false;
-          throw error;
-        },
-      );
-      if (remains) throw new Error("Microsandbox snapshot removal is unconfirmed.");
-    } else {
-      // Shared template cleanup has no session ownership record.
-      await module.Snapshot.remove(resource.name);
-      if ((await module.Snapshot.list()).some((snapshot) => snapshot.name === resource.name))
-        throw new Error("Microsandbox snapshot removal is unconfirmed.");
-    }
-    return;
-  }
-  if (resource.nativeId === undefined) {
-    await removeSandboxIfExists(module, resource.name);
-  } else {
-    let handle;
-    try {
-      handle = await module.Sandbox.get(resource.name);
-    } catch (error) {
-      if (!isMicrosandboxNotFoundError(error)) throw error;
-    }
-    if (handle !== undefined) {
-      if (handle.id !== resource.nativeId || handle.backendKind !== "local")
-        throw new Error("Microsandbox VM was replaced or changed backend.");
-      await handle.stopWithTimeout(MICROSANDBOX_STOP_TIMEOUT_MS);
-      await handle.remove();
-    }
-  }
-  let cursor: string | undefined;
-  for (let page = 0; page < 100; page += 1) {
-    const result = await module.Sandbox.listWith((builder) =>
-      cursor === undefined ? builder.limit(100) : builder.limit(100).cursor(cursor),
-    );
-    if (result.sandboxes.some((sandbox) => sandbox.name === resource.name))
-      throw new Error("Microsandbox removal is unconfirmed.");
-    cursor = result.nextCursor;
-    if (cursor === undefined) return;
-  }
-  throw new Error("Microsandbox removal verification exceeded its inventory limit.");
 }

@@ -12,5 +12,3 @@ export {
   type MicrosandboxEnvironmentOptions,
 } from "#sandbox/providers/microsandbox.js";
 export type { MicrosandboxSandboxRuntimeOptions } from "#public/sandbox/microsandbox-sandbox.js";
-
-export { manageLocalMicrosandboxResources } from "#execution/sandbox/bindings/microsandbox-resource-cleanup.js";
