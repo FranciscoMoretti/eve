@@ -7,9 +7,9 @@ Compare the residual fork against exact upstream commit
 `e3cea42486e7e32b7b3001bb5912e076b5443ad5` (eve 0.80.1), not upstream's moving
 `main`. Recheck every entry when changing that baseline.
 
-This shared-workspace seed contract is source-only until a new fork package is
-released. ChatJS must adopt that version together with its workspace ownership
-change; the currently published package does not provide this contract.
+The shared-workspace seed contract and app-owned sandbox lifecycle are released
+in `@chat-js/eve@0.80.1-chatjs.4`, for adoption with
+[ChatJS #871](https://github.com/FranciscoMoretti/chat-js/pull/871).
 
 ### Retained contracts
 
@@ -22,8 +22,8 @@ capability replaces their implementations.
 
 | ID / feature area              | Retained change and source                                                                                                                                                                       | Why it remains / ChatJS boundary                                                                                                                                                                  | Removal condition / investigation direction                                                                                                                                           |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                           | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.                                                | Adopt an upstream trusted history-initialization API covering native history, display events, and the attachment acceptance criteria below (T2).                                    |
-| T2 / Transcript initialization | [Shared-workspace attachment resolution](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                    | Fork history references existing files in one app-owned workspace. ChatJS owns authorization and immutable originals; eve verifies existing paths and hydrates model input without copying files. | Retire with the attachment portion of the T1 history-initialization proposal: existing workspace references, authorization and equivalent integrity checks.                                            |
+| T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                           | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.                                                | Adopt an upstream trusted history-initialization API covering native history, display events, and the attachment acceptance criteria below (T2).                                      |
+| T2 / Transcript initialization | [Shared-workspace attachment resolution](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                    | Fork history references existing files in one app-owned workspace. ChatJS owns authorization and immutable originals; eve verifies existing paths and hydrates model input without copying files. | Retire with the attachment portion of the T1 history-initialization proposal: existing workspace references, authorization and equivalent integrity checks.                           |
 | R2 / Local resource management | [Hosted-build import separation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) keeps the development-environment helper independent of the optional installer.            | Hosted builds can prune the installer while the native runtime still needs the helper.                                                                                                            | Upstream accepts the import/pruning fix or provides an equivalent build path. Candidate for a standalone bug fix.                                                                     |
 | P1 / Package resolution        | [Scoped package/self-reference resolution](packages/eve/src/internal/application/package.ts) and the [internal development-capability import](packages/eve/src/self-modification/filesystem.ts). | ChatJS installs `@chat-js/eve` under the `eve` alias, including isolated dependency layouts.                                                                                                      | Retire scoped-distribution handling when ChatJS returns to upstream eve, or upstream supports generic package identity resolution. Investigate the internal import fix independently. |
 
@@ -78,19 +78,26 @@ missing evidence.
 
 ### Distribution and evidence
 
-ChatJS uses the ordinary versioned alias `npm:@chat-js/eve@0.80.1-chatjs.2`.
-The published package corresponds to signed source commit
-`97aba72836dad4194a08a002e08a2bf8d38809cf`, including the fresh-copy simplifications and
-the isolated-layout development import fix. At publication, the `chatjs` tag pointed to `.2`; `latest` remained
-`0.61.0-chatjs.0`. Later inventory and unused-code cleanup commits do not change
-that published artifact; adopting a future package requires a separate release.
+The shared-workspace consumer uses `npm:@chat-js/eve@0.80.1-chatjs.4`.
+Its source is merged commit `df72a62b6da4ce7abba7dc06f47cccd82ec18dd9`,
+including [#14](https://github.com/FranciscoMoretti/eve/pull/14) and
+[#15](https://github.com/FranciscoMoretti/eve/pull/15). The release checkout sets
+the package version before building so the embedded runtime stamp matches the
+published manifest. Scoped distribution metadata is applied after packing.
+The `chatjs` tag selects `.4`; `latest` remains `0.61.0-chatjs.0`.
 
-Registry bytes match the tested artifact. SHA-512 integrity:
-`lm6eZBc0hj9cSd2iZnhXt772GqHUHp1q3RWNshEBfTxZNyM8sEOnJr5U0MDXJENtRUsg7hGjRtduMG0CzpIA2Q==`.
-A clean frozen registry install resolves `.2` in all four app consumers. The
-isolated module regression and nested development startup pass. Historical
-`.1` startup failure came from an internal unscoped package import and is fixed
-in `.2`.
+Tested artifact SHA-512 integrity:
+`wUfAPFoJg4DoJ6OGW8P2jVD8KMc5uU3NuqSF37//DVZNxpBBAE3d0AuFMxVnDu91VXjadqjXDCZPi6sD/7mVFQ==`.
+The build, 76 focused seed/turn/module tests, and live ChatJS private-Blob
+image/PDF fork and restart scenarios passed. ChatJS preserves its workflow-ID
+patch. The `.3` artifact is deprecated because its embedded version stamp did
+not match its published manifest; use `.4`.
+
+The live flow verifies shared provider files and immutable attachment originals.
+ChatJS's code-execution tool still uses a separate temporary sandbox per call;
+this is an accepted limitation, not evidence of persistent tool execution.
+Historical `.2` verification applies to source `97aba72836dad4194a08a002e08a2bf8d38809cf`,
+not this release. No captured logs, archives or secrets are committed.
 
 Fork prerelease versions do not name upstream container images. Set
 `EVE_SANDBOX_IMAGE_TAG=0.80.1` for the matching upstream image; ChatJS commands
