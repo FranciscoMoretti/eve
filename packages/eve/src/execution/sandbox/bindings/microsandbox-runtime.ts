@@ -24,8 +24,10 @@ import {
   ensureMicrosandboxBaseRuntime,
 } from "#execution/sandbox/bindings/microsandbox-platform.js";
 import { adaptMicrosandboxExecToSandboxProcess } from "#execution/sandbox/bindings/microsandbox-process.js";
-import { importInstalledEnginePackage } from "#internal/application/optional-package-install.js";
-import { isEveDevEnvironment } from "#internal/application/dev-environment.js";
+import {
+  importInstalledEnginePackage,
+  isEveDevEnvironment,
+} from "#internal/application/optional-package-install.js";
 import { readInstalledPackageVersion } from "#internal/application/optional-package-import.js";
 import { withDevelopmentSandboxTags } from "#execution/sandbox/development-run.js";
 import { SANDBOX_AGENT_ENV } from "#execution/sandbox/session.js";

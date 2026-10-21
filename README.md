@@ -14,7 +14,7 @@ allocation, ownership, deletion and shutdown; those behaviors live in the app.
 
 ### Retained contracts
 
-Three feature areas contain four review slices. The rows describe current
+Two feature areas contain three review slices. The rows describe current
 patches; proposed destinations are investigation directions, not confirmed
 upstream equivalents or submitted contributions. T1 and the remaining T2 are
 parts of one proposed upstream capability: **initialize a conversation from
@@ -25,7 +25,6 @@ capability replaces their implementations.
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | T1 / Transcript initialization | [Trusted transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), authenticated channel resolution, native history initialization and display events.                           | Copies need prior exchanges without replaying historical tools. ChatJS owns source capture, branch boundaries, authorization and immutable intent.                                                | Adopt an upstream trusted history-initialization API covering native history, display events, and the attachment acceptance criteria below (T2).                                      |
 | T2 / Transcript initialization | [Shared-workspace attachment resolution](packages/eve/src/harness/seed-attachments.ts) and hydration of seeded model history.                                                                    | Fork history references existing files in one app-owned workspace. ChatJS owns authorization and immutable originals; eve verifies existing paths and hydrates model input without copying files. | Retire with the attachment portion of the T1 history-initialization proposal: existing workspace references, authorization and equivalent integrity checks.                           |
-| R2 / Local resource management | [Hosted-build import separation](packages/eve/src/execution/sandbox/bindings/microsandbox-runtime.ts) keeps the development-environment helper independent of the optional installer.            | Hosted builds can prune the installer while the native runtime still needs the helper.                                                                                                            | Upstream accepts the import/pruning fix or provides an equivalent build path. Candidate for a standalone bug fix.                                                                     |
 | P1 / Package resolution        | [Scoped package/self-reference resolution](packages/eve/src/internal/application/package.ts) and the [internal development-capability import](packages/eve/src/self-modification/filesystem.ts). | ChatJS installs `@chat-js/eve` under the `eve` alias, including isolated dependency layouts.                                                                                                      | Retire scoped-distribution handling when ChatJS returns to upstream eve, or upstream supports generic package identity resolution. Investigate the internal import fix independently. |
 
 The combined history-initialization proposal must:
@@ -49,11 +48,20 @@ R1, L1 and L2 are retired in this source tree. Companion
 [ChatJS #865](https://github.com/FranciscoMoretti/chat-js/pull/865) owns persistent
 sandbox allocation, ownership, confirmed deletion and development shutdown through
 its installed provider. Native Microsandbox code and its SDK pin return to the
-upstream 0.80.1 baseline (SDK 0.5.5); the R2 import fix remains.
+upstream 0.80.1 baseline (SDK 0.5.5).
 The fork-only `manageLocalMicrosandboxResources` export is removed. Existing native
 resources must be cleaned up with the old version before adopting a new package.
 Do not adopt this removal until #865 and its lifecycle acceptance gates pass.
 Use fresh worlds; no native-resource migration or compatibility path is provided.
+
+R2 is also retired: ChatJS #871 uses the app-owned provider and no longer imports
+the fork-only native cleanup API that retained the Microsandbox runtime during
+hosted pruning. The runtime import returns to upstream 0.80.1 behavior.
+The conditional upstream pruning defect is tracked separately in
+[fork #13](https://github.com/FranciscoMoretti/eve/pull/13); this removal does not
+claim that defect is fixed. Consumers that retain the native Microsandbox runtime
+through a separate import can still encounter it. Adopt this removal with
+[ChatJS #871](https://github.com/FranciscoMoretti/chat-js/pull/871) or later.
 
 Supporting changes are not additional runtime features: regression tests,
 changesets, dependency lock data, extension compatibility epochs/reports, and
