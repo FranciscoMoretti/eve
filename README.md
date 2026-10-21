@@ -7,9 +7,10 @@ Compare the residual fork against exact upstream commit
 `e3cea42486e7e32b7b3001bb5912e076b5443ad5` (eve 0.80.1), not upstream's moving
 `main`. Recheck every entry when changing that baseline.
 
-The shared-workspace seed contract and app-owned sandbox lifecycle are released
-in `@chat-js/eve@0.80.1-chatjs.4`, for adoption with
-[ChatJS #871](https://github.com/FranciscoMoretti/chat-js/pull/871).
+The shared-workspace seed contract is released in `@chat-js/eve@0.80.1-chatjs.4`,
+for adoption with [ChatJS #871](https://github.com/FranciscoMoretti/chat-js/pull/871).
+[ChatJS #865](https://github.com/FranciscoMoretti/chat-js/pull/865) owns sandbox
+allocation, ownership, deletion and shutdown; those behaviors live in the app.
 
 ### Retained contracts
 
