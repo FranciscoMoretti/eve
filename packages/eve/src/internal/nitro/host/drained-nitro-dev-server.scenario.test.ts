@@ -132,6 +132,32 @@ describe("drained Nitro dev server", () => {
     await server.close();
   });
 
+  it("holds a request that arrives before any worker until one attaches", async () => {
+    const { createRunner } = createRunnerFactory(
+      async (_request, runnerIndex) => new Response(`runner-${String(runnerIndex)}`),
+    );
+    const server = new DrainedNitroDevServer(LOGGER, createRunner);
+    const listener = await listen(server);
+    // Control routes run just before a request waits for a worker.
+    const admitted = Promise.withResolvers<void>();
+    server.setControlHandler(async () => {
+      admitted.resolve();
+      return undefined;
+    });
+
+    const early = fetch(new URL("/", listener.url));
+    await withinDeadline(admitted.promise, "Timed out waiting for the early request.");
+    await server.replaceWorker(replacement("/tmp/first.mjs"));
+    await expect(
+      withinDeadline(
+        early.then(async (response) => await response.text()),
+        "Timed out waiting for the early request to reach the first worker.",
+      ),
+    ).resolves.toBe("runner-0");
+
+    await server.close();
+  });
+
   it("drains the retired worker and disposes it after its last exchange settles", async () => {
     let releaseFirstResponse: (() => void) | undefined;
     const { createRunner, runners } = createRunnerFactory(async (_request, runnerIndex) => {
@@ -235,6 +261,41 @@ describe("drained Nitro dev server", () => {
 
     await server.close();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a host's workspace until its last recycled or spare worker retires", async () => {
+    const { createRunner, runners } = createRunnerFactory(
+      async (_request, runnerIndex) => new Response(`runner-${String(runnerIndex)}`),
+    );
+    const server = new DrainedNitroDevServer(LOGGER, createRunner);
+    const listener = await listen(server);
+    const disposeFirst = vi.fn(async () => undefined);
+    const disposeSecond = vi.fn(async () => undefined);
+    const body = async () => await (await fetch(new URL("/", listener.url))).text();
+
+    await server.replaceWorker(replacement("/tmp/first.mjs", disposeFirst));
+    await server.recycleWorker();
+    await expect(body()).resolves.toBe("runner-1");
+    await vi.waitFor(() => expect(runners[0]?.closeMock).toHaveBeenCalled());
+    expect(disposeFirst).not.toHaveBeenCalled();
+
+    server.prepareSpareWorker();
+    await vi.waitFor(() => expect(runners[2]?.waitForReady).toHaveBeenCalled());
+    await server.recycleWorker();
+    await expect(body()).resolves.toBe("runner-2");
+    expect(runners).toHaveLength(3);
+
+    server.prepareSpareWorker();
+    await server.replaceWorker(replacement("/tmp/second.mjs", disposeSecond));
+    await expect(body()).resolves.toBe("runner-4");
+    await vi.waitFor(() => {
+      expect(runners[3]?.closeMock).toHaveBeenCalled();
+      expect(disposeFirst).toHaveBeenCalledOnce();
+    });
+    expect(disposeSecond).not.toHaveBeenCalled();
+
+    await server.close();
+    expect(disposeSecond).toHaveBeenCalledOnce();
   });
 
   it("destroys the socket when an upgrade fails and closes idempotently", async () => {
@@ -456,6 +517,28 @@ describe("drained Nitro dev server", () => {
     pending.catch(() => undefined);
     await withinDeadline(server.close(), "Timed out closing during a pending replacement.");
     await expect(pending).rejects.toThrow();
+  });
+
+  it("closes within a bounded interval while a recycle waits for a booting spare", async () => {
+    const { createRunner } = createRunnerFactory(
+      async () => new Response("ok"),
+      async (runnerIndex) => {
+        if (runnerIndex === 1) {
+          await new Promise<never>(() => undefined);
+        }
+      },
+    );
+    const server = new DrainedNitroDevServer(LOGGER, createRunner);
+    await listen(server);
+    await server.replaceWorker(replacement("/tmp/first.mjs"));
+    server.prepareSpareWorker();
+
+    const recycling = server.recycleWorker();
+    recycling.catch(() => undefined);
+    // Let the recycle start waiting on the spare before closing.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await withinDeadline(server.close(), "Timed out closing while a recycle waited for its spare.");
+    await expect(recycling).rejects.toThrow();
   });
 
   it("terminates the client connection when a worker response fails mid-stream", async () => {

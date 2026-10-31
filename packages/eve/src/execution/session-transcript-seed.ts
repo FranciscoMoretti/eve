@@ -1,70 +1,12 @@
+import {
+  sessionTranscriptSeed,
+  type SessionTranscriptSeed,
+} from "#protocol/session-events/families/transcript-seed.js";
+export type { SessionTranscriptSeed } from "#protocol/session-events/families/transcript-seed.js";
+import { seedMessages } from "#client/seed-messages.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
-import { jsonObjectSchema } from "#shared/json-schemas.js";
 import type { AssistantContent, ToolContent, UserContent } from "ai";
-import { z } from "#compiled/zod/index.js";
-import type { EveMessage, EveMessagePart } from "#client/message-reducer-types.js";
-
-const text = z.strictObject({ type: z.literal("text"), text: z.string() });
-const reasoning = z.strictObject({ type: z.literal("reasoning"), text: z.string() });
-const file = z.strictObject({
-  type: z.literal("file"),
-  url: z
-    .url()
-    .refine(
-      (value) => ["https:", "http:"].includes(new URL(value).protocol),
-      "Seed files require an authorized original HTTP URL.",
-    ),
-  /** Canonical path observed when this file was staged in the shared workspace. */
-  existingPath: z.string().startsWith("/").min(1),
-  mediaType: z.string().min(1),
-  filename: z.string().optional(),
-  size: z.number().int().nonnegative().optional(),
-});
-const toolBase = { type: z.literal("dynamic-tool"), toolName: z.string().min(1), input: z.json() };
-const tool = z.discriminatedUnion("state", [
-  z.strictObject({
-    ...toolBase,
-    state: z.literal("output-available"),
-    output: z.json(),
-    outputType: z.literal("text").optional(),
-  }),
-  z.strictObject({ ...toolBase, state: z.literal("output-error"), errorText: z.string() }),
-  z.strictObject({ ...toolBase, state: z.literal("output-denied"), reason: z.string().optional() }),
-]);
-
-/** Trusted server input, never a browser request body or a runtime checkpoint. */
-const sessionTranscriptSeed = z.strictObject({
-  /** Resolve compact file URLs through the authenticated channel before the first model turn. */
-  attachments: z.literal("channel"),
-  messages: z
-    .array(
-      z.discriminatedUnion("role", [
-        z.strictObject({
-          role: z.literal("user"),
-          metadata: jsonObjectSchema.optional(),
-          parts: z.array(z.union([text, file])).min(1),
-        }),
-        z.strictObject({
-          role: z.literal("assistant"),
-          metadata: jsonObjectSchema.optional(),
-          modelId: z.string().min(1).max(512).optional(),
-          parts: z
-            .array(
-              z.union([
-                text,
-                reasoning,
-                file,
-                tool,
-                z.strictObject({ type: z.literal("step-start") }),
-              ]),
-            )
-            .min(1),
-        }),
-      ]),
-    )
-    .max(10_000),
-});
-export type SessionTranscriptSeed = z.infer<typeof sessionTranscriptSeed>;
+import type { EveMessage } from "#client/message-types.js";
 
 /** Validates and detaches trusted callback data before crossing a durable boundary. */
 export function parseSessionTranscriptSeed(value: unknown): SessionTranscriptSeed {
@@ -93,14 +35,12 @@ export function prepareSessionTranscriptSeed(value: unknown): {
 } {
   const seed = parseSessionTranscriptSeed(value);
   const history: HarnessModelMessage[] = [];
-  const messages: EveMessage[] = [];
+  const messages = seedMessages(seed);
   let toolSequence = 0;
-  for (const [index, message] of seed.messages.entries()) {
-    const parts: EveMessagePart[] = [];
+  for (const message of seed.messages) {
     if (message.role === "user") {
       const content: UserContent = [];
       for (const part of message.parts) {
-        parts.push(part.type === "text" ? { ...part, state: "done" } : part);
         if (part.type === "text") content.push(part);
         else
           content.push({
@@ -123,16 +63,13 @@ export function prepareSessionTranscriptSeed(value: unknown): {
       for (const part of message.parts) {
         if (part.type === "step-start") {
           flush();
-          parts.push(part);
           continue;
         }
         // A tool result must precede any subsequent assistant text or reasoning.
         if (results.length && part.type !== "dynamic-tool") flush();
         if (part.type === "text" || part.type === "reasoning") {
-          parts.push({ ...part, state: "done" });
           content.push(part);
         } else if (part.type === "file") {
-          parts.push(part);
           content.push({
             type: "file",
             data: new URL(part.url),
@@ -160,40 +97,10 @@ export function prepareSessionTranscriptSeed(value: unknown): {
                       : (part.reason ?? "Tool execution was denied."),
                 };
           results.push({ type: "tool-result", toolCallId, toolName: part.toolName, output });
-          if (part.state === "output-denied") {
-            parts.push({
-              type: part.type,
-              toolName: part.toolName,
-              toolCallId,
-              input: part.input,
-              state: part.state,
-              approval: { id: `seed_denial_${toolSequence}`, approved: false, reason: part.reason },
-            });
-          } else parts.push({ ...part, toolCallId });
         }
       }
       flush();
     }
-    const seeded: { -readonly [K in keyof EveMessage]: EveMessage[K] } = {
-      id: `seed_message_${index}`,
-      role: message.role,
-      parts,
-    };
-    if (
-      (message.role === "assistant" && message.modelId !== undefined) ||
-      message.metadata !== undefined
-    ) {
-      const metadata: {
-        -readonly [K in keyof NonNullable<EveMessage["metadata"]>]: NonNullable<
-          EveMessage["metadata"]
-        >[K];
-      } = {};
-      if (message.role === "assistant" && message.modelId !== undefined)
-        metadata.modelId = message.modelId;
-      if (message.metadata !== undefined) metadata.custom = message.metadata;
-      seeded.metadata = metadata;
-    }
-    messages.push(seeded);
   }
   return { history, messages };
 }

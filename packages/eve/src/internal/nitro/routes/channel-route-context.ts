@@ -1,3 +1,4 @@
+import type { JsonValue } from "#shared/json.js";
 import type { RouteHandlerArgs } from "#channel/routes.js";
 import type { SkillFileSource } from "#channel/skill-files.js";
 import type { RunHandle, RunInput } from "#channel/types.js";
@@ -12,12 +13,16 @@ interface HomeRouteMetadata {
  * established here is visible to `resolveSession` on the same channel.
  */
 export type RouteSessionCreator = (
-  input: Omit<RunInput, "adapter" | "channelName" | "requestId">,
-) => Promise<RunHandle>;
+  input: Omit<RunInput, "adapter" | "channelName" | "requestId"> & {
+    /** Stable initial receipt for an idempotent HTTP creation operation. */
+    readonly deliveryId?: string;
+  },
+) => Promise<RunHandle & { readonly deliveryId?: string }>;
 
 export type RemoteAgentStreamHeadersResolver = (input: {
   readonly name: string;
   readonly resolverId?: string;
+  readonly dynamicBinding?: JsonValue;
   readonly url: string;
 }) => Promise<Record<string, string>>;
 
@@ -124,16 +129,4 @@ export function attachSkillFileSource<TArgs extends RouteHandlerArgs>(
 export function readSkillFileSource(args: RouteHandlerArgs): SkillFileSource | undefined {
   const routeArgs: InternalRouteArgs = args;
   return routeArgs[skillFileSourceKey];
-}
-
-const localSandboxRoots = new WeakMap<RouteHandlerArgs, string>();
-
-export function attachLocalSandboxAppRoot(args: RouteHandlerArgs, appRoot: string): void {
-  localSandboxRoots.set(args, appRoot);
-}
-
-export function requireLocalSandboxAppRoot(args: RouteHandlerArgs): string {
-  const root = localSandboxRoots.get(args);
-  if (root === undefined) throw new Error("Local sandbox authority is unavailable in this host.");
-  return root;
 }
