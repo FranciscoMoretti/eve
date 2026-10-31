@@ -216,8 +216,10 @@ export async function bootInitialOwner(
     }
     const caller = unwrapSettled(callerResolution);
     if (input.seed !== undefined) {
+      if (created.seedRuntime === undefined) throw new Error("Seed runtime identity is missing.");
       const published = await emitSessionTranscriptSeedStep({
         seed: input.seed,
+        runtime: created.seedRuntime,
         sessionWritable,
         serializedContext,
         sessionState: created.state,

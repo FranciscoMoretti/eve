@@ -91,6 +91,12 @@ it("continues a seeded root through v27 publication without rerunning completed 
     try {
       const initial = await stream.nextUntil((event) => event.type === "session.started");
       expect(conversationOf(initial).messages).toHaveLength(2);
+      expect(initial.find((event) => event.type === "session.started")?.data.runtime).toMatchObject(
+        {
+          agentId: expect.any(String),
+          eveVersion: expect.any(String),
+        },
+      );
       await resumeHook(sessionInboxHookToken("seed-v27-runtime"), {
         auth: { principalType: "user", principalId: "alice" },
         kind: "send",

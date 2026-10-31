@@ -1,3 +1,5 @@
+import { buildRuntimeIdentity } from "#execution/node-step.js";
+import type { RuntimeIdentity } from "#protocol/session-events/families/session.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import {
   type DurableCompiledArtifactsSource,
@@ -28,6 +30,7 @@ import type { SessionHistoryMessage } from "#shared/session-history.js";
  * owner needs to drive the turn loop.
  */
 export interface CreateSessionStepResult {
+  readonly seedRuntime?: RuntimeIdentity;
   readonly history: HarnessModelMessage[];
   readonly state: DurableSessionState;
 }
@@ -92,5 +95,16 @@ export async function createSessionStep(input: {
   const { history, sessionState } = createDurableSessionValues(
     state === seeded.state ? seeded : { ...seeded, state },
   );
-  return { history, state: sessionState };
+  return {
+    history,
+    state: sessionState,
+    ...(input.seed === undefined
+      ? {}
+      : {
+          seedRuntime: buildRuntimeIdentity({
+            ...bundle.graph.root,
+            turnAgent: effectiveAgent.turnAgent,
+          }),
+        }),
+  };
 }

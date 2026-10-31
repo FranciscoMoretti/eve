@@ -33,6 +33,7 @@ const turnAgent = {
 
 it("installs ordered copy history and stable display without replaying historical tool execution", async () => {
   vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
+    graph: { root: { agent: { config: {} }, turnAgent } },
     resolvedAgent: { config: {} },
     turnAgent,
   } as never);
