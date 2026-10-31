@@ -468,6 +468,8 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
+  /** Trusted server-resolved fresh-root transcript, never a request payload. */
+  readonly seed?: import("#execution/session-transcript-seed.js").SessionTranscriptSeed;
   /** Optional stable identity of the initial delivery, scoped to this logical session. */
   readonly idempotencyKey?: string;
   /**

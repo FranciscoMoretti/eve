@@ -1,3 +1,4 @@
+import { sessionTranscriptSeed, type SessionTranscriptSeed } from "./transcript-seed.js";
 import { z } from "#compiled/zod/index.js";
 
 import { cause, conforming, envelopeOf, errorInfo, id, known } from "../common.js";
@@ -28,6 +29,8 @@ export interface SessionPredecessor {
 }
 
 export interface SessionStartedData {
+  /** Trusted imported history; records only, never executable interactions. */
+  readonly transcriptSeed?: SessionTranscriptSeed;
   /** The call whose agent opened this session, for a child session. */
   readonly parent?: { readonly sessionId: string; readonly callId: string };
   /**
@@ -58,6 +61,7 @@ export type SessionFact = SessionStarted | SessionEnded;
 
 const sessionStartedData = conforming<SessionStartedData>()(
   z.object({
+    transcriptSeed: sessionTranscriptSeed.optional(),
     parent: z.object({ callId: id, sessionId: id }).optional(),
     predecessor: z.object({ sessionId: id }).optional(),
     runtime: z

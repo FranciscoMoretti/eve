@@ -1,3 +1,4 @@
+import { stagePendingSeedAttachments } from "#harness/seed-attachments.js";
 import { createToolChannelTo } from "#execution/tools/channel-to.js";
 import { channelOf } from "#reactions/frame.js";
 import { bindTurnCallerContext } from "#subagents/parent-notification.js";
@@ -672,6 +673,7 @@ async function runSessionStepBody(
             }
             ctx.setVirtualContext(HandleEventKey, handleEvent);
             ctx.setVirtualContext(StaticModelReferenceKey, effectiveAgent.turnAgent.model ?? null);
+            enrichedSession = await stagePendingSeedAttachments(enrichedSession);
             ctx.setVirtualContext(ToolChannelKey, {
               channel: channelOf(ctx),
               to: createToolChannelTo({

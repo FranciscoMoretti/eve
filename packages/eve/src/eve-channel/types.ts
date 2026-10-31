@@ -113,6 +113,13 @@ export function defaultEveAuth(ctx: EveMessageContext): SessionAuthContext | nul
  * `uploadPolicy`, `onMessage`, and `events` refine the default HTTP behavior.
  */
 export interface EveChannelConfig {
+  /** Resolve an accepted destination transcript for an authenticated seed-only create. Never accepts browser transcript data. */
+  readonly resolveSeed?: (input: {
+    readonly auth: SessionAuthContext;
+    readonly operationId: string;
+  }) =>
+    | import("#execution/session-transcript-seed.js").SessionTranscriptSeed
+    | Promise<import("#execution/session-transcript-seed.js").SessionTranscriptSeed>;
   /**
    * Route auth policy: a single {@link EveAuthFn} or an ordered array walked by {@link routeAuth}.
    * The first entry returning an {@link EveAuthResult} wins; `null` / `undefined` skips to

@@ -1018,3 +1018,71 @@ describe("eve channel onMessage client context", () => {
     expect(readClientContext(options)).toBeUndefined();
   });
 });
+
+it("resolves seed-only creates on the server and rejects untrusted transcript input", async () => {
+  const auth = {
+    attributes: {},
+    authenticator: "test",
+    principalId: "alice",
+    principalType: "user",
+  };
+  const seed = {
+    attachments: "channel" as const,
+    messages: [
+      { role: "user" as const, parts: [{ type: "text" as const, text: "Saved conversation" }] },
+    ],
+  };
+  const resolveSeed = vi.fn(() => seed);
+  const createSession = vi
+    .fn()
+    .mockResolvedValue({ events: new ReadableStream(), sessionId: "wrun_seed" });
+  const args = attachRouteSessionCreator(
+    { ...createArgs(), resolveSession: vi.fn().mockResolvedValue(undefined) },
+    createSession,
+  );
+  const send = (
+    body: unknown,
+    config: Parameters<typeof eveChannel>[0] = { auth: () => auth, resolveSeed },
+  ) =>
+    route(
+      "POST",
+      "/eve/v1/session",
+      config,
+    )(
+      new Request("https://eve.test/eve/v1/session", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+      args,
+    );
+  expect((await send({ seed: true, operationId: "copy" })).status).toBe(202);
+  expect(resolveSeed).toHaveBeenCalledWith({ auth, operationId: "copy" });
+  expect(createSession).toHaveBeenCalledWith(
+    expect.objectContaining({ seed, input: expect.objectContaining({ message: undefined }) }),
+  );
+  for (const body of [
+    { seed },
+    { seed: true },
+    { seed: true, operationId: "copy", message: "Run" },
+    { seed: true, operationId: "copy", history: [] },
+  ])
+    expect((await send(body)).status).toBe(400);
+  expect(
+    (await send({ seed: true, operationId: "copy" }, { auth: none(), resolveSeed })).status,
+  ).toBe(400);
+  expect(resolveSeed).toHaveBeenCalledOnce();
+  expect(
+    (
+      await send(
+        { seed: true, operationId: "foreign" },
+        {
+          auth: () => auth,
+          resolveSeed: () => {
+            throw new Error("Not owned");
+          },
+        },
+      )
+    ).status,
+  ).toBe(409);
+  expect(createSession).toHaveBeenCalledOnce();
+});

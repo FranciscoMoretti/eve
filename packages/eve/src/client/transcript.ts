@@ -73,6 +73,18 @@ export function transcriptOf(
     const line = event.meta?.position?.line;
     if (event.type !== "delivery.consumed" || consumed?.line !== line) consumed = undefined;
     switch (event.type) {
+      case "session.started":
+        for (const message of event.data.transcriptSeed?.messages ?? [])
+          append(
+            {
+              role: message.role,
+              text: message.parts
+                .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                .join("\n"),
+            },
+            undefined,
+          );
+        break;
       case "delivery.admitted":
         if (
           event.data.source !== undefined &&

@@ -7,6 +7,11 @@ import {
   createDurableSessionValues,
   type DurableSessionState,
 } from "#execution/durable-session-store.js";
+import {
+  prepareSessionTranscriptSeed,
+  type SessionTranscriptSeed,
+} from "#execution/session-transcript-seed.js";
+import { markSeedAttachmentsPending } from "#harness/seed-attachments.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSession } from "#execution/session.js";
 import type { JsonObject } from "#shared/json.js";
@@ -34,6 +39,7 @@ export interface CreateSessionStepResult {
  * the root agent.
  */
 export async function createSessionStep(input: {
+  readonly seed?: SessionTranscriptSeed;
   readonly agentSessionRuntimeOverrides?: AgentSessionRuntimeOverrides;
   readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
   readonly continuationToken: string;
@@ -47,6 +53,13 @@ export async function createSessionStep(input: {
 }): Promise<CreateSessionStepResult> {
   "use step";
 
+  if (
+    input.seed !== undefined &&
+    (input.rootSessionId !== undefined || input.nodeId !== undefined)
+  ) {
+    throw new Error("Transcript seeds require a fresh root session.");
+  }
+  const prepared = input.seed === undefined ? undefined : prepareSessionTranscriptSeed(input.seed);
   const bundle = await getCompiledRuntimeAgentBundle({
     compiledArtifactsSource: resolveDurableCompiledArtifactsSource(input.compiledArtifactsSource),
     nodeId: input.nodeId,
@@ -68,9 +81,16 @@ export async function createSessionStep(input: {
     turnAgent: effectiveAgent.turnAgent,
   });
 
-  const state = withPendingHistory(session.state, input.history);
+  const seeded =
+    prepared === undefined
+      ? session
+      : markSeedAttachmentsPending(
+          { ...session, history: [...session.history, ...prepared.history] },
+          input.seed!,
+        );
+  const state = withPendingHistory(seeded.state, input.history);
   const { history, sessionState } = createDurableSessionValues(
-    state === session.state ? session : { ...session, state },
+    state === seeded.state ? seeded : { ...seeded, state },
   );
   return { history, state: sessionState };
 }

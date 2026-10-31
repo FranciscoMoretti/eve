@@ -1,3 +1,4 @@
+import { seedFileDigests } from "#harness/seed-attachments.js";
 import { withoutPromptMeasurement } from "#harness/compaction/engine.js";
 import type { ApprovalMemory } from "#approval/evaluation.js";
 import {
@@ -384,7 +385,10 @@ export class ModelCaller {
     );
     generation.begin();
     // Hydrate `eve-sandbox:` file refs for this call only; history keeps the refs.
-    this.modelMessages = await hydrateSandboxAttachments(this.request.nonSystemMessages);
+    this.modelMessages = await hydrateSandboxAttachments(
+      this.request.nonSystemMessages,
+      seedFileDigests(step.session),
+    );
     if (this.profile.filesOutsideToolResults) {
       this.modelMessages = moveToolResultFilesToUserMessages(this.modelMessages);
     }

@@ -99,7 +99,7 @@ import {
 } from "#execution/stable-workflow-names.js";
 const EVE_PACKAGE_INFO = resolveInstalledPackageInfo();
 
-const STABLE_ID_BASE = EVE_PACKAGE_INFO.name;
+const STABLE_ID_BASE = "eve";
 
 const log = createLogger("execution.workflow-runtime");
 
@@ -154,6 +154,16 @@ export function createWorkflowRuntime(config: {
     input: RunInput,
     predecessor?: SessionPredecessor,
   ): Promise<RunHandle> => {
+    if (
+      input.seed !== undefined &&
+      (input.parent !== undefined ||
+        config.nodeId !== undefined ||
+        input.auth === null ||
+        input.auth.principalType === "anonymous" ||
+        predecessor !== undefined)
+    ) {
+      throw new Error("Trusted seeds require an authenticated fresh root.");
+    }
     validateDeliveryIdempotencyKey(input.idempotencyKey);
     if (input.input.message !== undefined && input.delivery === undefined) {
       input = {
@@ -210,6 +220,7 @@ export function createWorkflowRuntime(config: {
       idempotencyKey: input.idempotencyKey,
       kind: "initial",
       input: input.input,
+      seed: input.seed,
       ownerDeploymentId: await resolveCurrentWorkflowDeploymentId(),
       serializedContext,
     };

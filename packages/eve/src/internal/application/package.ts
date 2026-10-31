@@ -70,7 +70,7 @@ const packageRequire = createRequire(resolveCurrentModulePath());
 function tryResolveVerifiedPackageRoot(packageJsonPath: string): string | undefined {
   try {
     const canonicalPackageJsonPath = realpathSync.native(packageJsonPath);
-    const packageInfo = tryReadInstalledPackageInfo(canonicalPackageJsonPath, EVE_PACKAGE_NAME);
+    const packageInfo = tryReadInstalledPackageInfo(canonicalPackageJsonPath);
 
     return packageInfo === undefined ? undefined : dirname(canonicalPackageJsonPath);
   } catch {
@@ -303,6 +303,19 @@ export function resolvePackageSourceDirectoryPath(relativeSourcePath: string): s
 }
 
 export function resolvePackageDependencyPath(specifier: string): string {
+  if (specifier === EVE_PACKAGE_NAME || specifier.startsWith(`${EVE_PACKAGE_NAME}/`)) {
+    const packageRoot = tryResolvePackageRoot();
+    if (packageRoot !== undefined) {
+      const manifestPath = join(packageRoot, "package.json");
+      const packageInfo = tryReadInstalledPackageInfo(manifestPath);
+      if (packageInfo?.name === "@chat-js/eve") {
+        // Node self references use the manifest name, not the consumer's npm alias.
+        return createRequire(manifestPath).resolve(
+          `${packageInfo.name}${specifier.slice(EVE_PACKAGE_NAME.length)}`,
+        );
+      }
+    }
+  }
   try {
     return packageRequire.resolve(specifier);
   } catch (error) {
@@ -376,15 +389,16 @@ function normalizeInstalledPackageInfo(value: unknown): InstalledPackageInfo | u
   };
 }
 
-function tryReadInstalledPackageInfo(
-  packageJsonPath: string,
-  expectedPackageName: string,
-): InstalledPackageInfo | undefined {
+function tryReadInstalledPackageInfo(packageJsonPath: string): InstalledPackageInfo | undefined {
   const resolvedPackageInfo = normalizeInstalledPackageInfo(
     JSON.parse(readFileSync(packageJsonPath, "utf8")),
   );
 
-  if (resolvedPackageInfo?.name !== expectedPackageName) {
+  // ChatJS installs its scoped distribution under the public `eve` alias.
+  if (
+    resolvedPackageInfo?.name !== EVE_PACKAGE_NAME &&
+    resolvedPackageInfo?.name !== "@chat-js/eve"
+  ) {
     return undefined;
   }
 
@@ -393,10 +407,7 @@ function tryReadInstalledPackageInfo(
 
 function tryResolveSelfPackageInfo(): InstalledPackageInfo | undefined {
   try {
-    return tryReadInstalledPackageInfo(
-      packageRequire.resolve(`${EVE_PACKAGE_NAME}/package.json`),
-      EVE_PACKAGE_NAME,
-    );
+    return tryReadInstalledPackageInfo(packageRequire.resolve(`${EVE_PACKAGE_NAME}/package.json`));
   } catch {
     return undefined;
   }
@@ -414,7 +425,7 @@ export function resolveInstalledPackageInfo(): InstalledPackageInfo {
   const packageRootInfo =
     packageRoot === undefined
       ? undefined
-      : tryReadInstalledPackageInfo(join(packageRoot, "package.json"), EVE_PACKAGE_NAME);
+      : tryReadInstalledPackageInfo(join(packageRoot, "package.json"));
 
   if (packageRootInfo) {
     cachedPackageInfo = packageRootInfo;

@@ -1,3 +1,4 @@
+import { emitSessionTranscriptSeedStep } from "#execution/emit-session-transcript-seed-step.js";
 import { readSerializedSessionSchedule } from "#context/session-schedule.js";
 import { storedProjection } from "#harness/session-machine/view.js";
 import { failSession, runPreparedSession, type SessionBoot } from "#execution/session/program.js";
@@ -158,7 +159,7 @@ export async function bootInitialOwner(
   input: InitialWorkflowEntryInput,
   sessionId: string,
 ): Promise<BootOutcome | undefined> {
-  const serializedContext = stampSessionIdentity(input.serializedContext, sessionId);
+  let serializedContext = stampSessionIdentity(input.serializedContext, sessionId);
   const sessionWritable = getWritable<Uint8Array>();
   const inbox = createSessionInbox(sessionId);
   const sessionTimeoutMs = input.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
@@ -169,6 +170,7 @@ export async function bootInitialOwner(
   };
   try {
     const sessionCreationPromise = createSessionStep({
+      seed: input.seed,
       agentSessionRuntimeOverrides: serializedContext["eve.agentSessionRuntimeOverrides"] as
         | AgentSessionRuntimeOverrides
         | undefined,
@@ -198,7 +200,7 @@ export async function bootInitialOwner(
       ownerPreparationPromise,
       callerResolutionPromise,
     ]);
-    const created = unwrapSettled(sessionCreation);
+    let created = unwrapSettled(sessionCreation);
     const prepared = unwrapSettled(ownerPreparation);
     if (prepared.kind === "alias-conflict") {
       if (input.continuationConflictCommand !== undefined) {
@@ -213,6 +215,16 @@ export async function bootInitialOwner(
       return undefined;
     }
     const caller = unwrapSettled(callerResolution);
+    if (input.seed !== undefined) {
+      const published = await emitSessionTranscriptSeedStep({
+        seed: input.seed,
+        sessionWritable,
+        serializedContext,
+        sessionState: created.state,
+      });
+      created = { ...created, state: published.sessionState };
+      serializedContext = published.serializedContext;
+    }
     return {
       inbox,
       session: {

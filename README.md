@@ -1,3 +1,52 @@
+## ChatJS maintained eve fork
+
+The maintained branch is `francisco/chatjs-package`. This source upgrades the
+fork from eve 0.80.1 to **1.0.0-rc.0**, upstream commit
+`d44dbae25`. Compare the residual patch against
+that exact commit, not upstream's moving main.
+
+### Retained contracts
+
+One functional capability (T1/T2) and scoped package support (P1) remain:
+
+| ID  | Retained behavior                                                                                                                                                                                                                                                                                                                                       | App boundary and removal condition                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1  | [Trusted structured transcript seeds](packages/eve/src/execution/session-transcript-seed.ts), resolved on the authenticated server. Completed tool calls/results initialize model history without execution. Imported display is carried by v27 `session.started.data.transcriptSeed`; clients render completed `tool` parts without live interactions. | ChatJS owns authorization, source capture, branch boundaries and immutable intent. Remove when upstream [#5340](https://github.com/vercel/eve/issues/5340) supports the required structured history. RC0 native history remains text-only.                                                               |
+| T2  | [Shared-workspace attachment hydration](packages/eve/src/harness/seed-attachments.ts) reuses authorized existing paths without duplicate writes or sandbox copies.                                                                                                                                                                                      | ChatJS owns workspace selection, attachment access and immutable originals. Adopt upstream attachment imports when available. Existing fork digest checks, including later turns and compaction, are additional guarantees to move app-side or explicitly trade off; they are not requirements of #5340. |
+| P1  | [Scoped package resolution](packages/eve/src/internal/application/package.ts) canonical workflow IDs, and internal development-capability imports support `@chat-js/eve` installed as `eve`.                                                                                                                                                            | Remove when ChatJS returns to the upstream package.                                                                                                                                                                                                                                                      |
+
+Billing, admission, operation journals, document copying, branch selection,
+sandbox allocation, ownership, deletion and shutdown remain **app-owned**.
+R1/R2/L1/L2 are retired; this upgrade does not restore them. The last unused local
+sandbox route helpers and the obsolete hosted-pruning regression are removed.
+Upstream RC0 now defines the native sandbox/runtime behavior.
+
+Branches share the app-owned workspace. They preserve selected conversation
+history but do not roll files, installed packages or processes back to a historical
+boundary. Unknown create/copy/send outcomes must not trigger automatic redispatch.
+
+### RC0 adoption
+
+This is a source upgrade, not a package release or a ChatJS dependency update.
+Current ChatJS main still installs `npm:@chat-js/eve@0.80.1-chatjs.4`.
+Its published source is `df72a62b6da4ce7abba7dc06f47cccd82ec18dd9`; historical
+validation is recorded in [#16](https://github.com/FranciscoMoretti/eve/pull/16)
+and does not certify this RC0 source.
+
+Before adopting an RC0 fork package, migrate ChatJS's store/message types,
+v27 event consumers, approvals and delivery results. Billing remains app-owned,
+but its consumers must use v27 stream positions rather than counting events.
+The fork's `history.seeded` event is replaced by the initial v27 session fact;
+seed message IDs remain `seed_message_<index>`. Seed requests still accept only
+`seed: true` and an operation identity, never a caller-supplied transcript.
+
+Keep the upstream RC0 extension distribution contract and rebuild old extensions.
+Historical extension contract reports remain immutable records, not a compatibility
+promise. The fork release workflow guard remains in place. Publishing a scoped RC
+package, updating ChatJS, merging, and deployment are separate steps.
+
+---
+
 <div align="center">
   <a href="https://eve.dev/">
     <picture>

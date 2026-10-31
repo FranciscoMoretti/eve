@@ -233,7 +233,7 @@ function resolveModuleSpecifier(
   if (packageBuild && pkg !== null) {
     return {
       moduleSpecifier: `${pkg.name}@${pkg.version}`,
-      stableModuleSpecifier: pkg.name,
+      stableModuleSpecifier: pkg.name === "@chat-js/eve" ? EVE_PACKAGE_NAME : pkg.name,
     };
   }
 
@@ -257,7 +257,7 @@ function resolveModuleSpecifier(
 
   return {
     moduleSpecifier: `${base}@${pkg.version}`,
-    stableModuleSpecifier: base,
+    stableModuleSpecifier: pkg.name === "@chat-js/eve" ? EVE_PACKAGE_NAME : base,
   };
 }
 

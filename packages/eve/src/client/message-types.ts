@@ -24,6 +24,8 @@ export interface EveMessage {
 }
 
 export interface EveMessageMetadata {
+  readonly modelId?: string;
+  readonly custom?: import("#shared/json.js").JsonObject;
   /** App-owned identifier on a message imported through session history. */
   readonly historyId?: string;
   readonly imported?: true;

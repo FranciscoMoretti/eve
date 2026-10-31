@@ -89,9 +89,10 @@ function rejectUnknownFields(
 export async function deriveOperationContinuationToken(input: {
   readonly auth: SessionAuthContext;
   readonly operationId: string;
+  readonly kind?: "seed";
 }): Promise<string> {
   const identity = JSON.stringify([
-    "eve:create-session:v1",
+    input.kind === "seed" ? "eve:seed-session:v1" : "eve:create-session:v1",
     input.auth.authenticator,
     input.auth.issuer ?? null,
     input.auth.principalType,
@@ -111,6 +112,7 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
     input.callback === undefined ? undefined : parseProtocolVersionField(input.protocolVersion);
   if (protocolVersion instanceof Response) return protocolVersion;
   const fields = [
+    "seed",
     "message",
     "clientContext",
     "outputSchema",
@@ -157,6 +159,24 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
     );
   }
 
+  if (
+    payload.seed !== undefined &&
+    (payload.seed !== true ||
+      typeof rawOperationId !== "string" ||
+      message !== undefined ||
+      callback !== undefined ||
+      payload.stubs !== undefined ||
+      payload.fork !== undefined)
+  ) {
+    return Response.json(
+      {
+        error:
+          "Seed creation requires only an operation identity and no message, fork, callback or stubs.",
+        ok: false,
+      },
+      { status: 400 },
+    );
+  }
   const result: ParsedCreateBody = {
     callback,
     capabilities,
@@ -173,6 +193,16 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
       );
     }
   }
+  if (payload.fork !== undefined) {
+    return Response.json(
+      {
+        error: "Historical forks are unsupported. Create a trusted current transcript seed.",
+        ok: false,
+      },
+      { status: 400 },
+    );
+  }
+  if (payload.seed === true) result.seed = true;
   if (message !== undefined) result.message = message;
   if (typeof rawOperationId === "string") result.operationId = rawOperationId;
   if (protocolVersion !== undefined) result.protocolVersion = protocolVersion;

@@ -27,6 +27,13 @@ docs, prompts, comments, and headings.
 
 ## Git workflow
 
+Every fork PR must review the [README fork inventory](README.md#retained-contracts).
+Update affected behaviors, why each patch remains, and its removal condition; remove
+entries for retired patches. For no inventory change, state "inventory reviewed; no
+change" in the PR. Upstream rebases must update the comparison baseline and recheck
+every entry. Link companion ChatJS PRs and explain inventory changes and adoption
+order using the PR template.
+
 Commits must be cryptographically signed with a GitHub-verified key and include
 the DCO `Signed-off-by` trailer. Use `git commit -s` for every commit, and if a
 commit is missing the trailer, amend it with `git commit --amend -s --no-edit`
