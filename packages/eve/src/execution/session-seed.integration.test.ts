@@ -2,10 +2,10 @@ import { expect, it, vi } from "vitest";
 import { pngBytes } from "#internal/testing/media-fixtures.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import { createSessionStep } from "#execution/create-session-step.js";
-import { emitSessionTranscriptSeedStep } from "#execution/emit-session-transcript-seed-step.js";
-import { defaultMessageReducer } from "#client/message-reducer.js";
+
+import { Conversation } from "#client/conversation.js";
 import { parseSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
-import type { MessageStreamEvent } from "#protocol/message.js";
+import type { SessionStreamEvent } from "#protocol/session-event.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 import { createSession } from "#execution/session.js";
@@ -33,6 +33,7 @@ const turnAgent = {
 
 it("installs ordered copy history and stable display without replaying historical tool execution", async () => {
   vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
+    graph: { root: { agent: { config: {} }, turnAgent } },
     resolvedAgent: { config: {} },
     turnAgent,
   } as never);
@@ -79,24 +80,31 @@ it("installs ordered copy history and stable display without replaying historica
       output: { type: "text", value: "Saved notes" },
     },
   ]);
-  const events: MessageStreamEvent[] = [];
-  await emitSessionTranscriptSeedStep({
-    seed,
-    writable: new WritableStream({
-      write(chunk) {
-        events.push(JSON.parse(new TextDecoder().decode(chunk)));
-      },
-    }),
-  });
-  expect(events.map((event) => event.type)).toEqual(["history.seeded", "session.waiting"]);
-  const reducer = defaultMessageReducer();
-  let display = reducer.initial();
-  for (const event of [...events, ...events]) display = reducer.reduce(display, event);
-  expect(display.messages.map((message) => message.id)).toEqual([
+  const event: SessionStreamEvent = {
+    type: "session.started",
+    data: { transcriptSeed: seed },
+    meta: { at: "2026-10-31T00:00:00Z", position: { line: 0, index: 0 }, endOfLine: true },
+  };
+  const conversation = new Conversation();
+  conversation.observe(event);
+  conversation.observe(event);
+  expect(conversation.state.messages.map((message) => message.id)).toEqual([
     "seed_message_0",
     "seed_message_1",
   ]);
-  expect(display.messages[1]?.metadata?.modelId).toBe("gateway/mock");
+  expect(conversation.state.messages[1]?.metadata?.modelId).toBe("gateway/mock");
+  expect(conversation.state.messages[1]?.parts[0]).toMatchObject({
+    type: "tool",
+    state: "completed",
+    output: "Saved notes",
+  });
+  expect(conversation.state.messages[1]?.parts[0]).not.toHaveProperty("interaction");
+  conversation.observe({
+    type: "context.settled",
+    data: { changeId: "clear", kind: "clear", outcome: "completed", selects: null },
+    meta: { at: "2026-10-31T00:00:01Z", position: { line: 1, index: 0 }, endOfLine: true },
+  });
+  expect(conversation.state.messages).toEqual([]);
   await expect(
     createSessionStep({
       seed,
