@@ -1,5 +1,12 @@
 # eve
 
+## 1.0.0-rc.1-chatjs.0
+
+### ChatJS fork
+
+- Upgrade to upstream 1.0.0-rc.1, retaining trusted structured history imports, attachment integrity checks, and scoped package/workflow identity support.
+- Requires the companion ChatJS RC.1 contract migration. Billing and sandbox lifecycle remain app-owned. No legacy history compatibility is provided.
+
 ## 1.0.0-rc.1
 
 Released 2026-10-31 · [Compare with 1.0.0-rc.0](https://github.com/vercel/eve/compare/eve%401.0.0-rc.0...eve%401.0.0-rc.1)
