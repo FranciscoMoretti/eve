@@ -27,7 +27,8 @@ boundary. Unknown create/copy/send outcomes must not trigger automatic redispatc
 
 ### RC1 adoption
 
-This branch prepares `@chat-js/eve@1.0.0-rc.1-chatjs.0` for the `chatjs-rc` npm tag.
+`@chat-js/eve@1.0.0-rc.1-chatjs.0` is published under the `chatjs-rc` npm tag
+from source `7f45f90282e4e75b746dd90cd1782a93dcda2d0a`.
 Companion ChatJS adoption is tracked in [#918](https://github.com/FranciscoMoretti/chat-js/pull/918).
 Current ChatJS main still installs `npm:@chat-js/eve@0.80.1-chatjs.4`.
 Its published source is `df72a62b6da4ce7abba7dc06f47cccd82ec18dd9`; historical
