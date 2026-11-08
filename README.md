@@ -1,3 +1,30 @@
+## ChatJS maintained eve fork
+
+This candidate replaces the RC1 fork with upstream **1.0.0-rc.6**
+(`663640b072dc91e85ead914e7d398a1e1bdb73ce`). It is not published.
+The maintained release branch is `francisco/chatjs-package`.
+
+| Patch | Remaining behavior                                                                                                                                                                                                                               | Ownership / removal condition                                                                                                                                                                                                                                    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1/T2 | Extend native `onMessage.history` with structured user/assistant parts, completed tool exchanges, and files. Imported calls are data, never executed or re-approved. Files use existing native attachment staging and the channel's `fetchFile`. | ChatJS captures authorized immutable history, retains document/file access and display metadata, and supplies history only with the first branch message. Remove when upstream supports structured imports ([#5340](https://github.com/vercel/eve/issues/5340)). |
+| P1    | Resolve `@chat-js/eve` installed under the `eve` alias and retain canonical workflow module identities.                                                                                                                                          | Distribution-only; removable when ChatJS installs upstream `eve`.                                                                                                                                                                                                |
+
+Removed: `resolveSeed`, `seed: true`, seed-only session initialization,
+`session.started.transcriptSeed`, seed message IDs, imported custom metadata,
+and seed-specific attachment paths/digest machinery. There is no standalone
+copy-before-first-message API. Edit/regenerate create a branch with a real message.
+
+Authorization, immutable intent, unknown-delivery fencing, exact approvals,
+billing, workspace ownership, immutable original attachments and deletion remain
+ChatJS responsibilities. EVE's ordinary attachment staging and failure behavior
+apply; this patch does not introduce independent attachment storage or resolvers.
+
+Branches share ChatJS's workspace; history import does not restore historical
+files, installed packages, or processes. Release automation is disabled in forks.
+Publishing this candidate and adopting it in ChatJS are separate release steps.
+
+---
+
 <div align="center">
   <a href="https://eve.dev/">
     <picture>

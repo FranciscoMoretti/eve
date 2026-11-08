@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { getLocalDevCapability } from "eve/local-dev";
+import { getLocalDevCapability } from "#runtime/local-dev-capability.js";
 
 import type { JustBashFilesystem } from "#public/sandbox/just-bash-sandbox.js";
 

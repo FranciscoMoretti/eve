@@ -4,7 +4,7 @@ const textPart = z.strictObject({ type: z.literal("text"), text: z.string() });
 const reasoningPart = z.strictObject({ type: z.literal("reasoning"), text: z.string() });
 const filePart = z.strictObject({
   type: z.literal("file"),
-  url: z.url().refine((url) => /^https?:/.test(url)),
+  url: z.url().refine((url) => /^(?:https?:|data:)/.test(url)),
   mediaType: z.string().min(1),
   filename: z.string().optional(),
 });

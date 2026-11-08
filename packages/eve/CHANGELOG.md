@@ -1,5 +1,14 @@
 # eve
 
+## 1.0.0-rc.6-chatjs.0
+
+Unreleased fork candidate, based on upstream 1.0.0-rc.6.
+
+- Replace the fork's separate seed lifecycle with structured `onMessage.history` imports, including completed tool exchanges and attachments using native staging.
+- Remove `resolveSeed`, seed-only session creation, custom imported metadata and seed-specific attachment paths. Applications create branches with a real first message and own authorization and display metadata.
+- Retain scoped package alias resolution and canonical workflow identities for `@chat-js/eve`.
+
+
 ## 1.0.0-rc.6
 
 Released 2026-11-05 · [Compare with 1.0.0-rc.5](https://github.com/vercel/eve/compare/eve%401.0.0-rc.5...eve%401.0.0-rc.6)
