@@ -1,8 +1,12 @@
 # eve
 
+## 1.0.0-rc.6-chatjs.1
+
+- Use canonical workflow IDs when starting and guarding workflows from the scoped package.
+
 ## 1.0.0-rc.6-chatjs.0
 
-Unreleased fork candidate, based on upstream 1.0.0-rc.6.
+Fork release based on upstream 1.0.0-rc.6.
 
 - Replace the fork's separate seed lifecycle with structured `onMessage.history` imports, including completed tool exchanges and attachments using native staging.
 - Remove `resolveSeed`, seed-only session creation, custom imported metadata and seed-specific attachment paths. Applications create branches with a real first message and own authorization and display metadata.

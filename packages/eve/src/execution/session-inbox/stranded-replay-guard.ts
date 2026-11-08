@@ -11,6 +11,7 @@ import {
 } from "#execution/stable-workflow-names.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
 import { createLogger } from "#internal/logging.js";
+import { EVE_PACKAGE_NAME } from "#internal/package-name.js";
 import {
   isInactiveWorkflowRunError,
   isMissingWorkflowRunError,
@@ -35,10 +36,9 @@ const log = createLogger("execution.session-inbox.stranded-replay-guard");
  */
 export function guardStrandedSessionReplay<TWorld extends World>(world: TWorld): TWorld {
   if (routesToOwnerDeployment(world)) return world;
-  const { name } = resolveInstalledPackageInfo();
   const guardedWorkflows = new Map<string, GuardedWorkflow>([
-    [`workflow//${name}//${WORKFLOW_ENTRY_NAME}`, "session"],
-    [`workflow//${name}//${WORKFLOW_TOOL_RUN_WORKFLOW_NAME}`, "tool"],
+    [`workflow//${EVE_PACKAGE_NAME}//${WORKFLOW_ENTRY_NAME}`, "session"],
+    [`workflow//${EVE_PACKAGE_NAME}//${WORKFLOW_TOOL_RUN_WORKFLOW_NAME}`, "tool"],
   ]);
   const createQueueHandler = world.createQueueHandler.bind(world);
   world.createQueueHandler = (queueNamePrefix, handler) =>

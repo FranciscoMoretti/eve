@@ -32,6 +32,7 @@ import {
   readParentLineage,
 } from "#execution/eve-workflow-attributes.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
+import { EVE_PACKAGE_NAME } from "#internal/package-name.js";
 import { createLogger } from "#internal/logging.js";
 import { formatCapabilityError } from "#internal/capability-error.js";
 import {
@@ -98,7 +99,8 @@ import {
 } from "#execution/stable-workflow-names.js";
 const EVE_PACKAGE_INFO = resolveInstalledPackageInfo();
 
-const STABLE_ID_BASE = EVE_PACKAGE_INFO.name;
+// The builder registers stable workflows under the canonical package name.
+const STABLE_ID_BASE = EVE_PACKAGE_NAME;
 
 const log = createLogger("execution.workflow-runtime");
 
