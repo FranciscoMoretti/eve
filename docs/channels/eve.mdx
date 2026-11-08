@@ -371,7 +371,11 @@ The client then resumes the session by id, for example with `useEveAgent({ initi
 
 `send()` accepts the same `history` option and adds the entries right before that message and its `context`, whether it creates or continues the session. The eve channel's `onMessage` can return `history` too, which applies to every message it's returned for.
 
-Each entry has a `role` of `"user"` or `"assistant"`, non-empty `text`, and an optional `id` unique within the call. eve rejects an entry with any other field, so map your stored messages to these fields. Invalid history throws an `InvalidSessionHistoryError`, exported from `eve/channels`, naming the entry and the broken rule. eve doesn't cap entries or text, so trim long conversations in your route. Tool calls, files, and reasoning are not supported.
+Each entry has a `role` of `"user"` or `"assistant"`, an optional `id` unique within the call, and either non-empty `text` or structured `parts`. User parts accept text and files (`url`, `mediaType`, optional `filename`). Assistant parts also accept reasoning text, `step-start`, and completed `dynamic-tool` exchanges: `toolName`, JSON `input`, and `output-available` with JSON `output`, `output-error` with `errorText`, or `output-denied` with optional `reason`. A successful tool may use `outputType: "text"` with a string output. Pending calls and approval capabilities are rejected. Imported tools are historical data, not calls to execute.
+
+Files in imported history use the same channel resolver and sandbox policy as new attachments, including degradation to notes if staging is unavailable. Source sandbox paths and contents are not copied. Resolve owned originals in your channel; do not reuse another session's private sandbox references. Invalid history throws `InvalidSessionHistoryError`. Trim long histories in your route.
+
+Importing history does not cause an empty HTTP create to display it. HTTP create without a message does not invoke `onMessage`; lower-level create history becomes visible with the first accepted message. No dummy prompt is required or recommended. `transcriptOf()` remains text-only; use conversation messages when preserving rich history.
 
 eve never accepts `history` from a client request body. Resolve it on the server and authorize the caller against the stored conversation.
 

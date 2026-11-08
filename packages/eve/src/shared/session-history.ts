@@ -1,3 +1,5 @@
+import { historyPart } from "#protocol/session-events/families/imported-history.js";
+import { z } from "#compiled/zod/index.js";
 import { isObject } from "#shared/guards.js";
 
 /**
@@ -6,12 +8,20 @@ import { isObject } from "#shared/guards.js";
  * Entries become real user and assistant turns in the session's model history
  * and are recorded on the `delivery.consumed` of the message that brings them.
  */
-export interface SessionHistoryMessage {
-  /** Optional app-owned id, echoed in `delivery.consumed` history so clients can join annotations. */
-  readonly id?: string;
-  readonly role: "user" | "assistant";
-  /** Plain text. Channels render speaker attribution into this text when needed. */
-  readonly text: string;
+export type SessionHistoryMessage =
+  import("#protocol/session-events/families/imported-history.js").ImportedMessage;
+export type SessionHistoryPart =
+  import("#protocol/session-events/families/imported-history.js").ImportedHistoryPart;
+
+/** Text-only projection for transcript consumers; rich parts remain in conversation messages. */
+export function sessionHistoryText(message: SessionHistoryMessage): string {
+  return (
+    message.text ??
+    message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+  );
 }
 
 /** Thrown when `history` passed to a send does not satisfy the seeding contract. */
@@ -19,7 +29,7 @@ export class InvalidSessionHistoryError extends Error {
   override readonly name = "InvalidSessionHistoryError";
 }
 
-const HISTORY_FIELDS: readonly string[] = ["id", "role", "text"];
+const HISTORY_FIELDS: readonly string[] = ["id", "role", "text", "parts"];
 
 /**
  * Validates `history` at the send boundary and returns a normalized copy.
@@ -44,10 +54,37 @@ export function validateSessionHistory(
     if (role !== "user" && role !== "assistant") {
       throw new InvalidSessionHistoryError(`${at}.role must be "user" or "assistant".`);
     }
-    if (typeof text !== "string" || text.trim().length === 0) {
-      throw new InvalidSessionHistoryError(`${at}.text must be a non-empty string.`);
+    let message: SessionHistoryMessage;
+    if (entry.parts !== undefined) {
+      if (text !== undefined)
+        throw new InvalidSessionHistoryError(`${at} cannot contain both text and parts.`);
+      const parsed = z.array(historyPart).min(1).max(256).safeParse(entry.parts);
+      if (!parsed.success)
+        throw new InvalidSessionHistoryError(`${at}.parts is invalid: ${parsed.error.message}`);
+      if (
+        role === "user" &&
+        parsed.data.some((part) => part.type !== "text" && part.type !== "file")
+      ) {
+        throw new InvalidSessionHistoryError(`${at}: user history only accepts text and files.`);
+      }
+      if (
+        parsed.data.some(
+          (part) =>
+            part.type === "dynamic-tool" &&
+            part.state === "output-available" &&
+            part.outputType === "text" &&
+            typeof part.output !== "string",
+        )
+      ) {
+        throw new InvalidSessionHistoryError(`${at}: text tool output must be a string.`);
+      }
+      message = { role, parts: parsed.data };
+    } else {
+      if (typeof text !== "string" || text.trim().length === 0) {
+        throw new InvalidSessionHistoryError(`${at}.text must be a non-empty string.`);
+      }
+      message = { role, text };
     }
-    const message: SessionHistoryMessage = { role, text };
     if (id === undefined) return message;
     if (typeof id !== "string" || id.length === 0) {
       throw new InvalidSessionHistoryError(`${at}.id must be a non-empty string.`);
