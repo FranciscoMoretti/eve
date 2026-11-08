@@ -1,3 +1,4 @@
+import { historyPart } from "./imported-history.js";
 import { z } from "#compiled/zod/index.js";
 
 import { conforming, envelopeOf, id, principal, userPart, known } from "../common.js";
@@ -25,13 +26,7 @@ export interface DeliveryAdmittedData {
  * A message from conversation eve did not run, such as a transcript an app stored. It names no
  * turn or call, and records nothing eve ran.
  */
-export interface ImportedMessage {
-  /** The app's own id for the message, when it gave one. eve never reads it. */
-  readonly id?: string;
-  readonly role: "user" | "assistant";
-  /** The message's plain text. */
-  readonly text: string;
-}
+export type ImportedMessage = import("./imported-history.js").ImportedMessage;
 
 export interface DeliveryConsumedData {
   readonly deliveryId: string;
@@ -79,7 +74,14 @@ const deliverySource = conforming<DeliverySource>()(
 );
 
 const importedMessage = conforming<ImportedMessage>()(
-  z.object({ id: z.string().optional(), role: z.enum(["user", "assistant"]), text: z.string() }),
+  z.union([
+    z.object({ id: z.string().optional(), role: z.enum(["user", "assistant"]), text: z.string() }),
+    z.object({
+      id: z.string().optional(),
+      role: z.enum(["user", "assistant"]),
+      parts: z.array(historyPart),
+    }),
+  ]),
 );
 
 export const deliverySchemas = {

@@ -1,4 +1,4 @@
-import type { ModelMessage, UserContent } from "ai";
+import type { ModelMessage, UserContent, AssistantContent, ToolContent } from "ai";
 
 import type { MessageContent, MessagePart } from "#shared/message-content.js";
 
@@ -65,15 +65,79 @@ export function createUserMessage(
 /** Metadata key marking a user message seeded from `history` rather than typed in a turn. */
 export const IMPORTED_MESSAGE_METADATA_KEY = "eve.imported";
 
-/** Maps seeded history to model messages: plain user and assistant text, nothing else. */
+/** Convert completed imported exchanges without executing calls or granting approval. */
 export function createImportedHistoryMessages(
   history: readonly SessionHistoryMessage[],
+  namespace = "history",
 ): HarnessModelMessage[] {
-  return history.map((message) =>
-    message.role === "user"
-      ? createUserMessage("user", message.text, { [IMPORTED_MESSAGE_METADATA_KEY]: true })
-      : { content: message.text, role: "assistant" },
-  );
+  const result: HarnessModelMessage[] = [];
+  for (const [index, message] of history.entries()) {
+    if (message.parts === undefined) {
+      result.push(
+        message.role === "user"
+          ? createUserMessage("user", message.text, { [IMPORTED_MESSAGE_METADATA_KEY]: true })
+          : { role: "assistant", content: message.text },
+      );
+      continue;
+    }
+    if (message.role === "user") {
+      const content: UserContent = [];
+      for (const part of message.parts) {
+        if (part.type === "text") content.push(part);
+        else if (part.type === "file")
+          content.push({
+            type: "file",
+            data: new URL(part.url),
+            mediaType: part.mediaType,
+            filename: part.filename,
+          });
+      }
+      result.push(createUserMessage("user", content, { [IMPORTED_MESSAGE_METADATA_KEY]: true }));
+      continue;
+    }
+    let content: AssistantContent = [];
+    let outputs: ToolContent = [];
+    const flush = () => {
+      if (content.length) result.push({ role: "assistant", content });
+      if (outputs.length) result.push({ role: "tool", content: outputs });
+      content = [];
+      outputs = [];
+    };
+    for (const [partIndex, part] of message.parts.entries()) {
+      if (part.type === "step-start") {
+        flush();
+        continue;
+      }
+      if (outputs.length && part.type !== "dynamic-tool") flush();
+      if (part.type === "text" || part.type === "reasoning") content.push(part);
+      else if (part.type === "file")
+        content.push({
+          type: "file",
+          data: new URL(part.url),
+          mediaType: part.mediaType,
+          filename: part.filename,
+        });
+      else {
+        const toolCallId = `${namespace}:${index}:${partIndex}`;
+        content.push({ type: "tool-call", toolCallId, toolName: part.toolName, input: part.input });
+        const output =
+          part.state === "output-available"
+            ? part.outputType === "text" && typeof part.output === "string"
+              ? { type: "text" as const, value: part.output }
+              : { type: "json" as const, value: part.output }
+            : {
+                type: "error-text" as const,
+                value:
+                  part.state === "output-error"
+                    ? part.errorText
+                    : (part.reason ?? "Tool execution was denied."),
+              };
+        outputs.push({ type: "tool-result", toolCallId, toolName: part.toolName, output });
+      }
+    }
+    flush();
+  }
+  return result;
 }
 
 /** Builds a framework-authored user-role message for model history. */

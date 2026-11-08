@@ -1,5 +1,3 @@
-import { buildRuntimeIdentity } from "#execution/node-step.js";
-import type { RuntimeIdentity } from "#protocol/session-events/families/session.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import {
   type DurableCompiledArtifactsSource,
@@ -9,15 +7,9 @@ import {
   createDurableSessionValues,
   type DurableSessionState,
 } from "#execution/durable-session-store.js";
-import {
-  prepareSessionTranscriptSeed,
-  type SessionTranscriptSeed,
-} from "#execution/session-transcript-seed.js";
-import { markSeedAttachmentsPending } from "#harness/seed-attachments.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSession } from "#execution/session.js";
 import type { JsonObject } from "#shared/json.js";
-import { resolveEffectiveAgentRuntimeFromConfig } from "#execution/effective-agent-config.js";
 import type { AgentSessionRuntimeOverrides } from "#execution/agent-sessions/runtime-overrides.js";
 import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
 import { withPendingHistory } from "#execution/session/pending-history.js";
@@ -30,7 +22,6 @@ import type { SessionHistoryMessage } from "#shared/session-history.js";
  * owner needs to drive the turn loop.
  */
 export interface CreateSessionStepResult {
-  readonly seedRuntime?: RuntimeIdentity;
   readonly history: HarnessModelMessage[];
   readonly state: DurableSessionState;
 }
@@ -42,7 +33,6 @@ export interface CreateSessionStepResult {
  * the root agent.
  */
 export async function createSessionStep(input: {
-  readonly seed?: SessionTranscriptSeed;
   readonly agentSessionRuntimeOverrides?: AgentSessionRuntimeOverrides;
   readonly compiledArtifactsSource: DurableCompiledArtifactsSource;
   readonly continuationToken: string;
@@ -56,55 +46,24 @@ export async function createSessionStep(input: {
 }): Promise<CreateSessionStepResult> {
   "use step";
 
-  if (
-    input.seed !== undefined &&
-    (input.rootSessionId !== undefined || input.nodeId !== undefined)
-  ) {
-    throw new Error("Transcript seeds require a fresh root session.");
-  }
-  const prepared = input.seed === undefined ? undefined : prepareSessionTranscriptSeed(input.seed);
   const bundle = await getCompiledRuntimeAgentBundle({
     compiledArtifactsSource: resolveDurableCompiledArtifactsSource(input.compiledArtifactsSource),
     nodeId: input.nodeId,
   });
-  const effectiveAgent = resolveEffectiveAgentRuntimeFromConfig(
-    bundle,
-    input.dynamicSubagentAgentConfig,
-    input.agentSessionRuntimeOverrides,
-  );
+  if (bundle.turnAgent.configResolver === true && input.dynamicSubagentAgentConfig === undefined) {
+    throw new Error("Dynamic subagent execution requires a selected concrete agent config.");
+  }
 
   const session = createSession({
-    compactionOverrides: {
-      thresholdPercent: effectiveAgent.thresholdPercent,
-    },
     continuationToken: input.continuationToken,
     outputSchema: input.outputSchema,
     rootSessionId: input.rootSessionId,
     sessionId: input.sessionId,
-    turnAgent: effectiveAgent.turnAgent,
   });
 
-  const seeded =
-    prepared === undefined
-      ? session
-      : markSeedAttachmentsPending(
-          { ...session, history: [...session.history, ...prepared.history] },
-          input.seed!,
-        );
-  const state = withPendingHistory(seeded.state, input.history);
+  const state = withPendingHistory(session.state, input.history);
   const { history, sessionState } = createDurableSessionValues(
-    state === seeded.state ? seeded : { ...seeded, state },
+    state === session.state ? session : { ...session, state },
   );
-  return {
-    history,
-    state: sessionState,
-    ...(input.seed === undefined
-      ? {}
-      : {
-          seedRuntime: buildRuntimeIdentity({
-            ...bundle.graph.root,
-            turnAgent: effectiveAgent.turnAgent,
-          }),
-        }),
-  };
+  return { history, state: sessionState };
 }

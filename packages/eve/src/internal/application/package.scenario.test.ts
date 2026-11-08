@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
@@ -55,7 +55,7 @@ describe("installed package self references", () => {
 });
 
 describe("isolated scoped development modules", () => {
-  it("loads the self-modification filesystem without a hoisted eve alias", async () => {
+  it("loads scoped modules and preserves the canonical workflow namespace", async () => {
     const root = await createScratchDirectory("eve-scoped-development-");
     const manifest = JSON.parse(
       await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
@@ -66,11 +66,24 @@ describe("isolated scoped development modules", () => {
     );
     await cp(new URL("../../../dist", import.meta.url), join(root, "dist"), { recursive: true });
     const entry = pathToFileURL(join(root, "dist/src/self-modification/filesystem.js")).href;
-    const { stdout } = await run(process.execPath, [
+    const { stdout: filesystem } = await run(process.execPath, [
       "--input-type=module",
       "-e",
       `const module = await import(${JSON.stringify(entry)}); console.log(typeof module.createSelfModificationFilesystem);`,
     ]);
-    expect(stdout.trim()).toBe("function");
+    expect(filesystem.trim()).toBe("function");
+
+    await symlink(
+      fileURLToPath(new URL("../../../node_modules", import.meta.url)),
+      join(root, "node_modules"),
+      "junction",
+    );
+    const runtime = pathToFileURL(join(root, "dist/src/execution/workflow-runtime.js")).href;
+    const { stdout } = await run(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `const { workflowEntryReference } = await import(${JSON.stringify(runtime)}); console.log(workflowEntryReference.workflowId);`,
+    ]);
+    expect(stdout.trim()).toBe("workflow//eve//workflowEntry");
   });
 });

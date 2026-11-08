@@ -104,32 +104,6 @@ export async function stageAttachmentsForAdapter(
   );
 }
 
-/** Imported files resolve through the authenticated channel and reuse the shared workspace. */
-export async function stageSeedFile(
-  part: FilePart,
-  existingPath: string,
-): Promise<{ readonly part: FilePart; readonly digest: string }> {
-  const ctx = loadContext();
-  const adapter = ctx.get(ChannelKey);
-  const sandbox = await ctx.get(SandboxKey)?.get();
-  if (!adapter?.fetchFile || !sandbox)
-    throw new Error("Copied files require their destination channel and sandbox.");
-  const data = readFileData(part.data);
-  if (data.kind !== "link") throw new Error("Copied files require destination URLs.");
-  const result = await adapter.fetchFile(data.url.href, buildAdapterContext(adapter, ctx));
-  if (result === null) throw new Error("Destination channel did not resolve a copied file.");
-  const resolved = Buffer.isBuffer(result) ? { bytes: result } : result;
-  const staged = await stageResolvedBytes(
-    part,
-    resolved,
-    sandbox,
-    adapter.uploadPolicy ?? DEFAULT_UPLOAD_POLICY,
-    existingPath,
-  );
-  if (staged.type !== "file") throw new Error("Copied file violates attachment policy.");
-  return { part: staged, digest: createHash("sha256").update(resolved.bytes).digest("hex") };
-}
-
 /**
  * Context-bound variant of {@link stageAttachmentsForAdapter}. Without an
  * active sandbox, every file part becomes a note: history never keeps an
@@ -224,22 +198,14 @@ export async function stageToolResultMedia<T extends ModelMessage>(
  */
 export async function hydrateSandboxAttachments(
   input: readonly ModelMessage[],
-  strictPaths: Readonly<Record<string, string>> = {},
 ): Promise<ModelMessage[]> {
   const messages = replaceUnresolvedFileParts(input);
-  if (!messagesContainSandboxRef(messages) && Object.keys(strictPaths).length === 0) {
+  if (!messagesContainSandboxRef(messages)) {
     return messages;
   }
 
   const context = loadContext();
-  const access = context.get(SandboxKey);
-  const sandbox = Object.keys(strictPaths).length === 0 ? undefined : await access?.get();
-  for (const [path, digest] of Object.entries(strictPaths)) {
-    const bytes = await sandbox?.readBinaryFile({ path });
-    if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest)
-      throw new Error("Copied attachment is unavailable or changed in the destination sandbox.");
-  }
-  const read = sandboxRefReader(access, context.get(SessionIdKey));
+  const read = sandboxRefReader(context.get(SandboxKey), context.get(SessionIdKey));
   return Promise.all(
     messages.map(async (message) => {
       if (!messageContainsSandboxRef(message)) {
@@ -671,7 +637,6 @@ async function stageResolvedBytes(
   resolved: FetchFileResult,
   sandbox: SandboxSession,
   policy: UploadPolicy | undefined,
-  existingPath?: string,
 ): Promise<FilePart | TextPart> {
   const mediaType = verifyMediaType(
     resolved.bytes,
@@ -692,36 +657,13 @@ async function stageResolvedBytes(
       );
     }
   }
-  const ref =
-    existingPath === undefined
-      ? await writeSandboxRef(
-          resolved.bytes,
-          mediaType,
-          resolved.filename ?? part.filename,
-          sandbox,
-        )
-      : await reuseSandboxRef(resolved.bytes, mediaType, existingPath, sandbox);
+  const ref = await writeSandboxRef(
+    resolved.bytes,
+    mediaType,
+    resolved.filename ?? part.filename,
+    sandbox,
+  );
   return { ...part, data: encodeSandboxRef(ref), filename: ref.path, mediaType: ref.mediaType };
-}
-
-/** Verify the app-selected shared path and reconstruct native metadata without writing. */
-async function reuseSandboxRef(
-  bytes: Buffer,
-  mediaType: string,
-  path: string,
-  sandbox: SandboxSession,
-): Promise<SandboxRef> {
-  const root = sandbox.resolvePath(ATTACHMENTS_ROOT).replace(/\/$/, "");
-  if (!path.startsWith(`${root}/`) || path.split("/").some((part) => part === ".." || part === "."))
-    throw new Error("Imported attachment path is outside the shared attachment workspace.");
-  const stored = await sandbox.readBinaryFile({ path });
-  if (
-    !stored ||
-    !bytes.equals(Buffer.from(stored)) ||
-    basename(dirname(path)) !== sha256Prefix(bytes)
-  )
-    throw new Error("Imported attachment is unavailable or changed in the shared workspace.");
-  return { ...readMediaMetadata(bytes, mediaType), path };
 }
 
 /**

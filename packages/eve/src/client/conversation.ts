@@ -1,4 +1,3 @@
-import { seedMessages } from "#client/seed-messages.js";
 import type {
   AgentObservation,
   ConversationAgentSession,
@@ -53,7 +52,6 @@ export interface LocalSubmission {
  * rebuilds only the messages of the turns that changed since it was last read.
  */
 export class Conversation {
-  #seedMessages: readonly EveMessage[] = [];
   readonly view: SessionView = emptySessionView();
   readonly previews: SessionPreviews = emptyPreviews();
   #through: { readonly line: number; readonly index: number } | undefined;
@@ -92,14 +90,6 @@ export class Conversation {
     this.#committedThrough = this.#through;
     for (const fact of committed) {
       foldReceivedEvent(this.view, fact, this.previews);
-      if (fact.type === "session.started" && fact.data.transcriptSeed !== undefined)
-        this.#seedMessages = seedMessages(fact.data.transcriptSeed);
-      if (
-        fact.type === "context.settled" &&
-        fact.data.outcome === "completed" &&
-        fact.data.selects === null
-      )
-        this.#seedMessages = [];
       if (fact.type === "delivery.consumed" && (fact.data.history?.length ?? 0) > 0)
         this.#imported.set(
           fact.data.deliveryId,
@@ -302,7 +292,7 @@ export class Conversation {
       if (messages === undefined) local.set(turnId, [message]);
       else messages.push(message);
     }
-    const messages: EveMessage[] = [...this.#seedMessages];
+    const messages: EveMessage[] = [];
     for (const turnId of turnIds) {
       // On one line, imported history sorts before what people sent, as the model reads them, and
       // a person's message sorts before the agent's that starts there.

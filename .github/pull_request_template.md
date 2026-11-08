@@ -9,26 +9,16 @@ create an issue solely to accompany this pull request. Call out breaking
 changes, preserved behavior, scope boundaries, or stacked PRs when relevant.
 -->
 
-### Fork impact and companion changes
-
-<!-- Link companion ChatJS PRs, or explain why none is needed. List inventory
-entries added, narrowed, or removed and the responsibility that remains. State
-merge versus package-adoption dependencies. Link existing upstream discussions
-and describe the supported contract or product change that retires each patch. -->
-
 ### Validation
 
 <!--
-List the exact commands you ran and useful manual coverage. Include relevant
-results or limitations. Explain when tests are not applicable.
+In PR bodies, do **not** list routine checks like typecheck, lint, or standard test runs as "Test plan" items (those are implied engineering hygiene).
+This also applies to reviewer-facing suggestions such as "recommended before merge: run `turbo typecheck test`" or "run `pnpm oxfmt-check` on the edited files" — CI already runs these on every PR, so listing them is noise. Only call out a check in Validation if it exercises change-specific behavior that CI does **not** cover (e.g. a manual production probe, a dashboard spot-check, a one-off data query).
+Use the validation section only for change-specific verification: key scenarios exercised, expected behavioral outcomes, risk checks, and any manual/production-safe validation steps.
 -->
 
 ### Checklist
 
-- [ ] README fork inventory updated, or "inventory reviewed; no change" explained above
-
-- [ ] This change was requested or approved by a maintainer
-- [ ] I ran the relevant checks from `CONTRIBUTING.md`
 - [ ] I added tests and documentation where relevant
 - [ ] I added a changeset if this touches the published `eve` package
 - [ ] DCO sign-off passes for every commit (`git commit --signoff`)

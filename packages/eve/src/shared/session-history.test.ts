@@ -24,7 +24,7 @@ describe("validateSessionHistory", () => {
     ];
     expect(() => validateSessionHistory(history)).toThrow(InvalidSessionHistoryError);
     expect(() => validateSessionHistory(history)).toThrow(
-      'history[1] has unknown fields "parts", "toolCalls". Accepted fields: id, role, text.',
+      'history[1] has unknown field "toolCalls". Accepted fields: id, role, text, parts.',
     );
   });
 

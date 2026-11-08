@@ -12,7 +12,7 @@ import type {
   SessionPreviews,
   SessionView,
 } from "#protocol/session-projection/tables.js";
-import { callPlace, runPlace } from "#protocol/session-projection/reader.js";
+import { callPlace, partPlace, runPlace } from "#protocol/session-projection/reader.js";
 import { displayTitle } from "#protocol/session-projection/display-name.js";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -81,7 +81,7 @@ export function assistantMessages(
   }
 
   for (const row of Object.values(view.parts)) {
-    const at = runPlace(view, row.runId);
+    const at = partPlace(view, row);
     if (!shows(at?.turnId)) continue;
     if (row.kind === "result") results.set(at.turnId, row.value);
     const type = textKind(row.kind);
@@ -281,9 +281,58 @@ export function importedMessages(
       message.id === undefined
         ? { imported: true, status: "complete" }
         : { historyId: message.id, imported: true, status: "complete" },
-    parts: [{ state: "done", text: message.text, type: "text" }],
+    parts:
+      message.parts === undefined
+        ? [{ state: "done", text: message.text, type: "text" }]
+        : importedParts(deliveryId, index, message.parts),
     role: message.role,
   }));
+}
+
+/** Completed imported calls are display data, never live interactions. */
+function importedParts(
+  deliveryId: string,
+  index: number,
+  parts: readonly import("#shared/session-history.js").SessionHistoryPart[],
+): EveMessagePart[] {
+  let stepIndex = 0;
+  return parts.flatMap((part, partIndex): EveMessagePart[] => {
+    if (part.type === "step-start") {
+      stepIndex++;
+      return [];
+    }
+    if (part.type === "text" || part.type === "reasoning")
+      return [{ ...part, state: "done", stepIndex }];
+    if (part.type === "file") return [{ ...part, stepIndex }];
+    return [
+      {
+        type: "tool",
+        callId: `${deliveryId}:imported:${index}:${partIndex}`,
+        stepIndex,
+        kind: "tool",
+        name: part.toolName,
+        label: part.toolName,
+        input: part.input,
+        state:
+          part.state === "output-available"
+            ? "completed"
+            : part.state === "output-error"
+              ? "failed"
+              : "rejected",
+        ...(part.state === "output-available"
+          ? { output: part.output }
+          : {
+              error: {
+                code: "imported_tool_result",
+                message:
+                  part.state === "output-error"
+                    ? part.errorText
+                    : (part.reason ?? "Tool execution was denied."),
+              },
+            }),
+      },
+    ];
+  });
 }
 
 /** A person's parts as message parts: text, and files by their metadata. */

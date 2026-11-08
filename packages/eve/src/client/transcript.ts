@@ -1,3 +1,4 @@
+import { sessionHistoryText } from "#shared/session-history.js";
 import type { SessionStreamEvent } from "#protocol/session-event.js";
 import type { UserPart } from "#protocol/session-events/envelope.js";
 
@@ -73,18 +74,6 @@ export function transcriptOf(
     const line = event.meta?.position?.line;
     if (event.type !== "delivery.consumed" || consumed?.line !== line) consumed = undefined;
     switch (event.type) {
-      case "session.started":
-        for (const message of event.data.transcriptSeed?.messages ?? [])
-          append(
-            {
-              role: message.role,
-              text: message.parts
-                .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                .join("\n"),
-            },
-            undefined,
-          );
-        break;
       case "delivery.admitted":
         if (
           event.data.source !== undefined &&
@@ -102,8 +91,11 @@ export function transcriptOf(
         const { turnId } = event.data;
         consumed ??= { at: entries.length, line };
         const history = (event.data.history ?? [])
-          .filter(({ text }) => text.trim().length > 0)
-          .map(({ role, text }) => ({ message: { role, text }, turnId }));
+          .map((entry) => ({
+            message: { role: entry.role, text: sessionHistoryText(entry) },
+            turnId,
+          }))
+          .filter(({ message }) => message.text.trim().length > 0);
         entries.splice(consumed.at, 0, ...history);
         consumed.at += history.length;
         append({ role: "user", text: textOf(event.data.parts) }, turnId);

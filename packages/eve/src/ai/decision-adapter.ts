@@ -32,9 +32,7 @@ export function decideWithMetadata<
   maxRetries,
   signal,
   providerOptions,
-}: DecisionOptions<Questions> & {
-  readonly providerOptions?: Parameters<AiSdkDecide>[0]["providerOptions"];
-}) {
+}: DecisionOptions<Questions>) {
   const decideWithAiSdk = resolveAiSdkDecide();
   ensureAiSdkWarningLogger();
   if (
@@ -47,7 +45,7 @@ export function decideWithMetadata<
     );
   }
   return decideWithAiSdk({
-    model: (typeof model === "string" && Reflect.get(globalThis, "AI_SDK_DEFAULT_PROVIDER") == null
+    model: (typeof model === "string"
       ? (localGatewayDecisionModel(model) ?? model)
       : model) as Parameters<AiSdkDecide>[0]["model"],
     state,

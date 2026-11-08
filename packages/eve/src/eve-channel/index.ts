@@ -1,4 +1,3 @@
-import { parseSessionTranscriptSeed } from "#execution/session-transcript-seed.js";
 import { InvalidToolStubTargetError } from "#tool-stubs/validate-targets.js";
 import { readStubFailure, readMatchedStubRules } from "#execution/tool-stubs/steps.js";
 import { getRun } from "#internal/workflow/runtime.js";
@@ -297,7 +296,6 @@ export function eveChannel(input: EveChannelConfig): EveChannel {
             : await deriveOperationContinuationToken({
                 auth: forwarded.auth,
                 operationId: body.operationId,
-                kind: body.seed === true ? "seed" : undefined,
               });
         const initialDeliveryId =
           operationToken === undefined ? undefined : `delivery:${operationToken}`;
@@ -380,28 +378,6 @@ export function eveChannel(input: EveChannelConfig): EveChannel {
           );
         }
 
-        let seed: ReturnType<typeof parseSessionTranscriptSeed> | undefined;
-        if (body.seed === true) {
-          if (!input.resolveSeed || body.operationId === undefined || parent !== undefined) {
-            return Response.json(
-              { error: "Trusted seed creation is unavailable.", ok: false },
-              { status: 400 },
-            );
-          }
-          try {
-            seed = parseSessionTranscriptSeed(
-              await input.resolveSeed({ auth: forwarded.auth, operationId: body.operationId }),
-            );
-            if (seed.attachments !== "channel")
-              throw new Error("Copied files require channel resolution.");
-          } catch (error) {
-            const errorId = logError(log, "seed resolution failed", error);
-            return Response.json(
-              { error: "Seed creation was rejected.", errorId, ok: false },
-              { status: 409 },
-            );
-          }
-        }
         // A caller on an earlier remote agent protocol gets its result but can't answer for the
         // session, which can't relay its requests in a shape that caller reads.
         const earlierCallerProtocol =
@@ -422,7 +398,6 @@ export function eveChannel(input: EveChannelConfig): EveChannel {
             },
             ({ conversationId, parentTraceContext: inheritedTrace }) => {
               return createSession({
-                seed,
                 deliveryId: initialDeliveryId,
                 audienceAuth: auth,
                 toolStubs:

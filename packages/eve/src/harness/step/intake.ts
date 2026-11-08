@@ -1,4 +1,5 @@
 import { stageAttachmentsToSandbox, stageToolResultMedia } from "#harness/attachment-staging.js";
+import { stepCatalog } from "#definitions/step.js";
 import { forgetFinishedRuns, runtimeResultCalls } from "#harness/coordination.js";
 import {
   anchorToTurn,
@@ -13,7 +14,7 @@ import {
   type UserModelMessage,
 } from "#harness/messages.js";
 import { finishRun, settle } from "#harness/session-machine/transitions.js";
-import { delegatedUsageFact } from "#harness/facts.js";
+import { recordLateSpend as recordLateSpendFact } from "#harness/session-machine/runs.js";
 import { activeTurnId, runtimeWait } from "#harness/session-machine/view.js";
 import { getTurnClientContextState } from "#harness/turn-client-context.js";
 import type { HarnessStepInput } from "#harness/types.js";
@@ -47,7 +48,7 @@ export async function settleRuntimeWork(
   const finished = forgetFinishedRuns(step.session, ready, runtime.event.turnId);
   step.session = finished.session;
   await step.apply(finishRun(step.view(), { requestIds: finished.requestIds }));
-  const results = await runtimeResultCalls(ready, step.config.tools);
+  const results = await runtimeResultCalls(ready, await stepCatalog(step));
   const staged = await stageToolResultMedia([
     { role: "tool", content: results.map(({ part }) => part) },
   ]);
@@ -80,8 +81,7 @@ async function recordLateSpend(
   settled: ReadonlySet<string>,
 ): Promise<void> {
   const late = Object.entries(usage ?? {}).filter(([callId]) => !settled.has(callId));
-  if (late.length > 0)
-    await step.publish(late.map(([, spent]) => delegatedUsageFact(undefined, spent)));
+  if (late.length > 0) await step.publish(recordLateSpendFact(late.map(([, spent]) => spent)));
 }
 
 /** The turn's input as the model reads it. */
@@ -117,7 +117,12 @@ export async function prepareTurnInput(
     ) ?? [];
   // Imported history is earlier conversation, so what eve adds for this turn sits after it.
   const messages: HarnessModelMessage[] = [
-    ...createImportedHistoryMessages(input?.history ?? []),
+    ...(await stageImportedHistory(
+      createImportedHistoryMessages(
+        input?.history ?? [],
+        `import:${turnId}:${input?.deliveries?.map((delivery) => delivery.deliveryId).join(":") ?? ""}`,
+      ),
+    )),
     ...(input?.context ?? []).map((entry) =>
       anchorToTurn(createFrameworkUserMessage("context.instruction", entry), turnId),
     ),
@@ -181,4 +186,41 @@ export function followingToolResults(turn: TurnInput): HarnessModelMessage[] {
     ...(turn.hasUserMessage ? [{ content: TOOL_RESULT_BOUNDARY, role: "assistant" } as const] : []),
     ...turn.messages,
   ];
+}
+
+/** Imported files use the same channel policy as new uploads; staging never handles tool calls. */
+async function stageImportedHistory(
+  messages: readonly HarnessModelMessage[],
+): Promise<HarnessModelMessage[]> {
+  const stageFile = async (
+    part: import("ai").FilePart,
+  ): Promise<(import("ai").FilePart | import("ai").TextPart)[]> => {
+    const staged = await stageAttachmentsToSandbox([part]);
+    if (typeof staged === "string") return [{ type: "text", text: staged }];
+    return staged.filter(
+      (part): part is import("ai").FilePart | import("ai").TextPart =>
+        part.type === "text" || part.type === "file",
+    );
+  };
+  return Promise.all(
+    messages.map(async (message): Promise<HarnessModelMessage> => {
+      if (message.role === "user" && typeof message.content !== "string") {
+        const content = (
+          await Promise.all(
+            message.content.map(async (part) => (part.type === "file" ? stageFile(part) : [part])),
+          )
+        ).flat();
+        return { ...message, content };
+      }
+      if (message.role === "assistant" && typeof message.content !== "string") {
+        const content = (
+          await Promise.all(
+            message.content.map(async (part) => (part.type === "file" ? stageFile(part) : [part])),
+          )
+        ).flat();
+        return { ...message, content };
+      }
+      return message;
+    }),
+  );
 }

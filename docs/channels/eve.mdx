@@ -97,11 +97,10 @@ curl -X POST https://<deployment>/eve/v1/session/wrun_A \
 
 A follow-up message joins the running turn by default; see [Overlapping messages](/docs/channels#overlapping-messages). Set `turnPolicy: "queue"` on `eveChannel(...)` to make follow-ups wait for running turns to finish. `answers` only answer the requests they name.
 
-| Session state                         | Response                                                                                         |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Unknown or terminal                   | `409` with `{"code":"session_not_active","error":"The session is no longer active.","ok":false}` |
-| Workflow exists but inbox isn't ready | `409 session_not_ready`                                                                          |
-| Built by another eve version          | `409 session_stranded` with the `eveVersion` that built it                                       |
+| Session state                | Response                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| Unknown or terminal          | `409` with `{"code":"session_not_active","error":"The session is no longer active.","ok":false}` |
+| Built by another eve version | `409 session_stranded` with the `eveVersion` that built it                                       |
 
 ### Send files
 
@@ -368,11 +367,15 @@ export default defineChannel({
 
 The client then resumes the session by id, for example with `useEveAgent({ initialSession: { sessionId, streamIndex: 0 }, resume: true })`. `created` is `false` when another session already owned the address or another `create()` or `send()` claimed it first. That session comes back unchanged, without your `history`. Use a new address for each new conversation or branch.
 
-`create()` returns once the new session claims its address, so an immediate `send()` reaches it. It throws if no session claims the address within 15 seconds. On a [stranded](../guides/deployment/self-hosted-operations#recover-a-stranded-session) session, `create()` throws `SessionStrandedError` instead of replacing a conversation you may mean to import; call `end()` on the address, then `create()` again.
+`create()` returns once a session owns the address, so an immediate `send()` reaches it. The new session takes the address as it starts, so `create()` doesn't wait for the session to boot. On a [stranded](../guides/deployment/self-hosted-operations#recover-a-stranded-session) session, `create()` throws `SessionStrandedError` instead of replacing a conversation you may mean to import; call `end()` on the address, then `create()` again.
 
 `send()` accepts the same `history` option and adds the entries right before that message and its `context`, whether it creates or continues the session. The eve channel's `onMessage` can return `history` too, which applies to every message it's returned for.
 
-Each entry has a `role` of `"user"` or `"assistant"`, non-empty `text`, and an optional `id` unique within the call. eve rejects an entry with any other field, so map your stored messages to these fields. Invalid history throws an `InvalidSessionHistoryError`, exported from `eve/channels`, naming the entry and the broken rule. eve doesn't cap entries or text, so trim long conversations in your route. Tool calls, files, and reasoning are not supported.
+Each entry has a `role` of `"user"` or `"assistant"`, an optional `id` unique within the call, and either non-empty `text` or structured `parts`. User parts accept text and files (`url`, `mediaType`, optional `filename`). Assistant parts also accept reasoning text, `step-start`, and completed `dynamic-tool` exchanges: `toolName`, JSON `input`, and `output-available` with JSON `output`, `output-error` with `errorText`, or `output-denied` with optional `reason`. A successful tool may use `outputType: "text"` with a string output. Pending calls and approval capabilities are rejected. Imported tools are historical data, not calls to execute.
+
+Files in imported history use the same channel resolver and sandbox policy as new attachments, including degradation to notes if staging is unavailable. Source sandbox paths and contents are not copied. Resolve owned originals in your channel; do not reuse another session's private sandbox references. Invalid history throws `InvalidSessionHistoryError`. Trim long histories in your route.
+
+Importing history does not cause an empty HTTP create to display it. HTTP create without a message does not invoke `onMessage`; lower-level create history becomes visible with the first accepted message. No dummy prompt is required or recommended. `transcriptOf()` remains text-only; use conversation messages when preserving rich history.
 
 eve never accepts `history` from a client request body. Resolve it on the server and authorize the caller against the stored conversation.
 
@@ -406,57 +409,3 @@ For scripts, server-to-server calls, evals, tests, and custom clients, use the [
 - [Client SDK](/docs/guides/client): call the eve channel from TypeScript
 - [Auth & route protection](../guides/auth-and-route-protection): the route auth policy
 - [Sessions, runs & streaming](../concepts/sessions-runs-and-streaming): the routes this channel exposes
-
-## Uncertain creation outcomes
-
-Upstream creation operation IDs resolve an active owner through a continuation
-alias. They do not establish a durable admission ledger or an HTTP operation
-lookup API. A missing alias cannot distinguish an undispatched request from
-allocation before alias binding or a released alias. Applications that require
-no duplicate dispatch should journal intent before calling the runtime, retain
-known responses, and leave lost-response operations unresolved. Do not infer
-permission to resend from a lookup miss.
-
-## Trusted copy initialization
-
-An application can define `resolveSeed({ auth, operationId })` to load an already
-accepted destination transcript. A caller requests it with
-`{ "operationId": "...", "seed": true }`; the request cannot supply transcript
-contents, a first message, a fork, or delegated callbacks. The resolver must
-check the current destination owner and accepted immutable reservation. Source
-ownership and revision checks belong in the application's acceptance transaction.
-
-The resolved value contains `attachments: "channel"` and settled user/assistant
-`messages`. Text, reasoning, file, step boundaries, and completed tool results
-are converted together into initial model history and the `transcriptSeed` field of the v27 `session.started` event. Creation does not execute historical tools or call a model. New display
-IDs are deterministic within the destination. Model provenance is display data,
-not an execution receipt or permission. No general history-import API is exposed.
-
-Each seeded file must include its authorized original HTTP `url` and an
-`existingPath` previously observed in the shared sandbox. The application must
-validate that the destination conversation may access that workspace and that
-its selected source history owns the attachment. Neither field may come directly
-from an untrusted browser request.
-
-Before the first model call, eve resolves the original bytes through the
-current authenticated channel, checks upload policy, verifies the existing file
-and constructs its native attachment reference. It does not write or copy the
-file. The current provider must expose the same backing workspace to both
-sessions; the provider interface does not require a new sandbox for each session.
-Missing paths, changed bytes or unavailable authorization stop continuation with
-the pending history intact. Digests remain checked on later calls, including
-after compaction, so an imported original cannot silently disappear from model
-input. Applications may resolve immutable originals from their own storage in
-their provider's `readBinaryFile` implementation while keeping tool working
-copies mutable.
-
-ChatJS forks share files, installed environment and sandbox state. Historical
-forks change conversation history only; they do not roll back workspace files.
-The application owns workspace membership, turn serialization and resource
-retention after conversation deletion. A public transcript alone does not grant
-workspace access. The runtime does not retain historical copy checkpoints or
-restore sandbox snapshots.
-
-Creation responses return the native session ID. Applications journal immutable
-intent before dispatch and retain that positive receipt. Interrupted requests may
-remain unresolved; a missing receipt never authorizes redispatch.
