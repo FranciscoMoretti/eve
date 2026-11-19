@@ -3,6 +3,8 @@
 This candidate updates the maintained fork to upstream **1.1.0**
 (`08034cde67d2c301c8c339f56db5d118cf14b74a`). It is not published.
 The maintained release branch is `francisco/chatjs-package`.
+The candidate version is `1.1.1-chatjs.0` so native extensions built with stable
+`1.1.0` pass eve's minimum-version check. The upstream source baseline remains 1.1.0.
 
 | Patch | Remaining behavior                                                                                                                                                                                                                               | Ownership / removal condition                                                                                                                                                                                                                                    |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

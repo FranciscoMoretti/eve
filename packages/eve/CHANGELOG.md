@@ -1,6 +1,6 @@
 # eve
 
-## 1.1.0-chatjs.0
+## 1.1.1-chatjs.0
 
 ### Patch Changes
 
