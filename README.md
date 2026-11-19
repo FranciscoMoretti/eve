@@ -1,7 +1,7 @@
 ## ChatJS maintained eve fork
 
-This candidate replaces the RC1 fork with upstream **1.0.0-rc.6**
-(`663640b072dc91e85ead914e7d398a1e1bdb73ce`). It is not published.
+This candidate updates the maintained fork to upstream **1.1.0**
+(`08034cde67d2c301c8c339f56db5d118cf14b74a`). It is not published.
 The maintained release branch is `francisco/chatjs-package`.
 
 | Patch | Remaining behavior                                                                                                                                                                                                                               | Ownership / removal condition                                                                                                                                                                                                                                    |

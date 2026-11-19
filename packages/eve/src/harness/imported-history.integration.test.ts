@@ -1,5 +1,6 @@
+import { jsonSchema } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { createTestKernel } from "#internal/testing/kernel.js";
 import type { HarnessSession, HarnessStepInput } from "#harness/types.js";
@@ -35,7 +36,6 @@ const model = () =>
     }),
   });
 
-/** A delivery the session admitted, carrying a message and the history it brought. */
 function delivered(
   session: HarnessSession,
   deliveryId: string,
@@ -119,4 +119,88 @@ it("reads imported history before each turn's context and message, and records i
     ["d_0", "turn_0", earlier],
     ["d_1", "turn_1", later],
   ]);
+});
+
+it("supplies completed imported tool exchanges to the model without executing them", async () => {
+  const execute = vi.fn(async () => ({ saved: "new value" }));
+  const llm = model();
+  const events: SessionEvent[] = [];
+  const harness = createTestKernel({
+    agent: { model: { id: "m" } },
+    handleEvent: eachEvent(async (event) => {
+      events.push(event);
+    }),
+    resolveModel: async () => llm,
+    tools: new Map([
+      [
+        "save",
+        {
+          name: "save",
+          description: "Save a value",
+          inputSchema: jsonSchema({ type: "object" }),
+          execute,
+        },
+      ],
+    ]),
+  });
+  const history: readonly ImportedMessage[] = [
+    {
+      role: "assistant",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "save",
+          input: { value: "old value" },
+          state: "output-available",
+          output: { saved: "old value" },
+        },
+        { type: "text", text: "Saved previously." },
+      ],
+    },
+  ];
+  const first = await harness(
+    ...delivered(
+      {
+        compaction: {},
+        continuationToken: "http:structured-history",
+        history: [],
+        sessionId: "structured-history",
+      },
+      "structured",
+      { history, message: "What was saved?" },
+    ),
+  );
+  await harness(...delivered(first.session, "followup", { history: [], message: "Continue." }));
+  for (const call of llm.doStreamCalls) {
+    expect(call.prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool-call",
+              toolName: "save",
+              input: { value: "old value" },
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          role: "tool",
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: "tool-result",
+              toolName: "save",
+              output: { type: "json", value: { saved: "old value" } },
+            }),
+          ]),
+        }),
+      ]),
+    );
+  }
+  expect(llm.doStreamCalls).toHaveLength(2);
+  expect(execute).not.toHaveBeenCalled();
+  expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([]);
+  expect(events.find((event) => event.type === "delivery.consumed")).toMatchObject({
+    data: { history },
+  });
 });
