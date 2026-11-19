@@ -1,12 +1,12 @@
 ---
 issue: "https://github.com/vercel/eve/issues/5340"
 status: implemented
-last_updated: 2026-11-08
+last_updated: 2026-11-19
 ---
 
 # Structured history through the existing import API
 
-Extend `onMessage.history` on upstream 1.0.0-rc.6 with `parts` as an
+Extend `onMessage.history` on upstream 1.1.0 with `parts` as an
 alternative to `text`, retaining the optional application message ID.
 User parts contain text/files. Assistant parts additionally contain reasoning
 text, completed tool exchanges, and step boundaries. Historical calls are data:

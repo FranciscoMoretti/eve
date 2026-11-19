@@ -13,7 +13,6 @@ export type SessionHistoryMessage =
 export type SessionHistoryPart =
   import("#protocol/session-events/families/imported-history.js").ImportedHistoryPart;
 
-/** Text-only projection for transcript consumers; rich parts remain in conversation messages. */
 export function sessionHistoryText(message: SessionHistoryMessage): string {
   return (
     message.text ??
@@ -31,12 +30,6 @@ export class InvalidSessionHistoryError extends Error {
 
 const HISTORY_FIELDS: readonly string[] = ["id", "role", "text", "parts"];
 
-/**
- * Validates `history` at the send boundary and returns a normalized copy.
- * Returns `undefined` when `history` is omitted. An entry with a field outside
- * the contract is rejected, not dropped, so no caller already sends a field a
- * later release starts to read.
- */
 export function validateSessionHistory(
   history: unknown,
 ): readonly SessionHistoryMessage[] | undefined {
@@ -96,7 +89,6 @@ export function validateSessionHistory(
 }
 
 function rejectUnknownFields(entry: Readonly<Record<string, unknown>>, at: string): void {
-  // An absent value names nothing a later release could read differently.
   const unknown = Object.keys(entry).filter(
     (key) => !HISTORY_FIELDS.includes(key) && entry[key] !== undefined,
   );

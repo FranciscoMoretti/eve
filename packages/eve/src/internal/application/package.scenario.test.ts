@@ -13,7 +13,6 @@ const createScratchDirectory = useTemporaryDirectories();
 const run = promisify(execFile);
 
 describe("package module path", () => {
-  // `node -e` defines a global `__filename` of "[eval]", which ESM modules can see.
   it("loads eve/next under node -e", async () => {
     const entry = new URL("../../../dist/src/public/next/index.js", import.meta.url).href;
     const { stdout } = await run(process.execPath, [
@@ -78,7 +77,7 @@ describe("isolated scoped development modules", () => {
       join(root, "node_modules"),
       "junction",
     );
-    const runtime = pathToFileURL(join(root, "dist/src/execution/workflow-runtime.js")).href;
+    const runtime = pathToFileURL(join(root, "dist/src/execution/workflow-references.js")).href;
     const { stdout } = await run(process.execPath, [
       "--input-type=module",
       "-e",

@@ -6,6 +6,8 @@ import {
   SimpleSpanProcessor,
   type ReadableSpan,
 } from "@opentelemetry/sdk-trace-base";
+import { generateText } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
 import { AgentSpanIdGenerator, otelTelemetry } from "#compiled/@vercel/agent-runs/index.js";
@@ -18,11 +20,15 @@ import {
   nextLinePosition,
   recordPublishedLine,
 } from "#harness/session-machine/current.js";
+import { ConnectionAuthorizationFailedError } from "#connections/errors.js";
+import { createAiSdkHookBridge } from "#instrumentation/ai-sdk-hook-bridge.js";
 import {
   createInstrumentationHooks,
   type InstrumentationProviderDefinition,
+  type InstrumentationScope,
 } from "#instrumentation/lifecycle.js";
 import {
+  attemptScopeOf,
   createInstrumentationHandleEvent,
   type CreateInstrumentationHandleEventInput,
 } from "#instrumentation/native-events.js";
@@ -30,13 +36,9 @@ import { InMemoryAgentTraceStateStore } from "#internal/testing/in-memory-agent-
 import type { SessionEvent } from "#protocol/session-event.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
 import { createAgentOtelInstrumentation } from "#tracing/eve/agent-otel-provider.js";
-import type { TraceCapturePolicy } from "#tracing/eve/otel-declaration.js";
+import { isOtelDeclaration, type TraceCapturePolicy } from "#tracing/eve/otel-declaration.js";
 import { eveOutputMapping } from "#tracing/eve/profile.js";
 
-/**
- * The spans a session exports, from its committed lines through eve's own OTel provider: the
- * path production takes, with no hand-built instrumentation events in between.
- */
 function session(
   tracePolicy: TraceCapturePolicy = () => ({ emit: true, recordInputs: true, recordOutputs: true }),
   deliveryInput?: DeliverHookPayload,
@@ -46,6 +48,7 @@ function session(
   >,
   audience: ChannelAudience = "public",
   authored: readonly InstrumentationProviderDefinition[] = [],
+  environment: "production" | "preview" | "development" = "production",
 ) {
   const exporter = new InMemorySpanExporter();
   const idGenerator = new AgentSpanIdGenerator();
@@ -54,7 +57,7 @@ function session(
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   });
   const otel = createAgentOtelInstrumentation({
-    environment: "production",
+    environment,
     frameworkVersion: "test",
     idGenerator,
     recordInputs: true,
@@ -73,7 +76,7 @@ function session(
     agentName: "weather",
     audience,
     channel: { kind: "http" },
-    environment: "production",
+    environment,
     principalType: "anonymous",
   });
   const ctx = new ContextContainer();
@@ -84,7 +87,7 @@ function session(
       agentName: "weather",
       channelAudience: audience,
       channelKind: "http",
-      environment: "production",
+      environment,
       functionId: "weather",
       handleEvent: async (publication) => {
         const facts = cascade(currentView(ctx), eventsOf(publication));
@@ -99,9 +102,38 @@ function session(
   const relayHandle = handleFor(true);
   return {
     commit: (...facts: SessionEvent[]) => contextStorage.run(ctx, () => handle(commitOf(facts))),
-    /** Commits as a step that relays an exchange for a child session or a workflow run. */
     relay: (...facts: SessionEvent[]) =>
       contextStorage.run(ctx, () => relayHandle(commitOf(facts))),
+    runTool: otel.runInContext,
+    async summarize(summary: string) {
+      const scope = attemptScopeOf(
+        { channelAudience: audience, functionId: "weather", sessionId: "s", ...child },
+        { attempt: 0, runId: "run_compaction", turnId: "turn_0" },
+      );
+      await generateText({
+        model: new MockLanguageModelV3({
+          doGenerate: async () => ({
+            content: [{ text: summary, type: "text" }],
+            finishReason: { raw: undefined, unified: "stop" },
+            providerMetadata: { gateway: { cost: "0.0042" } },
+            usage: {
+              inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 1200, total: 1200 },
+              outputTokens: { reasoning: 0, text: 80, total: 80 },
+            },
+            warnings: [],
+          }),
+        }),
+        prompt: "Summarize Alice's conversation so far.",
+        telemetry: {
+          integrations: [
+            createAiSdkHookBridge(scope, hooks, otel.runInContext, {
+              "eve.compaction.request": "summary",
+            }),
+          ],
+          isEnabled: true,
+        },
+      });
+    },
     async spans(): Promise<readonly ReadableSpan[]> {
       await provider.forceFlush();
       return exporter.getFinishedSpans();
@@ -155,7 +187,6 @@ const approval = (callId: string): SessionEvent =>
 const turnSettled = (data: Record<string, unknown>): SessionEvent =>
   ({ data: { turnId: "turn_0", ...data }, scope: turn, type: "turn.settled" }) as SessionEvent;
 
-/** Each span as `name outcome`, indented under its parent; `!` marks an error status. */
 function tree(spans: readonly ReadableSpan[]): string[] {
   const ids = new Set(spans.map((span) => span.spanContext().spanId));
   const children = new Map<string | undefined, ReadableSpan[]>();
@@ -371,6 +402,7 @@ describe("a session's spans, from its committed lines", () => {
       const span = exported.find((each) => each.name === "agent.approval");
       expect(span?.attributes["agent.approval.kind"]).toBe(kind);
       expect(span?.attributes["eve.connection.name"]).toBe(connection);
+      expect(span?.attributes["gen_ai.agent.name"]).toBe("weather");
       expect(JSON.stringify(span?.attributes)).not.toContain("oauth");
     },
   );
@@ -408,10 +440,87 @@ describe("a session's spans, from its committed lines", () => {
         "invoke_agent weather completed",
         "  agent.approval approved",
       ]);
-      // Public scopes name a model run, and none has started.
       expect(heard).toEqual([]);
     },
   );
+
+  it.each([
+    ["a failure's reason code", "failed", "access_denied", "access_denied"],
+    ["a failure's error message", "failed", "Calendar said: token abc123 is invalid", undefined],
+    ["a withdrawal's reason", "withdrawn", "superseded-by-message", undefined],
+  ])("records an authorization reason for %s", async (_, outcome, reason, recorded) => {
+    const { commit, spans } = session();
+    await commit(...opening.slice(0, 2));
+    await commit({
+      data: {
+        interactionId: "i_held",
+        request: { kind: "sign-in", prompt: "Sign in to Calendar", signIn: { name: "calendar" } },
+        subject: turn,
+      },
+      scope: turn,
+      type: "interaction.opened",
+    } as SessionEvent);
+    await commit({
+      data: { interactionId: "i_held", outcome, reason },
+      scope: turn,
+      type: "interaction.settled",
+    } as SessionEvent);
+    await commit(turnSettled({ outcome: "completed" }));
+
+    const span = (await spans()).find((each) => each.name === "agent.approval");
+    expect(span?.attributes["agent.approval.outcome"]).toBe(
+      outcome === "failed" ? "failed" : "ignored",
+    );
+    expect(span?.attributes["agent.connection.authorization.reason"]).toBe(recorded);
+    expect(JSON.stringify(span?.attributes)).not.toContain("abc123");
+  });
+
+  it("records which connection refused a call and why, even when the trace keeps no errors", async () => {
+    const scopes = new Map<string, InstrumentationScope>();
+    const { commit, runTool, spans } = session(
+      () => ({ emit: true, recordInputs: false, recordOutputs: false }),
+      undefined,
+      undefined,
+      undefined,
+      [
+        {
+          name: "scopes",
+          events: { "call.requested": (event) => void scopes.set(event.callId, event.scope) },
+        },
+      ],
+    );
+    await commit(...opening);
+    await commit(requested("call_gh", "code__gh"));
+    const refused = new ConnectionAuthorizationFailedError("github", {
+      message: "Alice has no GitHub token in this run.",
+      reason: "sign_in_unavailable",
+      retryable: false,
+    });
+    await expect(
+      runTool(
+        {
+          callId: "call_gh",
+          idempotencyKey: "tool:call_gh",
+          scope: scopes.get("call_gh")!,
+          toolName: "code__gh",
+          type: "tool.call",
+        },
+        () => Promise.reject(refused),
+      ),
+    ).rejects.toBe(refused);
+    await commit(
+      settled("call_gh", {
+        error: { code: "ACTION_RESULT_FAILED", message: refused.message, name: refused.name },
+        outcome: "failed",
+      }),
+    );
+    await commit(turnSettled({ outcome: "completed" }));
+
+    const tool = (await spans()).find((span) => span.name === "execute_tool code__gh");
+    expect(tool?.attributes["eve.connection.name"]).toBe("github");
+    expect(tool?.attributes["agent.connection.authorization.reason"]).toBe("sign_in_unavailable");
+    expect(JSON.stringify(tool?.attributes)).not.toContain("Alice");
+  });
 
   it.each([
     {
@@ -494,9 +603,7 @@ describe("a session's spans, from its committed lines", () => {
     for (const { audience, records, id, outcome = "accepted" } of [
       { audience: "public", records: true, id: "slack:T1:U2" },
       { audience: "public", records: false, id: undefined },
-      // An explicit policy records a private conversation's content, but never principal ids.
       { audience: "private", records: true, id: undefined },
-      // A denied call never runs, so only its approval names who denied it.
       { audience: "public", records: true, id: "slack:T1:U2", outcome: "declined" },
     ] as const) {
       const { commit, spans } = session(
@@ -560,7 +667,6 @@ describe("a session's spans, from its committed lines", () => {
     const exported = await spans();
     expect(tree(exported)).toEqual([
       "invoke_agent weather cancelled",
-      // The cancel stopped the step on purpose, so it ends without an error (#5025).
       "  agent.step",
       "    execute_tool weather failed !",
       "    execute_tool deploy cancelled !",
@@ -568,6 +674,36 @@ describe("a session's spans, from its committed lines", () => {
     ]);
     const failed = exported.find((span) => span.name === "execute_tool weather");
     expect(failed?.attributes["error.type"]).toBe("TOOL_FAILED");
+  });
+
+  it("exports a compaction's summary call during a turn as a model span under the turn", async () => {
+    const { commit, spans, summarize } = session();
+    await commit(...opening);
+    await commit({
+      data: { outcome: "completed", runId: "run_0" },
+      scope: run,
+      type: "model.settled",
+    } as SessionEvent);
+    await summarize("Alice is planning a trip to Oslo.");
+    await commit(turnSettled({ outcome: "completed" }));
+
+    const exported = await spans();
+    expect(tree(exported)).toEqual([
+      "invoke_agent weather completed",
+      "  agent.step",
+      "  chat mock-model-id",
+    ]);
+    const summary = exported.find((span) => span.name === "chat mock-model-id");
+    expect(summary?.attributes).toMatchObject({
+      "agent.turn.id": "turn_0",
+      "ai.settings.context.eve.compaction.request": "summary",
+      "gen_ai.usage.cost": 0.0042,
+      "gen_ai.usage.input_tokens": 1200,
+      "gen_ai.usage.output_tokens": 80,
+    });
+    const invocation = exported.find((span) => span.name === "invoke_agent weather");
+    expect(invocation?.attributes["gen_ai.input.messages"]).toBeUndefined();
+    expect(invocation?.attributes["gen_ai.output.messages"]).toBeUndefined();
   });
 
   it("fails the step a failed turn's end cuts short", async () => {
@@ -600,6 +736,45 @@ describe("a session's spans, from its committed lines", () => {
     expect(invocation?.status).toMatchObject({ code: 2 });
   });
 
+  it.each(["production", "preview"] as const)(
+    "openinstinct exports metadata, not private profile or conversation bodies in %s",
+    async (environment) => {
+      const authored: { default: unknown } = await import(
+        "../../../../../apps/templates/openinstinct/agent/instrumentation/otel.ts" as string
+      );
+      if (!isOtelDeclaration(authored.default)) throw new Error("Expected OTel settings");
+      const { commit, spans } = session(
+        authored.default.options.tracePolicy,
+        undefined,
+        undefined,
+        "private",
+        [],
+        environment,
+      );
+      const privateBody = "Alice's private profile: birth date 1990-01-23; conversation with Bob";
+      await commit(...opening);
+      await commit({
+        data: {
+          callId: "call_profile",
+          capability: { kind: "tool", name: "profile" },
+          input: { profile: privateBody },
+          owner: run,
+        },
+        scope: run,
+        type: "call.requested",
+      } as SessionEvent);
+      await commit(settled("call_profile", { outcome: "completed", output: privateBody }));
+      await commit(turnSettled({ outcome: "completed" }));
+
+      const exported = await spans();
+      expect(exported.find((span) => span.name === "execute_tool profile")).toBeDefined();
+      expect(exported.find((span) => span.name === "invoke_agent weather")).toBeDefined();
+      expect(
+        JSON.stringify(exported.map(({ attributes, events }) => ({ attributes, events }))),
+      ).not.toContain(privateBody);
+    },
+  );
+
   it("keeps a call's input and output off its span unless the trace policy records them", async () => {
     for (const records of [false, true]) {
       const { commit, spans } = session(() => ({
@@ -622,7 +797,6 @@ describe("a session's spans, from its committed lines", () => {
 
 describe("a child session's turn span", () => {
   const caller = { spanId: "c".repeat(16), traceFlags: 1, traceId: "a".repeat(32) };
-  // A propagated traceparent arrives as a remote span context.
   const remoteCaller = { ...caller, isRemote: true };
   const parentLineage = {
     callId: "call_ask",
