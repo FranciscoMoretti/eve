@@ -1,9 +1,9 @@
 ## ChatJS maintained eve fork
 
-This candidate updates the maintained fork to upstream **1.1.0**
-(`08034cde67d2c301c8c339f56db5d118cf14b74a`). It is not published.
+This fork follows upstream **1.1.0**
+(`08034cde67d2c301c8c339f56db5d118cf14b74a`).
 The maintained release branch is `francisco/chatjs-package`.
-The candidate version is `1.1.1-chatjs.0` so native extensions built with stable
+The scoped version is `1.1.1-chatjs.0` so native extensions built with stable
 `1.1.0` pass eve's minimum-version check. The upstream source baseline remains 1.1.0.
 
 | Patch | Remaining behavior                                                                                                                                                                                                                               | Ownership / removal condition                                                                                                                                                                                                                                    |
@@ -18,12 +18,23 @@ copy-before-first-message API. Edit/regenerate create a branch with a real messa
 
 Authorization, immutable intent, unknown-delivery fencing, exact approvals,
 billing, workspace ownership, immutable original attachments and deletion remain
-ChatJS responsibilities. EVE's ordinary attachment staging and failure behavior
+ChatJS responsibilities. eve's ordinary attachment staging and failure behavior
 apply; this patch does not introduce independent attachment storage or resolvers.
 
 Branches share ChatJS's workspace; history import does not restore historical
 files, installed packages, or processes. Release automation is disabled in forks.
-Publishing this candidate and adopting it in ChatJS are separate release steps.
+Published [`@chat-js/eve@1.1.1-chatjs.0`](https://www.npmjs.com/package/@chat-js/eve/v/1.1.1-chatjs.0)
+on 2026-11-19 under `chatjs-rc`, from commit
+`3a522d9b91b59867704144d70b09b8604d5091a8` ([PR #21](https://github.com/FranciscoMoretti/eve/pull/21)).
+The public download matches the tested archive byte for byte. Its SHA-512 integrity is:
+
+```text
+sha512-UmKK2XNmIAGwEgRW706axHE9zVjDLNAIgPGjC9co2TlEdF/qBvIgERDkYq4XFHsxasRSmum/Jl0Ygz/l6dksvw==
+```
+
+Publication does not adopt the dependency in ChatJS or merge the upgrade PR.
+ChatJS runtime regressions pass; app test types still need updates for upstream
+`label: false` and pruned private declarations before adoption.
 
 ---
 
